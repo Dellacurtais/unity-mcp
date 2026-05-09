@@ -20,6 +20,9 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private Vector2 _preambleScroll;
         private string _urlBuffer;
         private string _sessionBuffer;
+        private int _lastMessageCount;
+        private int _lastStreamingTextLen;
+        private bool _autoScrollPending;
         private static GUIStyle _bubbleStyle;
         private static GUIStyle _bubbleHeaderRoleStyle;
         private static GUIStyle _bodyStyle;
@@ -301,9 +304,47 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
         private void DrawMessageList()
         {
-            EditorGUILayout.LabelField("Conversation", EditorStyles.boldLabel);
             var session = Bootstrap.ChatSession;
             if (session == null) { GUILayout.Label("(chat session not initialised)"); return; }
+
+            // Header row: section label + filter toggle + scroll-to-bottom.
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField("Conversation", EditorStyles.boldLabel, GUILayout.Width(110));
+                GUILayout.FlexibleSpace();
+
+                var newShowSystem = GUILayout.Toggle(Settings.CoderShowSystemMessages,
+                    new GUIContent(
+                        Settings.CoderShowSystemMessages ? "Hide system msgs" : "Show system msgs",
+                        "Toggle visibility of [1/3]/[2/3]/[3/3], (thinking), preamble previews, " +
+                        "and other internal log lines. The events still arrive — just not rendered."),
+                    "Button", GUILayout.Width(150));
+                if (newShowSystem != Settings.CoderShowSystemMessages)
+                {
+                    Settings.CoderShowSystemMessages = newShowSystem;
+                    _autoScrollPending = true; // re-anchor after the list height changes
+                }
+
+                if (GUILayout.Button(new GUIContent("↓", "Scroll to latest"), GUILayout.Width(28)))
+                    _autoScrollPending = true;
+            }
+
+            // Auto-scroll triggers: a brand-new message arrived OR the streaming
+            // assistant message grew since last paint.
+            int visibleCount = session.Messages.Count;
+            int streamingLen = session.StreamingAssistant?.Text?.Length ?? 0;
+            if (visibleCount > _lastMessageCount || streamingLen > _lastStreamingTextLen)
+                _autoScrollPending = true;
+            _lastMessageCount = visibleCount;
+            _lastStreamingTextLen = streamingLen;
+
+            // Apply pending scroll BEFORE the ScrollViewScope so IMGUI clamps it
+            // to the new content height on this paint.
+            if (_autoScrollPending)
+            {
+                _scroll.y = float.MaxValue;
+                _autoScrollPending = false;
+            }
 
             using (var sv = new EditorGUILayout.ScrollViewScope(_scroll,
                 GUILayout.ExpandHeight(true)))
@@ -317,7 +358,12 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 }
                 else
                 {
-                    foreach (var msg in session.Messages) DrawMessage(msg);
+                    var showSystem = Settings.CoderShowSystemMessages;
+                    foreach (var msg in session.Messages)
+                    {
+                        if (!showSystem && msg.Role == ChatRole.System) continue;
+                        DrawMessage(msg);
+                    }
                 }
             }
 

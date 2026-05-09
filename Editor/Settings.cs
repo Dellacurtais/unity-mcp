@@ -26,6 +26,7 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KCoderAutoInjectContext = "Maicon.SceneAnalyzer.Coder.AutoInjectContext";
         private const string KCoderCustomPreamble = "Maicon.SceneAnalyzer.Coder.CustomPreamble";
         private const string KCoderThinking = "Maicon.SceneAnalyzer.Coder.Thinking";
+        private const string KCoderShowSystem = "Maicon.SceneAnalyzer.Coder.ShowSystem";
 
         public static bool AutoStartServer
         {
@@ -129,6 +130,16 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             get => EditorPrefs.GetBool(KCoderThinking, false);
             set => EditorPrefs.SetBool(KCoderThinking, value);
+        }
+
+        /// When false, the chat panel hides ChatRole.System bubbles (the
+        /// `[1/3] …` progress notes, `(thinking)` markers, preamble preview
+        /// dumps, etc.) — useful once the dev trusts the pipeline and wants
+        /// just the conversation. Defaults to true on first install.
+        public static bool CoderShowSystemMessages
+        {
+            get => EditorPrefs.GetBool(KCoderShowSystem, true);
+            set => EditorPrefs.SetBool(KCoderShowSystem, value);
         }
 
         public static string GenerateToken()

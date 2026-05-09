@@ -1,6 +1,6 @@
 {
   "name": "com.maicon.scene-analyzer",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "displayName": "Scene Analyzer (MCP)",
   "description": "Real-time Unity scene analysis, validation, and authoring exposed to AI agents over MCP. Includes an embedded chat panel (Coder Chat) that talks to a D:\\MCP coder runtime via SSE so the dev never leaves Unity. 32 tools (read, analyze, discover, create, modify, post-fx, render settings, screenshots) plus apply_changeset for atomic batch authoring with single-Undo-group semantics.",
   "unity": "6000.1",

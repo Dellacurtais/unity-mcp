@@ -5,6 +5,14 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.13] - 2026-05-09
+
+### Added
+
+- **Show / Hide system messages** toggle in the Conversation header. When off, the chat hides ChatRole.System bubbles ([1/3]/[2/3]/[3/3] progress lines, `(thinking)` markers, preamble previews, generic internal notes) so the user sees just User ↔ Coder turns. Persistent via `Settings.CoderShowSystemMessages` (default on).
+- **Auto-scroll on new messages**. The conversation now snaps to the latest bubble whenever a new message arrives OR the streaming assistant text grows. Tracked via `_lastMessageCount` + `_lastStreamingTextLen` per paint so partial-stream updates also follow. A `↓` button next to the toggle force-scrolls to the bottom on demand.
+- Re-anchors after toggling the system filter (so the list height change doesn't strand the user mid-history).
+
 ## [0.3.12] - 2026-05-09
 
 ### Added
