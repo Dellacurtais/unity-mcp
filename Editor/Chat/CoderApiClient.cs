@@ -740,6 +740,63 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             }
         }
 
+        // ---- Safe JToken accessors ----------------------------------------
+        // A JObject/JArray cast directly to string throws ArgumentException
+        // ("Can not convert Object to String"). The agent's SSE payloads can
+        // legitimately carry objects/arrays where we expected strings (e.g.
+        // `question.options` may be `[{label, value}, ...]` instead of plain
+        // strings). These helpers tolerate any shape and fall back to a safe
+        // textual representation.
+
+        private static string AsString(JToken t)
+        {
+            if (t == null || t.Type == JTokenType.Null) return null;
+            if (t.Type == JTokenType.String) return (string)t;
+            if (t is JValue v) return v.Value?.ToString() ?? "";
+            return t.ToString(FormattingNs.None);
+        }
+
+        private static int? AsInt(JToken t)
+        {
+            if (t == null || t.Type == JTokenType.Null) return null;
+            if (t.Type == JTokenType.Integer) return (int)t;
+            if (t.Type == JTokenType.Float) return (int)(double)t;
+            if (t.Type == JTokenType.String && int.TryParse((string)t, out var v)) return v;
+            return null;
+        }
+
+        private static bool? AsBool(JToken t)
+        {
+            if (t == null || t.Type == JTokenType.Null) return null;
+            if (t.Type == JTokenType.Boolean) return (bool)t;
+            if (t.Type == JTokenType.String && bool.TryParse((string)t, out var v)) return v;
+            return null;
+        }
+
+        private static double? AsDouble(JToken t)
+        {
+            if (t == null || t.Type == JTokenType.Null) return null;
+            if (t.Type == JTokenType.Integer || t.Type == JTokenType.Float) return (double)t;
+            if (t.Type == JTokenType.String && double.TryParse((string)t,
+                System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var v)) return v;
+            return null;
+        }
+
+        /// Options on a question can be plain strings or objects with
+        /// `{label, value}` (or similar). Pick the most human-readable label.
+        private static string OptionLabel(JToken t)
+        {
+            if (t == null) return "";
+            if (t.Type == JTokenType.String) return (string)t;
+            if (t is JObject o)
+            {
+                var lbl = AsString(o["label"]) ?? AsString(o["text"]) ?? AsString(o["value"]) ?? AsString(o["id"]);
+                if (!string.IsNullOrEmpty(lbl)) return lbl;
+            }
+            return AsString(t) ?? "";
+        }
+
         private void DispatchEvent(string type, string data, string lastId)
         {
             if (!string.IsNullOrEmpty(lastId)) _session.LastEventId = lastId;
@@ -748,10 +805,28 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             try { payload = string.IsNullOrEmpty(data) ? null : JToken.Parse(data); }
             catch { /* keep raw */ }
 
+            try
+            {
+                DispatchEventInner(type, data, payload);
+            }
+            catch (Exception e)
+            {
+                // Don't let a malformed/unexpected event abort the entire SSE
+                // stream parser. Log it and surface as a system note so the dev
+                // can investigate without losing the rest of the conversation.
+                Debug.LogException(e);
+                _session.AddSystemNote(
+                    $"(skipped malformed `{type}` event: {e.GetType().Name}: {e.Message}; raw: " +
+                    (data?.Length > 200 ? data.Substring(0, 200) + "…" : data) + ")");
+            }
+        }
+
+        private void DispatchEventInner(string type, string data, JToken payload)
+        {
             switch (type)
             {
                 case "text":
-                    _session.AppendAssistantText(payload != null ? (string)payload["text"] ?? "" : data);
+                    _session.AppendAssistantText(AsString(payload?["text"]) ?? data ?? "");
                     break;
                 case "thinking":
                     // Thinking is meta — surface as a faint system note rather than the main text.
@@ -759,22 +834,22 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     break;
                 case "tool_call_start":
                     _session.AddToolCall(
-                        (string)payload?["id"] ?? Guid.NewGuid().ToString("N"),
-                        (string)payload?["name"] ?? "?",
-                        payload?["input"]?.ToString(Newtonsoft.Json.Formatting.None) ?? "");
+                        AsString(payload?["id"]) ?? Guid.NewGuid().ToString("N"),
+                        AsString(payload?["name"]) ?? "?",
+                        payload?["input"]?.ToString(FormattingNs.None) ?? "");
                     break;
                 case "tool_call_result":
                     _session.CompleteToolCall(
-                        (string)payload?["id"] ?? "",
+                        AsString(payload?["id"]) ?? "",
                         TruncateJson(payload?["result"], 800),
-                        (double?)payload?["duration_ms"] ?? 0.0);
+                        AsDouble(payload?["duration_ms"]) ?? 0.0);
                     break;
                 case "plan":
                 {
                     var p = new PendingPlan
                     {
-                        Id = (string)payload?["id"],
-                        Plan = (string)payload?["plan"] ?? data,
+                        Id = AsString(payload?["id"]),
+                        Plan = AsString(payload?["plan"]) ?? data,
                     };
                     _session.SetPendingPlan(p);
                     break;
@@ -783,13 +858,17 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 {
                     var q = new PendingQuestion
                     {
-                        Id = (string)payload?["id"],
-                        Question = (string)payload?["question"] ?? data,
-                        AllowFreeform = (bool?)payload?["allowFreeform"] ?? true,
+                        Id = AsString(payload?["id"]),
+                        Question = AsString(payload?["question"]) ?? data,
+                        AllowFreeform = AsBool(payload?["allowFreeform"]) ?? true,
                     };
                     if (payload?["options"] is JArray optsArr)
                     {
-                        foreach (var o in optsArr) q.Options.Add((string)o);
+                        foreach (var o in optsArr)
+                        {
+                            var lbl = OptionLabel(o);
+                            if (!string.IsNullOrEmpty(lbl)) q.Options.Add(lbl);
+                        }
                     }
                     _session.SetPendingQuestion(q);
                     break;
@@ -798,18 +877,18 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 {
                     var t = new PendingTasks
                     {
-                        ToolUseId = (string)payload?["tool_use_id"],
-                        Summary = (string)payload?["summary"] ?? data,
+                        ToolUseId = AsString(payload?["tool_use_id"]),
+                        Summary = AsString(payload?["summary"]) ?? data,
                     };
                     _session.SetPendingTasks(t);
                     break;
                 }
                 case "session":
-                    var sid = (int?)payload?["id"];
+                    var sid = AsInt(payload?["id"]);
                     if (sid.HasValue && sid.Value > 0) Settings.CoderSessionId = sid.Value;
                     break;
                 case "error":
-                    _session.AddError((string)payload?["message"] ?? data);
+                    _session.AddError(AsString(payload?["message"]) ?? data);
                     break;
                 case "message_complete":
                     _session.FinishAssistant();

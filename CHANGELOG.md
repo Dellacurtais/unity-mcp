@@ -5,6 +5,14 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.14] - 2026-05-09
+
+### Fixed
+
+- `ArgumentException: Can not convert Object to String` thrown from `DispatchEvent` when a question event arrived with `options` as `[{label, value}, …]` instead of plain strings. Direct `(string)JToken` casts blow up on JObject/JArray. Replaced every direct cast in the SSE handler with shape-tolerant helpers (`AsString`, `AsInt`, `AsBool`, `AsDouble`, `OptionLabel`) — they read primitives directly and serialise complex tokens to JSON when needed. Affects every event field in `text`, `tool_call_start`, `tool_call_result`, `plan`, `question`, `tasks_posted`, `session`, `error`.
+- One bad event no longer kills the whole SSE stream. `DispatchEvent` now wraps the dispatch body in try/catch and logs the offending event as a system note (`(skipped malformed \`<type>\` event: …)`) so the rest of the response keeps streaming.
+- `OptionLabel` extracts a human-readable label from option objects: prefers `label`, falls back to `text`, then `value`, then `id`, finally serialised JSON.
+
 ## [0.3.13] - 2026-05-09
 
 ### Added
