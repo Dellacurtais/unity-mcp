@@ -4,7 +4,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools
 {
     /// Shared JSON Schema fragments used across tool input schemas. Centralised
     /// so that pose/color shapes stay consistent across the MCP surface.
-    internal static class SchemaHelpers
+    /// Public because the secondary PostFx asmdef references it from its own
+    /// tools (CreateVolumeTool etc.).
+    public static class SchemaHelpers
     {
         public static JObject Vec3Schema => new JObject
         {

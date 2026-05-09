@@ -5,6 +5,12 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-05-09
+
+### Fixed
+
+- `SchemaHelpers` was declared `internal`, which broke compilation of the secondary `com.maicon.scene-analyzer.Editor.PostFx` asmdef (CS0122) since it lives in a separate assembly that references — but cannot see internals of — the main asmdef. Promoted to `public`. `ReadHelpers`, `NewtonsoftCheck`, and `PostFxBootstrap` stay `internal` because they're only consumed within their own asmdef.
+
 ## [0.3.3] - 2026-05-09
 
 ### Fixed
