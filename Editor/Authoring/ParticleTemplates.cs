@@ -124,7 +124,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     main.startSize = 0.2f;
                     main.startColor = new ParticleSystem.MinMaxGradient(Color.white);
                     emission.rateOverTime = 50f;
-                    shape.shapeType = ParticleSystemShapeType.Edge;
+                    shape.shapeType = ParticleSystemShapeType.SingleSidedEdge;
                     shape.radius = 0.1f;
                     var trails = ps.trails;
                     trails.enabled = true;
