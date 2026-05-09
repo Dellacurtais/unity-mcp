@@ -5,6 +5,13 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.11] - 2026-05-09
+
+### Fixed
+
+- Context preamble was only injected when the session was auto-created **inside** Send (the `sessionId == 0` branch). If the user clicked the **New** button first to create the session and only then sent a message, Send saw `sessionId > 0`, skipped auto-create, and didn't inject — the agent never saw the Unity context, skills list, or `ext_unity_editor__*` tool inventory.
+- Replaced the `justCreatedSession` boolean with a thread-safe `_pendingPreambleFor` set on the client. Both creation paths (auto-create on Send AND the New-button fire-and-forget) now mark the new session id as pending. The next Send to that exact id consumes the flag and injects the preamble — regardless of which button created the session. Continuing existing sessions or switching to one via "Set" still goes through unchanged.
+
 ## [0.3.10] - 2026-05-09
 
 ### Fixed

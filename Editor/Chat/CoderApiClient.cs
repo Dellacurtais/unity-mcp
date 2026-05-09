@@ -29,6 +29,26 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         private CancellationTokenSource _cts;
         private readonly ChatSession _session;
 
+        // Sessions that haven't received their context preamble yet. A session
+        // gets added here the moment it's created (either via auto-create on
+        // Send, or via the "New" button) and removed on the first message that
+        // actually goes out. Locked because creation and send paths can race
+        // on different Task.Run continuations.
+        private readonly HashSet<int> _pendingPreambleFor = new();
+        private readonly object _preambleLock = new();
+
+        private void MarkPreamblePending(int sessionId)
+        {
+            if (sessionId <= 0) return;
+            lock (_preambleLock) _pendingPreambleFor.Add(sessionId);
+        }
+
+        private bool ConsumePendingPreamble(int sessionId)
+        {
+            if (sessionId <= 0) return false;
+            lock (_preambleLock) return _pendingPreambleFor.Remove(sessionId);
+        }
+
         public CoderApiClient(ChatSession session)
         {
             _session = session;
@@ -69,7 +89,6 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 try
                 {
                     int effectiveSessionId = sessionId;
-                    bool justCreatedSession = false;
 
                     if (effectiveSessionId <= 0)
                     {
@@ -114,11 +133,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                             Settings.CoderSessionId = effectiveSessionId;
                             _session.AddSystemNote($"[2/3] session id = {effectiveSessionId}");
                         });
-                        justCreatedSession = true;
+                        MarkPreamblePending(effectiveSessionId);
                     }
 
                     var contentToSend = content;
-                    if (justCreatedSession && injectContext)
+                    var injectThisTime = injectContext && ConsumePendingPreamble(effectiveSessionId);
+                    if (injectThisTime)
                     {
                         var preamble = string.IsNullOrEmpty(customPreamble)
                             ? BuildDefaultPreamble(unityRoot)
@@ -191,10 +211,16 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     var id = await CreateSessionAsync(serverUrl, token, projectId, title, provider, model, agent, ct);
                     if (id > 0)
                     {
+                        // Mark the session as needing the preamble on its first
+                        // outgoing message — the New button creates the session
+                        // here, but the message hasn't been sent yet, so the
+                        // Send path won't see "justCreatedSession" anymore.
+                        MarkPreamblePending(id);
                         await MainThreadDispatcher.RunAsync(() =>
                         {
                             Settings.CoderSessionId = id;
-                            _session.AddSystemNote($"session #{id} created (project_id={projectId})");
+                            _session.AddSystemNote(
+                                $"session #{id} created (project_id={projectId}) — preamble will be injected on first message");
                         });
                     }
                 }
