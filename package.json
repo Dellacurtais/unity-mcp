@@ -1,0 +1,24 @@
+{
+  "name": "com.maicon.scene-analyzer",
+  "version": "0.1.0",
+  "displayName": "Scene Analyzer (MCP)",
+  "description": "Real-time Unity scene analysis, validation, and authoring exposed to AI agents over MCP. Provides read, analyze, discover, and write tools for the active scene; integrates with Undo and runs as a local HTTP MCP server.",
+  "unity": "6000.1",
+  "author": {
+    "name": "Maicon Gonçalez",
+    "email": "maiconspo@gmail.com"
+  },
+  "keywords": [
+    "mcp",
+    "ai",
+    "editor",
+    "scene",
+    "performance",
+    "validation",
+    "authoring"
+  ],
+  "category": "Editor",
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  }
+}

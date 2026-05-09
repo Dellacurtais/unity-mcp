@@ -1,0 +1,14 @@
+{
+    "name": "com.maicon.scene-analyzer",
+    "rootNamespace": "Maicon.SceneAnalyzer",
+    "references": [],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

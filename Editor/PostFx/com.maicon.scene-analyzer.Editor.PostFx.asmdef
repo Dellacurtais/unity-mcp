@@ -1,0 +1,29 @@
+{
+    "name": "com.maicon.scene-analyzer.Editor.PostFx",
+    "rootNamespace": "Maicon.SceneAnalyzer.Editor",
+    "references": [
+        "com.maicon.scene-analyzer",
+        "com.maicon.scene-analyzer.Editor",
+        "Unity.Newtonsoft.Json",
+        "Unity.RenderPipelines.Core.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "SCENE_ANALYZER_HAS_SRP_CORE"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.render-pipelines.core",
+            "expression": "10.0.0",
+            "define": "SCENE_ANALYZER_HAS_SRP_CORE"
+        }
+    ],
+    "noEngineReferences": false
+}
