@@ -23,6 +23,8 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KCoderProjectId = "Maicon.SceneAnalyzer.Coder.ProjectId";
         private const string KCoderProvider = "Maicon.SceneAnalyzer.Coder.Provider";
         private const string KCoderModel = "Maicon.SceneAnalyzer.Coder.Model";
+        private const string KCoderAutoInjectContext = "Maicon.SceneAnalyzer.Coder.AutoInjectContext";
+        private const string KCoderCustomPreamble = "Maicon.SceneAnalyzer.Coder.CustomPreamble";
 
         public static bool AutoStartServer
         {
@@ -100,6 +102,22 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             get => EditorPrefs.GetString(KCoderModel, "");
             set => EditorPrefs.SetString(KCoderModel, value ?? "");
+        }
+
+        public static bool CoderAutoInjectContext
+        {
+            get => EditorPrefs.GetBool(KCoderAutoInjectContext, true);
+            set => EditorPrefs.SetBool(KCoderAutoInjectContext, value);
+        }
+
+        /// Optional override for the auto-injected preamble. When empty, the
+        /// plugin builds a default that mentions the Unity workdir, the
+        /// `ext_unity_editor__*` MCP tools, and the unity-scene-audit /
+        /// unity-scene-author skills. When set, this string is used verbatim.
+        public static string CoderCustomPreamble
+        {
+            get => EditorPrefs.GetString(KCoderCustomPreamble, "");
+            set => EditorPrefs.SetString(KCoderCustomPreamble, value ?? "");
         }
 
         public static string GenerateToken()

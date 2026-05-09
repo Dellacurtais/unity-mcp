@@ -1,6 +1,7 @@
 using Maicon.SceneAnalyzer.Editor.Chat;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Maicon.SceneAnalyzer.Editor.Window
 {
@@ -15,6 +16,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private Vector2 _scroll;
         private string _input = "";
         private bool _showSettings = true;
+        private bool _showPreamble = false;
+        private Vector2 _preambleScroll;
         private string _urlBuffer;
         private string _sessionBuffer;
 
@@ -61,6 +64,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             EditorGUILayout.Space();
 
             DrawSettingsSection();
+            EditorGUILayout.Space();
+            DrawPreambleSection();
             EditorGUILayout.Space();
             DrawMessageList();
             EditorGUILayout.Space();
@@ -180,6 +185,49 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     "The Unity MCP server (Window → Scene Analyzer) must also be running and registered in the dashboard " +
                     "so the agent can call ext_unity_editor__* tools while replying.",
                     MessageType.Info);
+            }
+        }
+
+        private void DrawPreambleSection()
+        {
+            _showPreamble = EditorGUILayout.Foldout(_showPreamble,
+                $"Context preamble ({(Settings.CoderAutoInjectContext ? "on" : "off")})",
+                true);
+            if (!_showPreamble) return;
+
+            using (new EditorGUI.IndentLevelScope())
+            {
+                Settings.CoderAutoInjectContext = EditorGUILayout.Toggle(
+                    new GUIContent("Auto-inject on first message",
+                        "Prepends a short context block to the FIRST message of every newly-created session. " +
+                        "The block tells the agent which ext_unity_editor__* tools and which skills " +
+                        "(unity-scene-audit, unity-scene-author) are available."),
+                    Settings.CoderAutoInjectContext);
+
+                EditorGUILayout.LabelField("Custom override (empty = use default)", EditorStyles.miniBoldLabel);
+                using (var sv = new EditorGUILayout.ScrollViewScope(_preambleScroll, GUILayout.MinHeight(80), GUILayout.MaxHeight(160)))
+                {
+                    _preambleScroll = sv.scrollPosition;
+                    var newPre = EditorGUILayout.TextArea(Settings.CoderCustomPreamble ?? "", GUILayout.ExpandHeight(true));
+                    if (newPre != Settings.CoderCustomPreamble) Settings.CoderCustomPreamble = newPre;
+                }
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (GUILayout.Button("Preview default", GUILayout.Width(120)))
+                    {
+                        var preview = CoderApiClient.BuildDefaultPreamble(Bootstrap.UnityProjectRoot);
+                        Bootstrap.ChatSession?.AddSystemNote("PREVIEW DEFAULT PREAMBLE:\n" + preview);
+                    }
+                    if (GUILayout.Button("Clear override", GUILayout.Width(110)))
+                        Settings.CoderCustomPreamble = "";
+                    GUILayout.FlexibleSpace();
+                }
+
+                EditorGUILayout.HelpBox(
+                    "The preamble is injected only on the FIRST message of each new session. " +
+                    "Once the agent has the context, follow-up messages go through unchanged.",
+                    MessageType.None);
             }
         }
 

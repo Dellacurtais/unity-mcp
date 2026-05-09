@@ -53,9 +53,13 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             _cts = new CancellationTokenSource();
             var token2 = _cts.Token;
             var unityRoot = Bootstrap.UnityProjectRoot;
+            var injectContext = Settings.CoderAutoInjectContext;
+            var customPreamble = Settings.CoderCustomPreamble;
             _ = Task.Run(async () =>
             {
                 int effectiveSessionId = sessionId;
+                bool justCreatedSession = false;
+
                 if (effectiveSessionId <= 0)
                 {
                     // Auto-ensure project exists for this Unity workdir.
@@ -86,9 +90,47 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                         return; // CreateSessionAsync already logged the error
                     }
                     await MainThreadDispatcher.RunAsync(() => Settings.CoderSessionId = effectiveSessionId);
+                    justCreatedSession = true;
                 }
-                await SendAsync(serverUrl, token, effectiveSessionId, content, profile, agent, token2);
+
+                // On the very first message of a freshly created session,
+                // prepend a short preamble so the agent immediately knows
+                // about the Unity workdir, the `ext_unity_editor__*` tools,
+                // and the unity-scene-audit / unity-scene-author skills.
+                var contentToSend = content;
+                if (justCreatedSession && injectContext)
+                {
+                    var preamble = string.IsNullOrEmpty(customPreamble)
+                        ? BuildDefaultPreamble(unityRoot)
+                        : customPreamble;
+                    contentToSend = preamble + "\n\n---\n\n" + content;
+                    await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                        "(injected unity context preamble on first message of this session)"));
+                }
+
+                await SendAsync(serverUrl, token, effectiveSessionId, contentToSend, profile, agent, token2);
             });
+        }
+
+        public static string BuildDefaultPreamble(string unityRoot)
+        {
+            return
+                "[unity-context — auto-injected by the Unity Scene Analyzer plugin on the first message of this session]\n\n" +
+                $"You're connected to the Unity Editor running at `{unityRoot ?? "<unknown>"}` via the Model Context Protocol. " +
+                "The plugin `com.maicon.scene-analyzer` exposes scene tools prefixed `ext_unity_editor__` — examples: " +
+                "`read_hierarchy`, `read_scene`, `read_component`, `get_project_meta`, `screenshot_scene_view`, " +
+                "`analyze_performance`, `validate_scene`, `list_assets`, `search_assets`, `read_asset_metadata`, " +
+                "`find_references_to_asset`, `create_primitive`, `create_empty`, `instantiate_prefab`, `create_light`, " +
+                "`create_camera`, `create_audio_source`, `create_particle_system`, `set_transform`, `set_camera_props`, " +
+                "`set_property`, `add_component`, `set_material`, `parent_object`, `delete_object`, `apply_changeset`, " +
+                "`select_object`, `set_render_settings`, plus (when URP/HDRP is installed) `create_volume`, " +
+                "`add_post_effect`, `set_post_effect_property`, `apply_color_grading`. They appear in your tools/list automatically.\n\n" +
+                "Two skills live under `.claude/skills/` of this project. Invoke them **by name** via the skill-runner tool when the user's intent matches:\n" +
+                "- `unity-scene-audit` — read-only diagnostic flow (performance + validation). Use when the user asks to audit, diagnose, " +
+                "find broken refs, or understand the scene.\n" +
+                "- `unity-scene-author` — authoring flow with `apply_changeset` (create/modify/post-fx/render-settings) preserving Unity Undo. " +
+                "Use when the user asks to create, modify, decorate, or stylize the scene.\n\n" +
+                "Subsequent messages in this session don't need this preamble — the agent should remember. Now respond to the user message that follows.";
         }
 
         /// Public entry point so the UI's "New" button can create a session

@@ -5,6 +5,21 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-05-09
+
+### Added
+
+- **Auto-injected Unity context preamble on the first message of every new session.** When the chat client auto-creates a session (because Settings.CoderSessionId == 0), it prepends a short Markdown block to the user's first message describing: the Unity workdir, the full set of `ext_unity_editor__*` MCP tools available, and the two installed skills (`unity-scene-audit`, `unity-scene-author`) with their trigger conditions. The agent can then act immediately without first probing tools/list or guessing skill names — relevant for D:\MCP's name-based skill invocation tool.
+- `Settings.CoderAutoInjectContext` (default true) — kill switch.
+- `Settings.CoderCustomPreamble` — optional verbatim override of the default preamble.
+- Coder Chat panel: new "Context preamble" foldout with the toggle, the override textarea, a Preview-default button (dumps the resolved default into the transcript as a system note), and a Clear-override button.
+- `CoderApiClient.BuildDefaultPreamble(unityRoot)` — public helper used by both the runtime injection and the preview button.
+
+### Notes
+
+- Injection runs **only** on the first POST after a session is freshly created. Continuing an existing session (Settings.CoderSessionId > 0) sends the user's message unchanged — the agent already has the prior turns in its history.
+- Subsequent runs of `/api/coder/sessions/<N>/messages` aren't bloated with the preamble.
+
 ## [0.3.6] - 2026-05-09
 
 ### Added
