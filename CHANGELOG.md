@@ -5,6 +5,12 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-05-09
+
+### Fixed
+
+- Shipped `.meta` files for every folder, script, asmdef, README/CHANGELOG, and `package.json`. UPM treats anything under `Packages/` as immutable — without committed metas, Unity logs `Asset ... has no meta file, but it's in an immutable folder. The asset will be ignored.` for every file (~95 errors) and the plugin's assemblies never compile, so the menu items don't register. With metas in place, the package now imports cleanly via Git URL.
+
 ## [0.3.1] - 2026-05-09
 
 ### Added
