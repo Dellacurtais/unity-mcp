@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
+using FormattingNs = Newtonsoft.Json.Formatting;
 
 namespace Maicon.SceneAnalyzer.Editor.Chat
 {
@@ -51,7 +52,247 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
             _cts = new CancellationTokenSource();
             var token2 = _cts.Token;
-            _ = Task.Run(() => SendAsync(serverUrl, token, sessionId, content, profile, agent, token2));
+            var unityRoot = Bootstrap.UnityProjectRoot;
+            _ = Task.Run(async () =>
+            {
+                int effectiveSessionId = sessionId;
+                if (effectiveSessionId <= 0)
+                {
+                    // Auto-ensure project exists for this Unity workdir.
+                    int projectId = Settings.CoderProjectId;
+                    if (projectId <= 0)
+                    {
+                        await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                            "auto-detecting D:\\MCP project for this Unity workdir…"));
+                        projectId = await EnsureProjectAsync(serverUrl, token, unityRoot, token2);
+                        if (projectId <= 0) { _cts = null; return; }
+                        await MainThreadDispatcher.RunAsync(() => Settings.CoderProjectId = projectId);
+                    }
+
+                    // Auto-create session. The dashboard does the same dance.
+                    await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                        "auto-creating session (sessionId was 0)…"));
+                    effectiveSessionId = await CreateSessionAsync(
+                        serverUrl, token,
+                        projectId,
+                        $"Unity chat — {DateTime.Now:HH:mm:ss}",
+                        Settings.CoderProvider,
+                        Settings.CoderModel,
+                        agent,
+                        token2);
+                    if (effectiveSessionId <= 0)
+                    {
+                        _cts = null;
+                        return; // CreateSessionAsync already logged the error
+                    }
+                    await MainThreadDispatcher.RunAsync(() => Settings.CoderSessionId = effectiveSessionId);
+                }
+                await SendAsync(serverUrl, token, effectiveSessionId, content, profile, agent, token2);
+            });
+        }
+
+        /// Public entry point so the UI's "New" button can create a session
+        /// without sending a message. Fire-and-forget; status is reported via
+        /// the ChatSession transcript.
+        public void CreateSession(string serverUrl, string token, int projectId, string title,
+            string provider, string model, string agent)
+        {
+            if (IsRunning)
+            {
+                _session.AddSystemNote("a request is already in flight — cancel it first");
+                return;
+            }
+            _cts = new CancellationTokenSource();
+            var ct = _cts.Token;
+            _ = Task.Run(async () =>
+            {
+                var id = await CreateSessionAsync(serverUrl, token, projectId, title, provider, model, agent, ct);
+                if (id > 0)
+                {
+                    await MainThreadDispatcher.RunAsync(() =>
+                    {
+                        Settings.CoderSessionId = id;
+                        _session.AddSystemNote($"session #{id} created (project_id={projectId})");
+                    });
+                }
+                _cts = null;
+            });
+        }
+
+        /// Fire-and-forget for the UI: ensures a D:\MCP project exists matching
+        /// the Unity workdir (creates if needed) and stores its id in Settings.
+        public void EnsureProject(string serverUrl, string token, string unityRoot)
+        {
+            if (IsRunning) { _session.AddSystemNote("a request is already in flight — cancel it first"); return; }
+            _cts = new CancellationTokenSource();
+            var ct = _cts.Token;
+            _ = Task.Run(async () =>
+            {
+                var id = await EnsureProjectAsync(serverUrl, token, unityRoot, ct);
+                if (id > 0)
+                {
+                    await MainThreadDispatcher.RunAsync(() =>
+                    {
+                        Settings.CoderProjectId = id;
+                        _session.AddSystemNote($"project #{id} ready (root_path={unityRoot})");
+                    });
+                }
+                _cts = null;
+            });
+        }
+
+        /// Resolves the D:\MCP `project_id` for the given Unity workdir. Lists
+        /// `/api/projects`, returns the id of one whose `root_path` matches the
+        /// Unity workdir (case-insensitive, separator-insensitive). Creates a
+        /// new one via POST if no match.
+        public async Task<int> EnsureProjectAsync(string serverUrl, string token, string unityRoot, CancellationToken ct)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(unityRoot))
+                {
+                    await MainThreadDispatcher.RunAsync(() =>
+                        _session.AddError("Unity project root is empty — cannot auto-detect project"));
+                    return 0;
+                }
+
+                // 1. List
+                var listUrl = $"{serverUrl.TrimEnd('/')}/api/projects";
+                using (var lreq = new HttpRequestMessage(HttpMethod.Get, listUrl))
+                {
+                    if (!string.IsNullOrEmpty(token))
+                        lreq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    using var lresp = await Http.SendAsync(lreq, ct);
+                    var lbody = await lresp.Content.ReadAsStringAsync();
+                    if (!lresp.IsSuccessStatusCode)
+                    {
+                        await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                            $"list projects failed — HTTP {(int)lresp.StatusCode}: {lbody}"));
+                        return 0;
+                    }
+                    var arr = JArray.Parse(lbody);
+                    var target = NormalizePath(unityRoot);
+                    foreach (var p in arr)
+                    {
+                        var rp = (string)p["root_path"];
+                        if (string.IsNullOrEmpty(rp)) continue;
+                        if (string.Equals(NormalizePath(rp), target, StringComparison.OrdinalIgnoreCase))
+                        {
+                            var existingId = (int?)p["id"] ?? 0;
+                            if (existingId > 0)
+                            {
+                                await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                                    $"matched existing project #{existingId} for {unityRoot}"));
+                                return existingId;
+                            }
+                        }
+                    }
+                }
+
+                // 2. Create
+                var createUrl = $"{serverUrl.TrimEnd('/')}/api/projects";
+                var createBody = new JObject
+                {
+                    ["root_path"] = unityRoot,
+                    ["name"] = SafeName(unityRoot),
+                    ["description"] = "Auto-created by Unity Scene Analyzer plugin",
+                };
+                using (var creq = new HttpRequestMessage(HttpMethod.Post, createUrl)
+                {
+                    Content = new StringContent(createBody.ToString(FormattingNs.None),
+                        Encoding.UTF8, "application/json"),
+                })
+                {
+                    if (!string.IsNullOrEmpty(token))
+                        creq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    using var cresp = await Http.SendAsync(creq, ct);
+                    var cbody = await cresp.Content.ReadAsStringAsync();
+                    if (!cresp.IsSuccessStatusCode)
+                    {
+                        await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                            $"create project failed — HTTP {(int)cresp.StatusCode}: {cbody}"));
+                        return 0;
+                    }
+                    var created = JObject.Parse(cbody);
+                    var id = (int?)created["id"] ?? 0;
+                    if (id > 0)
+                    {
+                        await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                            $"created project #{id} '{(string)created["name"]}' for {unityRoot}"));
+                    }
+                    return id;
+                }
+            }
+            catch (OperationCanceledException) { return 0; }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                await MainThreadDispatcher.RunAsync(() => _session.AddError($"ensure project error: {e.Message}"));
+                return 0;
+            }
+        }
+
+        private static string NormalizePath(string p)
+        {
+            if (string.IsNullOrEmpty(p)) return "";
+            try { p = Path.GetFullPath(p); } catch { /* leave as-is */ }
+            return p.Replace('\\', '/').TrimEnd('/').ToLowerInvariant();
+        }
+
+        private static string SafeName(string root)
+        {
+            try { return Path.GetFileName(root.TrimEnd('/', '\\')); }
+            catch { return root; }
+        }
+
+        public async Task<int> CreateSessionAsync(string serverUrl, string token, int projectId,
+            string title, string provider, string model, string agent, CancellationToken ct)
+        {
+            try
+            {
+                var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions";
+                var body = new JObject
+                {
+                    ["project_id"] = projectId,
+                    ["title"] = string.IsNullOrEmpty(title) ? $"Unity chat — {DateTime.Now:yyyy-MM-dd HH:mm}" : title,
+                    ["provider"] = string.IsNullOrEmpty(provider) ? "anthropic" : provider,
+                };
+                if (!string.IsNullOrEmpty(model)) body["model"] = model;
+                if (!string.IsNullOrEmpty(agent)) body["agent"] = agent;
+
+                using var req = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(body.ToString(Newtonsoft.Json.Formatting.None),
+                        Encoding.UTF8, "application/json"),
+                };
+                if (!string.IsNullOrEmpty(token))
+                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+                using var resp = await Http.SendAsync(req, ct);
+                var bodyText = await resp.Content.ReadAsStringAsync();
+                if (!resp.IsSuccessStatusCode)
+                {
+                    await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                        $"create session failed — HTTP {(int)resp.StatusCode}: {resp.ReasonPhrase}\n{bodyText}"));
+                    return 0;
+                }
+
+                var json = JObject.Parse(bodyText);
+                var id = (int?)json["id"] ?? 0;
+                if (id <= 0)
+                {
+                    await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                        $"create session returned no id: {bodyText}"));
+                }
+                return id;
+            }
+            catch (OperationCanceledException) { return 0; }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                await MainThreadDispatcher.RunAsync(() => _session.AddError($"create session error: {e.Message}"));
+                return 0;
+            }
         }
 
         private async Task SendAsync(string serverUrl, string token, int sessionId, string content,

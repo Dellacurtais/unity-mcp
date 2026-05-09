@@ -31,13 +31,28 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _urlBuffer = Settings.CoderUrl;
             _sessionBuffer = Settings.CoderSessionId.ToString();
             if (Bootstrap.ChatSession != null)
+            {
                 Bootstrap.ChatSession.OnChanged += Repaint;
+                // Re-sync the Session text field whenever the transcript updates,
+                // so the field reflects the id assigned by auto-create or by the
+                // 'New' button instead of stale local state.
+                Bootstrap.ChatSession.OnChanged += SyncSessionBuffer;
+            }
+        }
+
+        private void SyncSessionBuffer()
+        {
+            var s = Settings.CoderSessionId.ToString();
+            if (s != _sessionBuffer) _sessionBuffer = s;
         }
 
         private void OnDisable()
         {
             if (Bootstrap.ChatSession != null)
+            {
                 Bootstrap.ChatSession.OnChanged -= Repaint;
+                Bootstrap.ChatSession.OnChanged -= SyncSessionBuffer;
+            }
         }
 
         private void OnGUI()
@@ -82,18 +97,63 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
                 using (new EditorGUILayout.HorizontalScope())
                 {
+                    GUILayout.Label("Project", GUILayout.Width(60));
+                    var newProjectId = EditorGUILayout.IntField(Settings.CoderProjectId, GUILayout.Width(80));
+                    if (newProjectId >= 0 && newProjectId != Settings.CoderProjectId)
+                        Settings.CoderProjectId = newProjectId;
+                    if (GUILayout.Button("Auto-detect", GUILayout.Width(110)))
+                    {
+                        Bootstrap.ChatClient?.EnsureProject(
+                            Settings.CoderUrl,
+                            Settings.CoderToken,
+                            Bootstrap.UnityProjectRoot);
+                    }
+                    if (GUILayout.Button("Clear", GUILayout.Width(50)))
+                    {
+                        Settings.CoderProjectId = 0;
+                    }
+                }
+                EditorGUILayout.LabelField("Workdir", Bootstrap.UnityProjectRoot ?? "(unavailable)", EditorStyles.miniLabel);
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Label("Provider", GUILayout.Width(60));
+                    var providers = new[] { "anthropic", "openai", "google", "ollama" };
+                    int pIdx = System.Array.IndexOf(providers, Settings.CoderProvider);
+                    if (pIdx < 0) pIdx = 0;
+                    var newPIdx = EditorGUILayout.Popup(pIdx, providers, GUILayout.Width(140));
+                    if (newPIdx != pIdx) Settings.CoderProvider = providers[newPIdx];
+
+                    GUILayout.Label("Model", GUILayout.Width(50));
+                    var newModel = EditorGUILayout.TextField(Settings.CoderModel ?? "");
+                    if (newModel != Settings.CoderModel) Settings.CoderModel = newModel;
+                }
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
                     GUILayout.Label("Session", GUILayout.Width(60));
                     _sessionBuffer = EditorGUILayout.TextField(_sessionBuffer);
-                    if (GUILayout.Button("Set", GUILayout.Width(60)))
+                    if (GUILayout.Button("Set", GUILayout.Width(50)))
                     {
                         if (int.TryParse(_sessionBuffer, out var sid)) Settings.CoderSessionId = sid;
                     }
-                    if (GUILayout.Button("New", GUILayout.Width(60)))
+                    if (GUILayout.Button("New", GUILayout.Width(50)))
                     {
-                        // Server creates the session lazily on first message; we just clear the id.
-                        Settings.CoderSessionId = 0;
-                        _sessionBuffer = "0";
+                        // Actually creates a session on the server (POST /api/coder/sessions)
+                        // and stores the returned id. Auto-fills the field on success.
                         Bootstrap.ChatSession?.Reset();
+                        Bootstrap.ChatClient?.CreateSession(
+                            Settings.CoderUrl,
+                            Settings.CoderToken,
+                            Settings.CoderProjectId,
+                            $"Unity chat — {System.DateTime.Now:HH:mm:ss}",
+                            Settings.CoderProvider,
+                            Settings.CoderModel,
+                            Settings.CoderAgent);
+                    }
+                    if (GUILayout.Button("Refresh", GUILayout.Width(70)))
+                    {
+                        _sessionBuffer = Settings.CoderSessionId.ToString();
                     }
                 }
 
@@ -103,7 +163,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     var profiles = new[] { "auto", "bootstrap", "navigate", "full" };
                     int idx = System.Array.IndexOf(profiles, Settings.CoderProfile);
                     if (idx < 0) idx = 0;
-                    var newIdx = EditorGUILayout.Popup(idx, profiles);
+                    var newIdx = EditorGUILayout.Popup(idx, profiles, GUILayout.Width(140));
                     if (newIdx != idx) Settings.CoderProfile = profiles[newIdx];
 
                     GUILayout.Label("Agent", GUILayout.Width(50));
@@ -115,8 +175,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 }
 
                 EditorGUILayout.HelpBox(
-                    "The Unity MCP server (Window → Scene Analyzer) must also be running " +
-                    "and registered in the dashboard so the agent can call ext_unity_editor__* tools while replying.",
+                    "If Project=0, Send auto-detects (or creates) a D:\\MCP project pointing at this Unity workdir, " +
+                    "then auto-creates a session, then sends. Use 'Auto-detect' to do just step 1 without sending. " +
+                    "The Unity MCP server (Window → Scene Analyzer) must also be running and registered in the dashboard " +
+                    "so the agent can call ext_unity_editor__* tools while replying.",
                     MessageType.Info);
             }
         }

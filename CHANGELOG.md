@@ -5,6 +5,33 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-05-09
+
+### Added
+
+- **Auto-detect / auto-create D:\MCP project** for the Unity workdir. The chat client now calls `GET /api/projects`, matches `root_path` against `Bootstrap.UnityProjectRoot` (= `Path.GetDirectoryName(Application.dataPath)`), and reuses the existing project's id when found. If no match, it `POST /api/projects` with `{ root_path, name, description }` and stores the new id in `Settings.CoderProjectId`. Path comparison is case-insensitive and normalises Windows backslashes vs forward slashes.
+- `Bootstrap.UnityProjectRoot` static property (captured at editor load) — safe to read from background tasks.
+- "Auto-detect" button in the Coder Chat panel next to the Project field — runs the discover/create flow without sending a message. Clears the field with the "Clear" button if the dev wants to re-trigger detection on next Send.
+
+### Changed
+
+- `Send` flow when `CoderProjectId == 0`: auto-ensure project → auto-create session → POST message. Three calls behind one click; the dev never has to open the dashboard to set up project + session.
+- `Send` flow when `CoderProjectId > 0`: respects the explicit id, only auto-creates the session.
+- Coder Chat HelpBox updated to describe the auto-detect path.
+
+## [0.3.5] - 2026-05-09
+
+### Fixed
+
+- Coder Chat session creation. Earlier mapping of the D:\MCP coder API was wrong: `POST /api/coder/sessions/:id/messages` does **not** create sessions implicitly — the server returns `Session 0 not found`. Now the chat client calls `POST /api/coder/sessions` first (with `project_id`, `title`, `provider`, optional `model`/`agent`), captures the returned `id`, then sends the message.
+- The "New" button now hits the create-session endpoint for real instead of zeroing local state. Auto-creation also kicks in when the user clicks Send with `sessionId == 0`.
+- Session text field re-syncs after a successful create/auto-create so the dev sees the assigned id without clicking Refresh.
+
+### Added
+
+- Settings: `CoderProjectId` (default 1, must exist in the dashboard), `CoderProvider` (anthropic/openai/google/ollama), `CoderModel` (optional override).
+- Coder Chat panel exposes those new fields under "Coder server" foldout: Project / Provider dropdown / Model text. HelpBox below explains the auto-create flow.
+
 ## [0.3.4] - 2026-05-09
 
 ### Fixed

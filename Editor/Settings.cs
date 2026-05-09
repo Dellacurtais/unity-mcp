@@ -20,6 +20,9 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KCoderSessionId = "Maicon.SceneAnalyzer.Coder.SessionId";
         private const string KCoderProfile = "Maicon.SceneAnalyzer.Coder.Profile";
         private const string KCoderAgent = "Maicon.SceneAnalyzer.Coder.Agent";
+        private const string KCoderProjectId = "Maicon.SceneAnalyzer.Coder.ProjectId";
+        private const string KCoderProvider = "Maicon.SceneAnalyzer.Coder.Provider";
+        private const string KCoderModel = "Maicon.SceneAnalyzer.Coder.Model";
 
         public static bool AutoStartServer
         {
@@ -79,6 +82,24 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             get => EditorPrefs.GetString(KCoderAgent, "build");
             set => EditorPrefs.SetString(KCoderAgent, value ?? "build");
+        }
+
+        public static int CoderProjectId
+        {
+            get => EditorPrefs.GetInt(KCoderProjectId, 1);
+            set => EditorPrefs.SetInt(KCoderProjectId, value);
+        }
+
+        public static string CoderProvider
+        {
+            get => EditorPrefs.GetString(KCoderProvider, "anthropic");
+            set => EditorPrefs.SetString(KCoderProvider, value ?? "anthropic");
+        }
+
+        public static string CoderModel
+        {
+            get => EditorPrefs.GetString(KCoderModel, "");
+            set => EditorPrefs.SetString(KCoderModel, value ?? "");
         }
 
         public static string GenerateToken()

@@ -31,6 +31,11 @@ namespace Maicon.SceneAnalyzer.Editor
         public static ChatSession ChatSession { get; private set; }
         public static CoderApiClient ChatClient { get; private set; }
 
+        /// Absolute path of the Unity project root (parent of `Assets/`). Captured
+        /// at editor load on the main thread so it can be safely used from any
+        /// background task (e.g. the chat client's project auto-discovery).
+        public static string UnityProjectRoot { get; private set; }
+
         public static event Action OnIssuesChanged;
         public static event Action<string> OnServerLog;
 
@@ -42,6 +47,8 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             try
             {
+                UnityProjectRoot = System.IO.Path.GetDirectoryName(UnityEngine.Application.dataPath);
+
                 Snapshot = new SceneSnapshot();
                 AssetCatalog = new AssetCatalog();
                 Runner = new AnalysisRunner(Snapshot);
