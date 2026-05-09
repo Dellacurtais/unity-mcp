@@ -85,10 +85,14 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 {
                     GUILayout.Label("URL", GUILayout.Width(60));
                     _urlBuffer = EditorGUILayout.TextField(_urlBuffer);
-                    if (GUILayout.Button("Save", GUILayout.Width(60)))
+                    if (GUILayout.Button("Save", GUILayout.Width(50)))
                     {
                         Settings.CoderUrl = _urlBuffer.Trim();
                         Bootstrap.RecordEntry($"[chat] coder URL set to {Settings.CoderUrl}");
+                    }
+                    if (GUILayout.Button("Test", GUILayout.Width(50)))
+                    {
+                        Bootstrap.ChatClient?.TestConnection(_urlBuffer.Trim(), Settings.CoderToken);
                     }
                 }
 

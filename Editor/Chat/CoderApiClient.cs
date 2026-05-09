@@ -52,63 +52,97 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
             _cts = new CancellationTokenSource();
             var token2 = _cts.Token;
+            // Capture EVERYTHING from Settings on the main thread before
+            // dispatching — EditorPrefs is not guaranteed thread-safe.
             var unityRoot = Bootstrap.UnityProjectRoot;
             var injectContext = Settings.CoderAutoInjectContext;
             var customPreamble = Settings.CoderCustomPreamble;
+            var snapProjectId = Settings.CoderProjectId;
+            var snapProvider = Settings.CoderProvider;
+            var snapModel = Settings.CoderModel;
+
             _ = Task.Run(async () =>
             {
-                int effectiveSessionId = sessionId;
-                bool justCreatedSession = false;
-
-                if (effectiveSessionId <= 0)
+                try
                 {
-                    // Auto-ensure project exists for this Unity workdir.
-                    int projectId = Settings.CoderProjectId;
-                    if (projectId <= 0)
-                    {
-                        await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
-                            "auto-detecting D:\\MCP project for this Unity workdir…"));
-                        projectId = await EnsureProjectAsync(serverUrl, token, unityRoot, token2);
-                        if (projectId <= 0) { _cts = null; return; }
-                        await MainThreadDispatcher.RunAsync(() => Settings.CoderProjectId = projectId);
-                    }
+                    int effectiveSessionId = sessionId;
+                    bool justCreatedSession = false;
 
-                    // Auto-create session. The dashboard does the same dance.
-                    await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
-                        "auto-creating session (sessionId was 0)…"));
-                    effectiveSessionId = await CreateSessionAsync(
-                        serverUrl, token,
-                        projectId,
-                        $"Unity chat — {DateTime.Now:HH:mm:ss}",
-                        Settings.CoderProvider,
-                        Settings.CoderModel,
-                        agent,
-                        token2);
                     if (effectiveSessionId <= 0)
                     {
-                        _cts = null;
-                        return; // CreateSessionAsync already logged the error
+                        int projectId = snapProjectId;
+                        if (projectId <= 0)
+                        {
+                            await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                                $"[1/3] ensuring D:\\MCP project for workdir `{unityRoot}` (server={serverUrl})…"));
+                            projectId = await EnsureProjectAsync(serverUrl, token, unityRoot, token2);
+                            if (projectId <= 0)
+                            {
+                                await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                                    "step 1 failed (no project id) — aborting before session/message"));
+                                return;
+                            }
+                            await MainThreadDispatcher.RunAsync(() =>
+                            {
+                                Settings.CoderProjectId = projectId;
+                                _session.AddSystemNote($"[1/3] project id = {projectId}");
+                            });
+                        }
+                        else
+                        {
+                            await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                                $"[1/3] using existing project id {projectId}"));
+                        }
+
+                        await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                            $"[2/3] creating session under project {projectId}…"));
+                        effectiveSessionId = await CreateSessionAsync(
+                            serverUrl, token, projectId,
+                            $"Unity chat — {DateTime.Now:HH:mm:ss}",
+                            snapProvider, snapModel, agent, token2);
+                        if (effectiveSessionId <= 0)
+                        {
+                            await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                                "step 2 failed (no session id) — aborting before message"));
+                            return;
+                        }
+                        await MainThreadDispatcher.RunAsync(() =>
+                        {
+                            Settings.CoderSessionId = effectiveSessionId;
+                            _session.AddSystemNote($"[2/3] session id = {effectiveSessionId}");
+                        });
+                        justCreatedSession = true;
                     }
-                    await MainThreadDispatcher.RunAsync(() => Settings.CoderSessionId = effectiveSessionId);
-                    justCreatedSession = true;
-                }
 
-                // On the very first message of a freshly created session,
-                // prepend a short preamble so the agent immediately knows
-                // about the Unity workdir, the `ext_unity_editor__*` tools,
-                // and the unity-scene-audit / unity-scene-author skills.
-                var contentToSend = content;
-                if (justCreatedSession && injectContext)
-                {
-                    var preamble = string.IsNullOrEmpty(customPreamble)
-                        ? BuildDefaultPreamble(unityRoot)
-                        : customPreamble;
-                    contentToSend = preamble + "\n\n---\n\n" + content;
+                    var contentToSend = content;
+                    if (justCreatedSession && injectContext)
+                    {
+                        var preamble = string.IsNullOrEmpty(customPreamble)
+                            ? BuildDefaultPreamble(unityRoot)
+                            : customPreamble;
+                        contentToSend = preamble + "\n\n---\n\n" + content;
+                        await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                            "(injected unity context preamble on first message of this session)"));
+                    }
+
                     await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
-                        "(injected unity context preamble on first message of this session)"));
+                        $"[3/3] POST /api/coder/sessions/{effectiveSessionId}/messages …"));
+                    await SendAsync(serverUrl, token, effectiveSessionId, contentToSend, profile, agent, token2);
                 }
-
-                await SendAsync(serverUrl, token, effectiveSessionId, contentToSend, profile, agent, token2);
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                    try
+                    {
+                        await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                            $"unhandled error in send pipeline: {e.GetType().Name}: {e.Message}"));
+                    }
+                    catch { /* last-ditch — don't mask the original */ }
+                }
+                finally
+                {
+                    _cts = null;
+                }
             });
         }
 
@@ -148,16 +182,25 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             var ct = _cts.Token;
             _ = Task.Run(async () =>
             {
-                var id = await CreateSessionAsync(serverUrl, token, projectId, title, provider, model, agent, ct);
-                if (id > 0)
+                try
                 {
-                    await MainThreadDispatcher.RunAsync(() =>
+                    var id = await CreateSessionAsync(serverUrl, token, projectId, title, provider, model, agent, ct);
+                    if (id > 0)
                     {
-                        Settings.CoderSessionId = id;
-                        _session.AddSystemNote($"session #{id} created (project_id={projectId})");
-                    });
+                        await MainThreadDispatcher.RunAsync(() =>
+                        {
+                            Settings.CoderSessionId = id;
+                            _session.AddSystemNote($"session #{id} created (project_id={projectId})");
+                        });
+                    }
                 }
-                _cts = null;
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                    await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                        $"create session pipeline error: {e.GetType().Name}: {e.Message}"));
+                }
+                finally { _cts = null; }
             });
         }
 
@@ -170,16 +213,65 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             var ct = _cts.Token;
             _ = Task.Run(async () =>
             {
-                var id = await EnsureProjectAsync(serverUrl, token, unityRoot, ct);
-                if (id > 0)
+                try
                 {
-                    await MainThreadDispatcher.RunAsync(() =>
+                    var id = await EnsureProjectAsync(serverUrl, token, unityRoot, ct);
+                    if (id > 0)
                     {
-                        Settings.CoderProjectId = id;
-                        _session.AddSystemNote($"project #{id} ready (root_path={unityRoot})");
-                    });
+                        await MainThreadDispatcher.RunAsync(() =>
+                        {
+                            Settings.CoderProjectId = id;
+                            _session.AddSystemNote($"project #{id} ready (root_path={unityRoot})");
+                        });
+                    }
                 }
-                _cts = null;
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                    await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                        $"ensure project pipeline error: {e.GetType().Name}: {e.Message}"));
+                }
+                finally { _cts = null; }
+            });
+        }
+
+        /// Quick connectivity probe: GETs /api/projects and reports the HTTP
+        /// status to the chat transcript. Useful when "I sent a message and
+        /// nothing happened" — tells you immediately if the URL/port/token are
+        /// pointing at a reachable D:\MCP instance.
+        public void TestConnection(string serverUrl, string token)
+        {
+            if (IsRunning) { _session.AddSystemNote("a request is already in flight — cancel it first"); return; }
+            _cts = new CancellationTokenSource();
+            var ct = _cts.Token;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var url = $"{serverUrl.TrimEnd('/')}/api/projects";
+                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    if (!string.IsNullOrEmpty(token))
+                        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    using var resp = await Http.SendAsync(req, ct);
+                    var body = await resp.Content.ReadAsStringAsync();
+                    var status = $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}";
+                    int count = 0;
+                    try { count = JArray.Parse(body).Count; } catch { /* not an array */ }
+                    await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                        $"connection ok: GET {url} → {status} ({count} projects visible)"));
+                }
+                catch (HttpRequestException e)
+                {
+                    await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                        $"connection failed: {e.Message}\nCheck: is the D:\\MCP runtime running and is the URL/port correct?"));
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                    await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                        $"test connection error: {e.GetType().Name}: {e.Message}"));
+                }
+                finally { _cts = null; }
             });
         }
 

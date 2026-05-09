@@ -5,6 +5,18 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-05-09
+
+### Fixed
+
+- Send pipeline used to swallow exceptions silently (`_ = Task.Run(...)` with no try/catch). If anything failed before the HTTP request — EditorPrefs read on a non-main thread, URL parse, etc. — neither the Console nor the chat transcript reported it. The user just saw "nothing happened." Wrapped every Task.Run continuation (Send, CreateSession, EnsureProject) in try/catch + `Debug.LogException` + chat-transcript error. Also `_cts = null` now lives in a `finally` block so a cancelled run doesn't wedge `IsRunning`.
+- All `Settings.*` reads needed for the Send pipeline are now snapshotted on the main thread before `Task.Run`, instead of being touched from background threads.
+
+### Added
+
+- Per-step progress notes in the transcript: `[1/3] ensuring D:\MCP project…`, `[2/3] creating session…`, `[3/3] POST /api/coder/sessions/N/messages…`. When something goes wrong you can see exactly which hop failed.
+- **Test connection** button next to the URL field — does a `GET /api/projects` and reports the HTTP status + the project count it can see. Quick way to verify the runtime is up and the URL/port/token are correct without needing to send a real message.
+
 ## [0.3.7] - 2026-05-09
 
 ### Added
