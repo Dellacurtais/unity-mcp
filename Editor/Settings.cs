@@ -25,6 +25,7 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KCoderModel = "Maicon.SceneAnalyzer.Coder.Model";
         private const string KCoderAutoInjectContext = "Maicon.SceneAnalyzer.Coder.AutoInjectContext";
         private const string KCoderCustomPreamble = "Maicon.SceneAnalyzer.Coder.CustomPreamble";
+        private const string KCoderThinking = "Maicon.SceneAnalyzer.Coder.Thinking";
 
         public static bool AutoStartServer
         {
@@ -118,6 +119,16 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             get => EditorPrefs.GetString(KCoderCustomPreamble, "");
             set => EditorPrefs.SetString(KCoderCustomPreamble, value ?? "");
+        }
+
+        /// "Think mode" toggle. When true, every outgoing message body carries
+        /// `thinking: true`, which the D:\MCP coder maps to provider-specific
+        /// extended-thinking flags (Anthropic budget_tokens, OpenAI
+        /// reasoning_effort, Gemini thinkingConfig).
+        public static bool CoderThinking
+        {
+            get => EditorPrefs.GetBool(KCoderThinking, false);
+            set => EditorPrefs.SetBool(KCoderThinking, value);
         }
 
         public static string GenerateToken()

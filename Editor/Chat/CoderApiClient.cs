@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -60,6 +62,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             var snapProjectId = Settings.CoderProjectId;
             var snapProvider = Settings.CoderProvider;
             var snapModel = Settings.CoderModel;
+            var snapThinking = Settings.CoderThinking;
 
             _ = Task.Run(async () =>
             {
@@ -126,8 +129,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     }
 
                     await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
-                        $"[3/3] POST /api/coder/sessions/{effectiveSessionId}/messages …"));
-                    await SendAsync(serverUrl, token, effectiveSessionId, contentToSend, profile, agent, token2);
+                        $"[3/3] POST /api/coder/sessions/{effectiveSessionId}/messages " +
+                        (snapThinking ? "(🧠 think mode)" : "") + " …"));
+                    await SendAsync(serverUrl, token, effectiveSessionId, contentToSend, profile, agent, snapThinking, token2);
                 }
                 catch (Exception e)
                 {
@@ -379,6 +383,80 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             catch { return root; }
         }
 
+        /// Fire-and-forget: fetches `/api/coder/providers`, fills
+        /// Bootstrap.CoderProviders, fires the OnCoderProvidersChanged event so
+        /// the window dropdowns refresh.
+        public void RefreshProviders(string serverUrl, string token)
+        {
+            if (IsRunning) { _session.AddSystemNote("a request is already in flight — cancel it first"); return; }
+            _cts = new CancellationTokenSource();
+            var ct = _cts.Token;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var url = $"{serverUrl.TrimEnd('/')}/api/coder/providers";
+                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    if (!string.IsNullOrEmpty(token))
+                        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    using var resp = await Http.SendAsync(req, ct);
+                    var body = await resp.Content.ReadAsStringAsync();
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                            $"refresh providers failed — HTTP {(int)resp.StatusCode}: {body}"));
+                        return;
+                    }
+                    var root = JObject.Parse(body);
+                    var arr = root["providers"] as JArray ?? new JArray();
+                    var list = new List<CoderProviderInfo>();
+                    foreach (var p in arr)
+                    {
+                        var info = new CoderProviderInfo
+                        {
+                            Id = (string)p["id"],
+                            Name = (string)p["name"],
+                            Kind = (string)p["kind"],
+                            IsDefault = (bool?)p["is_default"] ?? false,
+                            HasKey = (bool?)p["has_key"] ?? false,
+                        };
+                        var models = p["models"] as JArray;
+                        if (models != null)
+                        {
+                            foreach (var m in models)
+                            {
+                                info.Models.Add(new CoderModelInfo
+                                {
+                                    Id = (string)m["id"],
+                                    Name = (string)m["name"],
+                                    Mode = (string)m["mode"],
+                                    ContextWindow = (int?)m["context_window"],
+                                    DefaultMaxTokens = (int?)m["default_max_tokens"],
+                                });
+                            }
+                        }
+                        list.Add(info);
+                    }
+
+                    await MainThreadDispatcher.RunAsync(() =>
+                    {
+                        Bootstrap.CoderProviders = list;
+                        Bootstrap.NotifyCoderProvidersChanged();
+                        _session.AddSystemNote(
+                            $"providers refreshed: {list.Count} provider(s), " +
+                            $"{list.Sum(p => p.Models.Count)} model(s) total");
+                    });
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                    await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                        $"refresh providers error: {e.GetType().Name}: {e.Message}"));
+                }
+                finally { _cts = null; }
+            });
+        }
+
         public async Task<int> CreateSessionAsync(string serverUrl, string token, int projectId,
             string title, string provider, string model, string agent, CancellationToken ct)
         {
@@ -430,7 +508,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         }
 
         private async Task SendAsync(string serverUrl, string token, int sessionId, string content,
-            string profile, string agent, CancellationToken ct)
+            string profile, string agent, bool thinking, CancellationToken ct)
         {
             try
             {
@@ -441,6 +519,11 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     ["profile"] = profile,
                     ["agent"] = agent,
                 };
+                // THINK MODE — provider-agnostic boolean. The D:\MCP coder maps
+                // it server-side to Anthropic budget_tokens, OpenAI
+                // reasoning_effort, or Gemini thinkingConfig depending on the
+                // active provider.
+                if (thinking) body["thinking"] = true;
 
                 using var req = new HttpRequestMessage(HttpMethod.Post, url)
                 {

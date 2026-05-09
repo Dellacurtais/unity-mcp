@@ -36,6 +36,15 @@ namespace Maicon.SceneAnalyzer.Editor
         /// background task (e.g. the chat client's project auto-discovery).
         public static string UnityProjectRoot { get; private set; }
 
+        /// Cache of providers/models fetched from `GET /api/coder/providers`.
+        /// Populated by CoderApiClient.RefreshProviders. The window reads this
+        /// to render the provider/model dropdowns dynamically.
+        public static List<CoderProviderInfo> CoderProviders { get; set; } = new();
+        public static event Action OnCoderProvidersChanged;
+        public static void NotifyCoderProvidersChanged() {
+            try { OnCoderProvidersChanged?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
+        }
+
         public static event Action OnIssuesChanged;
         public static event Action<string> OnServerLog;
 

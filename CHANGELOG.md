@@ -5,6 +5,20 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-05-09
+
+### Added
+
+- **Live providers/models list** from `GET /api/coder/providers`. The Coder Chat panel's Provider and Model dropdowns now reflect what's actually configured + has API keys + use-for-coder enabled in the dashboard, instead of the previous hardcoded `anthropic/openai/google/ollama` list. Provider entries show flags `[no key]` and `(default)`. Selecting a provider repopulates the Model dropdown (with context-window size as a hint). Auto-fetched on first window open + a manual **Refresh** button.
+- **🧠 Think mode** toggle in the message composer (right next to Send). When on, every outgoing message body carries `thinking: true`, which the D:\MCP coder maps to the active provider's extended-thinking primitive: Anthropic `thinking.budget_tokens`, OpenAI `reasoning_effort: high`, Gemini `thinkingConfig`. Per-message flag — flip it on/off as needed; persisted via EditorPrefs across editor restarts. Status note in the transcript shows when a message went out with think mode on.
+- `Bootstrap.CoderProviders` cache + `OnCoderProvidersChanged` event so the window refreshes when the cache updates.
+- New DTO file `Editor/Chat/CoderProviderInfo.cs` (`CoderProviderInfo` + `CoderModelInfo`).
+
+### Changed
+
+- `SendAsync` signature gained a `bool thinking` parameter; the calling pipeline (`Send`) snapshots `Settings.CoderThinking` on the main thread and passes it through, consistent with the other Settings values.
+- The `[3/3] POST …` progress note now appends `(🧠 think mode)` when the flag is on.
+
 ## [0.3.8] - 2026-05-09
 
 ### Fixed

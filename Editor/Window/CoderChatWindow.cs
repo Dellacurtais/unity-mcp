@@ -1,7 +1,7 @@
+using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Chat;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 namespace Maicon.SceneAnalyzer.Editor.Window
 {
@@ -41,6 +41,13 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 // 'New' button instead of stale local state.
                 Bootstrap.ChatSession.OnChanged += SyncSessionBuffer;
             }
+            Bootstrap.OnCoderProvidersChanged += Repaint;
+
+            // First-open auto-fetch: populate the dropdowns from the live server
+            // so the dev sees real provider/model choices instead of "anthropic"
+            // hardcoded.
+            if (Bootstrap.CoderProviders != null && Bootstrap.CoderProviders.Count == 0)
+                Bootstrap.ChatClient?.RefreshProviders(Settings.CoderUrl, Settings.CoderToken);
         }
 
         private void SyncSessionBuffer()
@@ -56,6 +63,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 Bootstrap.ChatSession.OnChanged -= Repaint;
                 Bootstrap.ChatSession.OnChanged -= SyncSessionBuffer;
             }
+            Bootstrap.OnCoderProvidersChanged -= Repaint;
         }
 
         private void OnGUI()
@@ -124,19 +132,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 }
                 EditorGUILayout.LabelField("Workdir", Bootstrap.UnityProjectRoot ?? "(unavailable)", EditorStyles.miniLabel);
 
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label("Provider", GUILayout.Width(60));
-                    var providers = new[] { "anthropic", "openai", "google", "ollama" };
-                    int pIdx = System.Array.IndexOf(providers, Settings.CoderProvider);
-                    if (pIdx < 0) pIdx = 0;
-                    var newPIdx = EditorGUILayout.Popup(pIdx, providers, GUILayout.Width(140));
-                    if (newPIdx != pIdx) Settings.CoderProvider = providers[newPIdx];
-
-                    GUILayout.Label("Model", GUILayout.Width(50));
-                    var newModel = EditorGUILayout.TextField(Settings.CoderModel ?? "");
-                    if (newModel != Settings.CoderModel) Settings.CoderModel = newModel;
-                }
+                DrawProviderModelRow();
 
                 using (new EditorGUILayout.HorizontalScope())
                 {
@@ -189,6 +185,70 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     "The Unity MCP server (Window → Scene Analyzer) must also be running and registered in the dashboard " +
                     "so the agent can call ext_unity_editor__* tools while replying.",
                     MessageType.Info);
+            }
+        }
+
+        private void DrawProviderModelRow()
+        {
+            var cache = Bootstrap.CoderProviders;
+            var hasCache = cache != null && cache.Count > 0;
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Label("Provider", GUILayout.Width(60));
+                if (hasCache)
+                {
+                    var ids = cache.Select(p =>
+                        p.Id + (p.HasKey ? "" : "  [no key]") + (p.IsDefault ? "  (default)" : "")
+                    ).ToArray();
+                    var rawIds = cache.Select(p => p.Id).ToArray();
+                    int pIdx = System.Array.IndexOf(rawIds, Settings.CoderProvider);
+                    if (pIdx < 0) pIdx = System.Array.FindIndex(cache.ToArray(), p => p.IsDefault);
+                    if (pIdx < 0) pIdx = 0;
+                    var newPIdx = EditorGUILayout.Popup(pIdx, ids, GUILayout.Width(220));
+                    if (newPIdx != pIdx) Settings.CoderProvider = rawIds[newPIdx];
+                }
+                else
+                {
+                    GUILayout.Label("(loading…)", EditorStyles.miniLabel);
+                }
+                if (GUILayout.Button("Refresh", GUILayout.Width(70)))
+                {
+                    Bootstrap.ChatClient?.RefreshProviders(Settings.CoderUrl, Settings.CoderToken);
+                }
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Label("Model", GUILayout.Width(60));
+                if (hasCache)
+                {
+                    var prov = cache.FirstOrDefault(p => p.Id == Settings.CoderProvider) ?? cache[0];
+                    if (prov.Models == null || prov.Models.Count == 0)
+                    {
+                        GUILayout.Label("(no models for this provider)", EditorStyles.miniLabel);
+                    }
+                    else
+                    {
+                        var modelIds = prov.Models.Select(m => m.Id).ToArray();
+                        var modelLabels = prov.Models.Select(m =>
+                            string.IsNullOrEmpty(m.Name) ? m.Id : $"{m.Name}  ({m.Id})"
+                        ).ToArray();
+                        int mIdx = System.Array.IndexOf(modelIds, Settings.CoderModel);
+                        if (mIdx < 0) mIdx = 0;
+                        var newMIdx = EditorGUILayout.Popup(mIdx, modelLabels, GUILayout.Width(280));
+                        if (newMIdx != mIdx) Settings.CoderModel = modelIds[newMIdx];
+
+                        var mInfo = prov.Models[mIdx];
+                        if (mInfo.ContextWindow.HasValue)
+                            GUILayout.Label($"ctx={mInfo.ContextWindow.Value:N0}", EditorStyles.miniLabel);
+                    }
+                }
+                else
+                {
+                    var newModel = EditorGUILayout.TextField(Settings.CoderModel ?? "");
+                    if (newModel != Settings.CoderModel) Settings.CoderModel = newModel;
+                }
             }
         }
 
@@ -311,6 +371,16 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _input = EditorGUILayout.TextArea(_input, GUILayout.MinHeight(60));
             using (new EditorGUILayout.HorizontalScope())
             {
+                // 🧠 Think mode toggle — persistent. Sets `thinking: true` on
+                // every outgoing message body until toggled off. Server maps it
+                // to provider-specific extended-thinking flags.
+                var newThinking = GUILayout.Toggle(Settings.CoderThinking,
+                    new GUIContent(" 🧠 Think mode",
+                        "Sends `thinking: true` on every outgoing message. Server-side: " +
+                        "Anthropic budget_tokens, OpenAI reasoning_effort=high, Gemini thinkingConfig."),
+                    "Button", GUILayout.Width(120));
+                if (newThinking != Settings.CoderThinking) Settings.CoderThinking = newThinking;
+
                 GUILayout.FlexibleSpace();
                 using (new EditorGUI.DisabledScope(string.IsNullOrWhiteSpace(_input)
                     || (Bootstrap.ChatSession?.IsRunning ?? false)))
