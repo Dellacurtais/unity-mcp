@@ -265,6 +265,118 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             });
         }
 
+        /// Answer an `ask_user` tool call. POSTs the dev's answer to
+        /// `/api/coder/sessions/<id>/answer` so the paused run continues.
+        public void AnswerQuestion(string serverUrl, string token, int sessionId, string questionId, string answer)
+        {
+            if (sessionId <= 0) { _session.AddError("session not set — cannot answer"); return; }
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/answer";
+                    var body = new JObject { ["answer"] = answer };
+                    if (!string.IsNullOrEmpty(questionId)) body["question_id"] = questionId;
+                    using var req = new HttpRequestMessage(HttpMethod.Post, url)
+                    {
+                        Content = new StringContent(body.ToString(FormattingNs.None), Encoding.UTF8, "application/json"),
+                    };
+                    if (!string.IsNullOrEmpty(token))
+                        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    using var resp = await Http.SendAsync(req);
+                    var bodyText = await resp.Content.ReadAsStringAsync();
+                    await MainThreadDispatcher.RunAsync(() =>
+                    {
+                        _session.ClearPendingQuestion();
+                        if (resp.IsSuccessStatusCode)
+                            _session.AddSystemNote($"answered question with: {answer}");
+                        else
+                            _session.AddError($"answer failed: HTTP {(int)resp.StatusCode} — {bodyText}");
+                    });
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                    await MainThreadDispatcher.RunAsync(() => _session.AddError($"answer error: {e.Message}"));
+                }
+            });
+        }
+
+        /// Approve / reject a plan submitted by the agent via `submit_plan`.
+        public void RespondToPlan(string serverUrl, string token, int sessionId, string planId, bool approved, string note)
+        {
+            if (sessionId <= 0) { _session.AddError("session not set — cannot respond to plan"); return; }
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/plan-response";
+                    var body = new JObject
+                    {
+                        ["approved"] = approved,
+                        ["note"] = note ?? "",
+                    };
+                    if (!string.IsNullOrEmpty(planId)) body["plan_id"] = planId;
+                    using var req = new HttpRequestMessage(HttpMethod.Post, url)
+                    {
+                        Content = new StringContent(body.ToString(FormattingNs.None), Encoding.UTF8, "application/json"),
+                    };
+                    if (!string.IsNullOrEmpty(token))
+                        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    using var resp = await Http.SendAsync(req);
+                    var bodyText = await resp.Content.ReadAsStringAsync();
+                    await MainThreadDispatcher.RunAsync(() =>
+                    {
+                        _session.ClearPendingPlan();
+                        if (resp.IsSuccessStatusCode)
+                            _session.AddSystemNote($"plan {(approved ? "approved" : "rejected")}{(string.IsNullOrEmpty(note) ? "" : $" — {note}")}");
+                        else
+                            _session.AddError($"plan response failed: HTTP {(int)resp.StatusCode} — {bodyText}");
+                    });
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                    await MainThreadDispatcher.RunAsync(() => _session.AddError($"plan response error: {e.Message}"));
+                }
+            });
+        }
+
+        public void RespondToTasks(string serverUrl, string token, int sessionId, string toolUseId, bool approved)
+        {
+            if (sessionId <= 0) { _session.AddError("session not set — cannot respond to tasks"); return; }
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/tasks-response";
+                    var body = new JObject { ["approved"] = approved };
+                    if (!string.IsNullOrEmpty(toolUseId)) body["tool_use_id"] = toolUseId;
+                    using var req = new HttpRequestMessage(HttpMethod.Post, url)
+                    {
+                        Content = new StringContent(body.ToString(FormattingNs.None), Encoding.UTF8, "application/json"),
+                    };
+                    if (!string.IsNullOrEmpty(token))
+                        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    using var resp = await Http.SendAsync(req);
+                    var bodyText = await resp.Content.ReadAsStringAsync();
+                    await MainThreadDispatcher.RunAsync(() =>
+                    {
+                        _session.ClearPendingTasks();
+                        if (resp.IsSuccessStatusCode)
+                            _session.AddSystemNote($"tasks {(approved ? "approved" : "rejected")}");
+                        else
+                            _session.AddError($"tasks response failed: HTTP {(int)resp.StatusCode} — {bodyText}");
+                    });
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                    await MainThreadDispatcher.RunAsync(() => _session.AddError($"tasks response error: {e.Message}"));
+                }
+            });
+        }
+
         /// Quick connectivity probe: GETs /api/projects and reports the HTTP
         /// status to the chat transcript. Useful when "I sent a message and
         /// nothing happened" — tells you immediately if the URL/port/token are
@@ -658,14 +770,40 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                         (double?)payload?["duration_ms"] ?? 0.0);
                     break;
                 case "plan":
-                    _session.AddSystemNote($"PLAN:\n{(string)payload?["plan"] ?? data}");
+                {
+                    var p = new PendingPlan
+                    {
+                        Id = (string)payload?["id"],
+                        Plan = (string)payload?["plan"] ?? data,
+                    };
+                    _session.SetPendingPlan(p);
                     break;
+                }
                 case "question":
-                    _session.AddSystemNote($"QUESTION: {(string)payload?["question"] ?? data}");
+                {
+                    var q = new PendingQuestion
+                    {
+                        Id = (string)payload?["id"],
+                        Question = (string)payload?["question"] ?? data,
+                        AllowFreeform = (bool?)payload?["allowFreeform"] ?? true,
+                    };
+                    if (payload?["options"] is JArray optsArr)
+                    {
+                        foreach (var o in optsArr) q.Options.Add((string)o);
+                    }
+                    _session.SetPendingQuestion(q);
                     break;
+                }
                 case "tasks_posted":
-                    _session.AddSystemNote($"TASKS: {payload?["summary"] ?? data}");
+                {
+                    var t = new PendingTasks
+                    {
+                        ToolUseId = (string)payload?["tool_use_id"],
+                        Summary = (string)payload?["summary"] ?? data,
+                    };
+                    _session.SetPendingTasks(t);
                     break;
+                }
                 case "session":
                     var sid = (int?)payload?["id"];
                     if (sid.HasValue && sid.Value > 0) Settings.CoderSessionId = sid.Value;

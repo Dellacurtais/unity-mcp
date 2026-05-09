@@ -5,6 +5,26 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.12] - 2026-05-09
+
+### Added
+
+- **Reply to agent prompts inside the Unity chat**. The `ask_user`/`submit_plan`/`submit_tasks` events now drive proper interactive UI:
+  - **Question** card (yellow tint) — renders the agent's question, shows option buttons when the agent supplied them, and a free-form text area + Send/Skip when allowFreeform.
+  - **Plan** card (blue tint) — shows the submitted plan with optional note, Approve / Reject buttons.
+  - **Tasks** card (green tint) — Approve / Reject for `submit_tasks`.
+  - Each card POSTs to the matching endpoint (`/answer`, `/plan-response`, `/tasks-response`) and clears itself on success.
+- New CoderApiClient methods: `AnswerQuestion`, `RespondToPlan`, `RespondToTasks`.
+- New ChatSession state: `CurrentQuestion`, `CurrentPlan`, `CurrentTasks`, populated by the SSE handler.
+
+### Changed
+
+- **Chat message rendering rewritten**. Messages now use word-wrapped labels with computed heights so long text doesn't get clipped to a single line. Each role renders with a tinted background bubble (User=blue, Coder=gray, System=pale yellow, Error=red). Tool-call result text wraps too.
+- Window default minSize bumped from 360×480 to 420×560.
+- The Conversation scroll view now `ExpandHeight(true)` so it grows to fill the window, instead of being capped at 280px.
+- Input area minHeight bumped from 60 to 70.
+- HelpBox in Settings clarifies: "if the new project doesn't show in the dashboard, F5 the dashboard tab" — covers the most common cause of "I don't see my project" (just a stale browser cache, since `GET /api/projects` reads `SELECT * FROM projects` with no filters).
+
 ## [0.3.11] - 2026-05-09
 
 ### Fixed

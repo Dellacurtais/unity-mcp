@@ -11,21 +11,25 @@ namespace Maicon.SceneAnalyzer.Editor.Window
     /// into Unity for ext_unity_editor__* tools while answering.
     public sealed class CoderChatWindow : EditorWindow
     {
-        private const string AgentProfileName = "build";
-
         private Vector2 _scroll;
         private string _input = "";
+        private string _answerInput = "";
+        private string _planNote = "";
         private bool _showSettings = true;
         private bool _showPreamble = false;
         private Vector2 _preambleScroll;
         private string _urlBuffer;
         private string _sessionBuffer;
+        private static GUIStyle _bubbleStyle;
+        private static GUIStyle _bubbleHeaderRoleStyle;
+        private static GUIStyle _bodyStyle;
+        private static GUIStyle _toolCallStyle;
 
         [MenuItem("Window/Coder Chat (Scene Analyzer)")]
         public static void Open()
         {
             var w = GetWindow<CoderChatWindow>("Coder Chat");
-            w.minSize = new Vector2(380, 520);
+            w.minSize = new Vector2(420, 560);
             w.Show();
         }
 
@@ -36,16 +40,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             if (Bootstrap.ChatSession != null)
             {
                 Bootstrap.ChatSession.OnChanged += Repaint;
-                // Re-sync the Session text field whenever the transcript updates,
-                // so the field reflects the id assigned by auto-create or by the
-                // 'New' button instead of stale local state.
                 Bootstrap.ChatSession.OnChanged += SyncSessionBuffer;
             }
             Bootstrap.OnCoderProvidersChanged += Repaint;
 
-            // First-open auto-fetch: populate the dropdowns from the live server
-            // so the dev sees real provider/model choices instead of "anthropic"
-            // hardcoded.
             if (Bootstrap.CoderProviders != null && Bootstrap.CoderProviders.Count == 0)
                 Bootstrap.ChatClient?.RefreshProviders(Settings.CoderUrl, Settings.CoderToken);
         }
@@ -66,21 +64,41 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             Bootstrap.OnCoderProvidersChanged -= Repaint;
         }
 
+        private static void EnsureStyles()
+        {
+            if (_bubbleStyle != null) return;
+            _bubbleStyle = new GUIStyle(EditorStyles.helpBox)
+            {
+                padding = new RectOffset(10, 10, 8, 8),
+                margin = new RectOffset(2, 2, 4, 4),
+            };
+            _bubbleHeaderRoleStyle = new GUIStyle(EditorStyles.boldLabel) { fixedWidth = 70 };
+            _bodyStyle = new GUIStyle(EditorStyles.label)
+            {
+                wordWrap = true,
+                richText = false,
+            };
+            _toolCallStyle = new GUIStyle(EditorStyles.miniLabel)
+            {
+                wordWrap = true,
+                fontStyle = FontStyle.Italic,
+            };
+        }
+
         private void OnGUI()
         {
+            EnsureStyles();
             EditorGUILayout.LabelField("Coder Chat", EditorStyles.boldLabel);
-            EditorGUILayout.Space();
 
             DrawSettingsSection();
-            EditorGUILayout.Space();
             DrawPreambleSection();
-            EditorGUILayout.Space();
+            EditorGUILayout.Space(4);
             DrawMessageList();
-            EditorGUILayout.Space();
+            DrawPendingInteractions();
             DrawInput();
         }
 
-        // --- Sections ---
+        // -------------------- Settings --------------------
 
         private void DrawSettingsSection()
         {
@@ -99,9 +117,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                         Bootstrap.RecordEntry($"[chat] coder URL set to {Settings.CoderUrl}");
                     }
                     if (GUILayout.Button("Test", GUILayout.Width(50)))
-                    {
                         Bootstrap.ChatClient?.TestConnection(_urlBuffer.Trim(), Settings.CoderToken);
-                    }
                 }
 
                 using (new EditorGUILayout.HorizontalScope())
@@ -109,7 +125,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     GUILayout.Label("Token", GUILayout.Width(60));
                     var t = EditorGUILayout.PasswordField(Settings.CoderToken ?? "");
                     if (t != Settings.CoderToken) Settings.CoderToken = t;
-                    GUILayout.Label("(bearer; leave empty if MCP_AUTH_ENABLED=false)", EditorStyles.miniLabel);
+                    GUILayout.Label("(empty if MCP_AUTH_ENABLED=false)", EditorStyles.miniLabel);
                 }
 
                 using (new EditorGUILayout.HorizontalScope())
@@ -126,9 +142,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                             Bootstrap.UnityProjectRoot);
                     }
                     if (GUILayout.Button("Clear", GUILayout.Width(50)))
-                    {
                         Settings.CoderProjectId = 0;
-                    }
                 }
                 EditorGUILayout.LabelField("Workdir", Bootstrap.UnityProjectRoot ?? "(unavailable)", EditorStyles.miniLabel);
 
@@ -144,8 +158,6 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     }
                     if (GUILayout.Button("New", GUILayout.Width(50)))
                     {
-                        // Actually creates a session on the server (POST /api/coder/sessions)
-                        // and stores the returned id. Auto-fills the field on success.
                         Bootstrap.ChatSession?.Reset();
                         Bootstrap.ChatClient?.CreateSession(
                             Settings.CoderUrl,
@@ -157,9 +169,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                             Settings.CoderAgent);
                     }
                     if (GUILayout.Button("Refresh", GUILayout.Width(70)))
-                    {
                         _sessionBuffer = Settings.CoderSessionId.ToString();
-                    }
                 }
 
                 using (new EditorGUILayout.HorizontalScope())
@@ -181,9 +191,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
                 EditorGUILayout.HelpBox(
                     "If Project=0, Send auto-detects (or creates) a D:\\MCP project pointing at this Unity workdir, " +
-                    "then auto-creates a session, then sends. Use 'Auto-detect' to do just step 1 without sending. " +
-                    "The Unity MCP server (Window → Scene Analyzer) must also be running and registered in the dashboard " +
-                    "so the agent can call ext_unity_editor__* tools while replying.",
+                    "then auto-creates a session, then sends. New project not showing in dashboard? " +
+                    "F5 the dashboard browser tab.",
                     MessageType.Info);
             }
         }
@@ -213,9 +222,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     GUILayout.Label("(loading…)", EditorStyles.miniLabel);
                 }
                 if (GUILayout.Button("Refresh", GUILayout.Width(70)))
-                {
                     Bootstrap.ChatClient?.RefreshProviders(Settings.CoderUrl, Settings.CoderToken);
-                }
             }
 
             using (new EditorGUILayout.HorizontalScope())
@@ -252,6 +259,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             }
         }
 
+        // -------------------- Preamble --------------------
+
         private void DrawPreambleSection()
         {
             _showPreamble = EditorGUILayout.Foldout(_showPreamble,
@@ -263,9 +272,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 Settings.CoderAutoInjectContext = EditorGUILayout.Toggle(
                     new GUIContent("Auto-inject on first message",
-                        "Prepends a short context block to the FIRST message of every newly-created session. " +
-                        "The block tells the agent which ext_unity_editor__* tools and which skills " +
-                        "(unity-scene-audit, unity-scene-author) are available."),
+                        "Prepends a short context block to the FIRST message of every newly-created session."),
                     Settings.CoderAutoInjectContext);
 
                 EditorGUILayout.LabelField("Custom override (empty = use default)", EditorStyles.miniBoldLabel);
@@ -287,13 +294,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                         Settings.CoderCustomPreamble = "";
                     GUILayout.FlexibleSpace();
                 }
-
-                EditorGUILayout.HelpBox(
-                    "The preamble is injected only on the FIRST message of each new session. " +
-                    "Once the agent has the context, follow-up messages go through unchanged.",
-                    MessageType.None);
             }
         }
+
+        // -------------------- Conversation --------------------
 
         private void DrawMessageList()
         {
@@ -301,12 +305,15 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             var session = Bootstrap.ChatSession;
             if (session == null) { GUILayout.Label("(chat session not initialised)"); return; }
 
-            using (var sv = new EditorGUILayout.ScrollViewScope(_scroll, GUILayout.MinHeight(280), GUILayout.ExpandHeight(true)))
+            using (var sv = new EditorGUILayout.ScrollViewScope(_scroll,
+                GUILayout.ExpandHeight(true)))
             {
                 _scroll = sv.scrollPosition;
                 if (session.Messages.Count == 0)
                 {
-                    EditorGUILayout.HelpBox("No messages yet. Type below and press Send.", MessageType.None);
+                    EditorGUILayout.HelpBox("No messages yet. Type below and press Send. " +
+                                            "If Session=0 and Project=0, the plugin auto-creates both.",
+                        MessageType.None);
                 }
                 else
                 {
@@ -324,60 +331,197 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                         Bootstrap.ChatClient?.Cancel();
                 }
             }
-
-            if (!string.IsNullOrEmpty(session.LastError))
-                EditorGUILayout.HelpBox(session.LastError, MessageType.Error);
         }
 
         private void DrawMessage(ChatMessage msg)
         {
-            var bg = new GUIStyle(EditorStyles.helpBox);
-            using (new EditorGUILayout.VerticalScope(bg))
+            var prevColor = GUI.backgroundColor;
+            GUI.backgroundColor = ColorFor(msg.Role);
+            using (new EditorGUILayout.VerticalScope(_bubbleStyle))
             {
+                GUI.backgroundColor = prevColor;
+
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    GUILayout.Label(LabelFor(msg.Role), EditorStyles.boldLabel, GUILayout.Width(80));
+                    GUILayout.Label(LabelFor(msg.Role), _bubbleHeaderRoleStyle);
                     GUILayout.Label(msg.Timestamp.ToString("HH:mm:ss"), EditorStyles.miniLabel);
                     GUILayout.FlexibleSpace();
-                    if (msg.Streaming) GUILayout.Label("…", EditorStyles.miniLabel);
+                    if (msg.Streaming) GUILayout.Label("typing…", EditorStyles.miniLabel);
                 }
 
                 if (!string.IsNullOrEmpty(msg.Text))
                 {
-                    EditorGUILayout.SelectableLabel(msg.Text,
-                        EditorStyles.wordWrappedLabel,
-                        GUILayout.MinHeight(EditorGUIUtility.singleLineHeight),
+                    var width = position.width - 50;
+                    var content = new GUIContent(msg.Text);
+                    var height = _bodyStyle.CalcHeight(content, width);
+                    EditorGUILayout.SelectableLabel(msg.Text, _bodyStyle,
+                        GUILayout.MinHeight(height + 2),
                         GUILayout.ExpandHeight(true));
                 }
 
-                if (msg.ToolCalls != null)
+                if (msg.ToolCalls != null && msg.ToolCalls.Count > 0)
                 {
+                    GUILayout.Space(3);
                     foreach (var tc in msg.ToolCalls)
                     {
                         var line = tc.Completed
                             ? $"⚙ {tc.Name}  ({tc.DurationMs:0}ms)"
                             : $"⚙ {tc.Name}  …";
-                        GUILayout.Label(line, EditorStyles.miniLabel);
+                        GUILayout.Label(line, _toolCallStyle);
                         if (tc.Completed && !string.IsNullOrEmpty(tc.ResultText))
-                            GUILayout.Label("    " + tc.ResultText, EditorStyles.miniLabel);
+                        {
+                            var tcContent = new GUIContent("    " + tc.ResultText);
+                            var tcHeight = _toolCallStyle.CalcHeight(tcContent, position.width - 60);
+                            GUILayout.Label(tcContent, _toolCallStyle, GUILayout.MinHeight(tcHeight));
+                        }
                     }
                 }
             }
         }
 
+        // -------------------- Pending interactions --------------------
+
+        private void DrawPendingInteractions()
+        {
+            var session = Bootstrap.ChatSession;
+            if (session == null) return;
+
+            if (session.CurrentQuestion != null) DrawPendingQuestion(session, session.CurrentQuestion);
+            if (session.CurrentPlan != null) DrawPendingPlan(session, session.CurrentPlan);
+            if (session.CurrentTasks != null) DrawPendingTasks(session, session.CurrentTasks);
+            if (!string.IsNullOrEmpty(session.LastError))
+                EditorGUILayout.HelpBox(session.LastError, MessageType.Error);
+        }
+
+        private void DrawPendingQuestion(ChatSession session, PendingQuestion q)
+        {
+            var prev = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(1f, 0.95f, 0.6f);
+            using (new EditorGUILayout.VerticalScope(_bubbleStyle))
+            {
+                GUI.backgroundColor = prev;
+                GUILayout.Label("Agent is asking", EditorStyles.boldLabel);
+
+                var content = new GUIContent(q.Question);
+                var h = _bodyStyle.CalcHeight(content, position.width - 50);
+                EditorGUILayout.SelectableLabel(q.Question, _bodyStyle, GUILayout.MinHeight(h + 2));
+
+                if (q.Options != null && q.Options.Count > 0)
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        foreach (var opt in q.Options)
+                        {
+                            if (GUILayout.Button(opt, GUILayout.Height(24)))
+                                Bootstrap.ChatClient?.AnswerQuestion(
+                                    Settings.CoderUrl, Settings.CoderToken,
+                                    Settings.CoderSessionId, q.Id, opt);
+                        }
+                    }
+                }
+
+                if (q.AllowFreeform)
+                {
+                    GUILayout.Label("Or type a free-form answer:", EditorStyles.miniLabel);
+                    _answerInput = EditorGUILayout.TextArea(_answerInput, GUILayout.MinHeight(50));
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        GUILayout.FlexibleSpace();
+                        using (new EditorGUI.DisabledScope(string.IsNullOrWhiteSpace(_answerInput)))
+                        {
+                            if (GUILayout.Button("Send answer", GUILayout.Width(120)))
+                            {
+                                Bootstrap.ChatClient?.AnswerQuestion(
+                                    Settings.CoderUrl, Settings.CoderToken,
+                                    Settings.CoderSessionId, q.Id, _answerInput.Trim());
+                                _answerInput = "";
+                            }
+                        }
+                        if (GUILayout.Button("Skip", GUILayout.Width(60)))
+                        {
+                            session.ClearPendingQuestion();
+                        }
+                    }
+                }
+            }
+        }
+
+        private void DrawPendingPlan(ChatSession session, PendingPlan p)
+        {
+            var prev = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(0.7f, 0.85f, 1f);
+            using (new EditorGUILayout.VerticalScope(_bubbleStyle))
+            {
+                GUI.backgroundColor = prev;
+                GUILayout.Label("Plan submitted", EditorStyles.boldLabel);
+
+                var content = new GUIContent(p.Plan);
+                var h = _bodyStyle.CalcHeight(content, position.width - 50);
+                EditorGUILayout.SelectableLabel(p.Plan, _bodyStyle, GUILayout.MinHeight(h + 2));
+
+                GUILayout.Label("Note (optional):", EditorStyles.miniLabel);
+                _planNote = EditorGUILayout.TextArea(_planNote, GUILayout.MinHeight(40));
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.FlexibleSpace();
+                    if (GUILayout.Button("Approve", GUILayout.Width(110)))
+                    {
+                        Bootstrap.ChatClient?.RespondToPlan(
+                            Settings.CoderUrl, Settings.CoderToken,
+                            Settings.CoderSessionId, p.Id, true, _planNote);
+                        _planNote = "";
+                    }
+                    if (GUILayout.Button("Reject", GUILayout.Width(110)))
+                    {
+                        Bootstrap.ChatClient?.RespondToPlan(
+                            Settings.CoderUrl, Settings.CoderToken,
+                            Settings.CoderSessionId, p.Id, false, _planNote);
+                        _planNote = "";
+                    }
+                }
+            }
+        }
+
+        private void DrawPendingTasks(ChatSession session, PendingTasks t)
+        {
+            var prev = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(0.7f, 1f, 0.8f);
+            using (new EditorGUILayout.VerticalScope(_bubbleStyle))
+            {
+                GUI.backgroundColor = prev;
+                GUILayout.Label("Tasks submitted", EditorStyles.boldLabel);
+
+                var content = new GUIContent(t.Summary);
+                var h = _bodyStyle.CalcHeight(content, position.width - 50);
+                EditorGUILayout.SelectableLabel(t.Summary, _bodyStyle, GUILayout.MinHeight(h + 2));
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.FlexibleSpace();
+                    if (GUILayout.Button("Approve", GUILayout.Width(110)))
+                        Bootstrap.ChatClient?.RespondToTasks(
+                            Settings.CoderUrl, Settings.CoderToken,
+                            Settings.CoderSessionId, t.ToolUseId, true);
+                    if (GUILayout.Button("Reject", GUILayout.Width(110)))
+                        Bootstrap.ChatClient?.RespondToTasks(
+                            Settings.CoderUrl, Settings.CoderToken,
+                            Settings.CoderSessionId, t.ToolUseId, false);
+                }
+            }
+        }
+
+        // -------------------- Composer --------------------
+
         private void DrawInput()
         {
             EditorGUILayout.LabelField("Message", EditorStyles.boldLabel);
-            _input = EditorGUILayout.TextArea(_input, GUILayout.MinHeight(60));
+            _input = EditorGUILayout.TextArea(_input, GUILayout.MinHeight(70));
             using (new EditorGUILayout.HorizontalScope())
             {
-                // 🧠 Think mode toggle — persistent. Sets `thinking: true` on
-                // every outgoing message body until toggled off. Server maps it
-                // to provider-specific extended-thinking flags.
                 var newThinking = GUILayout.Toggle(Settings.CoderThinking,
                     new GUIContent(" 🧠 Think mode",
-                        "Sends `thinking: true` on every outgoing message. Server-side: " +
-                        "Anthropic budget_tokens, OpenAI reasoning_effort=high, Gemini thinkingConfig."),
+                        "Sends `thinking: true` on every outgoing message."),
                     "Button", GUILayout.Width(120));
                 if (newThinking != Settings.CoderThinking) Settings.CoderThinking = newThinking;
 
@@ -399,7 +543,6 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         {
             var text = _input.Trim();
             if (string.IsNullOrEmpty(text)) return;
-
             Bootstrap.ChatSession.AddUser(text);
             Bootstrap.ChatClient.Send(
                 Settings.CoderUrl,
@@ -412,6 +555,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             GUI.FocusControl(null);
         }
 
+        // -------------------- Helpers --------------------
+
         private static string LabelFor(ChatRole role)
         {
             switch (role)
@@ -421,6 +566,18 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 case ChatRole.System: return "System";
                 case ChatRole.Error: return "Error";
                 default: return role.ToString();
+            }
+        }
+
+        private static Color ColorFor(ChatRole role)
+        {
+            switch (role)
+            {
+                case ChatRole.User: return new Color(0.85f, 0.95f, 1f);     // light blue
+                case ChatRole.Assistant: return new Color(0.92f, 0.92f, 0.95f); // soft gray
+                case ChatRole.System: return new Color(0.95f, 0.95f, 0.85f);    // pale yellow
+                case ChatRole.Error: return new Color(1f, 0.85f, 0.85f);        // light red
+                default: return Color.white;
             }
         }
     }

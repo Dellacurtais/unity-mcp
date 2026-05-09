@@ -3,6 +3,26 @@ using System.Collections.Generic;
 
 namespace Maicon.SceneAnalyzer.Editor.Chat
 {
+    public sealed class PendingQuestion
+    {
+        public string Id;
+        public string Question;
+        public List<string> Options = new();
+        public bool AllowFreeform = true;
+    }
+
+    public sealed class PendingPlan
+    {
+        public string Id;
+        public string Plan;
+    }
+
+    public sealed class PendingTasks
+    {
+        public string ToolUseId;
+        public string Summary;
+    }
+
     /// In-memory message history for the embedded chat panel. Mirrors the
     /// transcript the dashboard would show, but lives in the editor so the
     /// dev never leaves Unity. Persistence across editor restarts is left to
@@ -14,6 +34,13 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public string LastEventId;
         public bool IsRunning;
         public string LastError;
+
+        // Pending interactive prompts from the agent. Set by the SSE handler
+        // when an `ask_user` / `submit_plan` / `submit_tasks` tool call arrives.
+        // Cleared after the dev responds.
+        public PendingQuestion CurrentQuestion;
+        public PendingPlan CurrentPlan;
+        public PendingTasks CurrentTasks;
 
         public event Action OnChanged;
 
@@ -92,8 +119,18 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             LastEventId = null;
             IsRunning = false;
             LastError = null;
+            CurrentQuestion = null;
+            CurrentPlan = null;
+            CurrentTasks = null;
             Notify();
         }
+
+        public void SetPendingQuestion(PendingQuestion q) { CurrentQuestion = q; Notify(); }
+        public void ClearPendingQuestion() { CurrentQuestion = null; Notify(); }
+        public void SetPendingPlan(PendingPlan p) { CurrentPlan = p; Notify(); }
+        public void ClearPendingPlan() { CurrentPlan = null; Notify(); }
+        public void SetPendingTasks(PendingTasks t) { CurrentTasks = t; Notify(); }
+        public void ClearPendingTasks() { CurrentTasks = null; Notify(); }
 
         private void Notify()
         {
