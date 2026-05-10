@@ -44,10 +44,22 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                 if (emitted >= maxNodes) break;
             }
 
+            var loadedScenes = new JArray();
+            foreach (var s in snapshot.LoadedScenes)
+            {
+                loadedScenes.Add(new JObject
+                {
+                    ["name"] = s.Name,
+                    ["path"] = s.Path,
+                    ["isActive"] = s.IsActive,
+                });
+            }
+
             var payload = new JObject
             {
                 ["sceneName"] = snapshot.SceneName,
                 ["scenePath"] = snapshot.ScenePath,
+                ["loadedScenes"] = loadedScenes,
                 ["totalGameObjects"] = snapshot.Count,
                 ["emitted"] = emitted,
                 ["truncated"] = emitted >= maxNodes,
@@ -65,11 +77,19 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             {
                 ["instanceId"] = instanceId,
                 ["name"] = info.Name,
+                ["sceneName"] = info.SceneName,
+                ["tag"] = info.Tag,
+                ["layer"] = info.Layer,
                 ["isActive"] = info.IsActive,
                 ["isStatic"] = info.IsStatic,
+                ["staticFlags"] = (int)info.StaticFlags,
+                ["prefabStatus"] = info.PrefabStatus.ToString(),
+                ["prefabPath"] = info.PrefabAssetPath,
                 ["localPosition"] = new JArray { info.LocalPosition.x, info.LocalPosition.y, info.LocalPosition.z },
                 ["localRotation"] = new JArray { info.LocalRotation.x, info.LocalRotation.y, info.LocalRotation.z, info.LocalRotation.w },
                 ["localScale"] = new JArray { info.LocalScale.x, info.LocalScale.y, info.LocalScale.z },
+                ["worldPosition"] = new JArray { info.WorldPosition.x, info.WorldPosition.y, info.WorldPosition.z },
+                ["worldRotation"] = new JArray { info.WorldRotation.x, info.WorldRotation.y, info.WorldRotation.z, info.WorldRotation.w },
             };
 
             if (includeComponents)

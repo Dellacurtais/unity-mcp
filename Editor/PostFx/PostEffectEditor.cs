@@ -28,6 +28,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var existing = profile.components.Find(c => c != null && c.GetType() == effectType);
             if (existing == null) return OpResult.Fail($"effect {effectType.Name} not present on volume");
 
+            Undo.RecordObject(profile, "Remove Post Effect");
             profile.Remove(effectType);
             EditorUtility.SetDirty(profile);
             return OpResult.Success(volume.GetInstanceID(), $"removed {effectType.Name}");
@@ -153,7 +154,10 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             // Don't duplicate: if the profile already has the component, return it.
             var existing = profile.components.Find(c => c != null && c.GetType() == effectType);
             if (existing == null)
+            {
+                Undo.RecordObject(profile, "Add Post Effect");
                 addMethod.Invoke(profile, new object[] { true });
+            }
 
             EditorUtility.SetDirty(profile);
             return OpResult.Success(volume.GetInstanceID(),
@@ -180,6 +184,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var prop = (string)args["property"];
             var value = args["value"];
             if (string.IsNullOrEmpty(prop)) return OpResult.Fail("property name is required");
+            Undo.RecordObject(profile, "Set Post Effect Property");
             if (!TrySetParameter(effect, prop, value, out var setErr))
                 return OpResult.Fail(setErr);
 
@@ -198,6 +203,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (caType == null) return OpResult.Fail("ColorAdjustments not available — install URP or HDRP package");
 
             var ca = profile.components.Find(c => c != null && c.GetType() == caType);
+            Undo.RecordObject(profile, "Apply Color Grading");
             if (ca == null)
             {
                 var addMethod = typeof(VolumeProfile)

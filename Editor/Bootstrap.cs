@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Maicon.SceneAnalyzer.Editor.Analyzers;
+using Maicon.SceneAnalyzer.Editor.Authoring;
 using Maicon.SceneAnalyzer.Editor.Chat;
 using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Mcp;
@@ -48,6 +49,21 @@ namespace Maicon.SceneAnalyzer.Editor
         public static event Action OnIssuesChanged;
         public static event Action<string> OnServerLog;
 
+        /// Called by HttpMcpServer after a write tool succeeds, and by the
+        /// ChangesetExecutor.OnApplied subscriber below. Idempotent — MarkStale
+        /// is a flag flip and InvalidateCache is a bool clear, so duplicate
+        /// firing on apply_changeset is harmless.
+        public static void NotifyWriteCompleted()
+        {
+            try
+            {
+                Snapshot?.MarkStale();
+                Runner?.InvalidateCache();
+                OnIssuesChanged?.Invoke();
+            }
+            catch (Exception e) { Debug.LogException(e); }
+        }
+
         // Capped log of recent ops surfaced in the SceneAnalyzerWindow.
         private const int MaxRecentEntries = 50;
         public static readonly List<string> RecentEntries = new();
@@ -90,6 +106,17 @@ namespace Maicon.SceneAnalyzer.Editor
                     try { OnIssuesChanged?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
                 });
 
+                ChangesetExecutor.OnApplied += () =>
+                {
+                    try
+                    {
+                        Snapshot?.MarkStale();
+                        Runner?.InvalidateCache();
+                        OnIssuesChanged?.Invoke();
+                    }
+                    catch (Exception e) { Debug.LogException(e); }
+                };
+
                 ToolRegistry = new McpToolRegistry();
                 // Read
                 ToolRegistry.Register(new ReadHierarchyTool());
@@ -115,6 +142,10 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new ListAudioMixersTool());
                 ToolRegistry.Register(new ReadAudioMixerTool());
                 ToolRegistry.Register(new InspectAudioSetupTool());
+                // Console / build verification
+                ToolRegistry.Register(new ReadConsoleTool());
+                ToolRegistry.Register(new ClearConsoleTool());
+                ToolRegistry.Register(new WaitForCompileCleanTool());
                 // Physics queries + scene classification
                 ToolRegistry.Register(new RaycastTool());
                 ToolRegistry.Register(new OverlapQueryTool());
@@ -230,7 +261,14 @@ namespace Maicon.SceneAnalyzer.Editor
 
         private static void OnBeforeReload()
         {
-            try { Server?.Stop(); }
+            try
+            {
+                // Pass a reason so HttpMcpServer writes 503 to in-flight tool
+                // calls before the AppDomain is torn down. Without this, the
+                // MCP client hangs on the dead socket until its 60s request
+                // timeout fires (-32001).
+                Server?.Stop("Unity assembly reload — server restarting; retry in ~5s");
+            }
             catch (Exception e) { Debug.LogException(e); }
         }
     }

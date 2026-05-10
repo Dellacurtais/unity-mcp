@@ -1,8 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using UnityEditor;
-using UnityEngine;
+using Debug = UnityEngine.Debug;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp
 {
@@ -15,6 +16,17 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
     {
         private static readonly Queue<Action> Queue = new();
         private static readonly object Lock = new();
+
+        /// Time budget per editor frame for draining the queue. ~5ms ≈ a third
+        /// of a 60fps frame — drains as much as possible without taxing the
+        /// editor. Replaces the older fixed-count budget which couldn't keep up
+        /// when bursts of analyzer/changeset work hit the queue.
+        private const double MaxPumpMs = 5.0;
+
+        /// If a single dispatched closure exceeds this, we log a warning so
+        /// it's obvious which tool is hogging the main thread. The tool ran
+        /// to completion either way — this is purely diagnostic.
+        private const double SlowClosureWarnMs = 50.0;
 
         static MainThreadDispatcher()
         {
@@ -42,10 +54,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 
         private static void Pump()
         {
-            // Drain a bounded batch per editor frame to avoid stalling the editor
-            // when the queue gets long under heavy MCP load.
-            const int budget = 32;
-            for (int i = 0; i < budget; i++)
+            var sw = Stopwatch.StartNew();
+            while (sw.Elapsed.TotalMilliseconds < MaxPumpMs)
             {
                 Action a;
                 lock (Lock)
@@ -53,8 +63,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     if (Queue.Count == 0) return;
                     a = Queue.Dequeue();
                 }
+                var closureStart = sw.Elapsed.TotalMilliseconds;
                 try { a(); }
                 catch (Exception e) { Debug.LogException(e); }
+                var closureMs = sw.Elapsed.TotalMilliseconds - closureStart;
+                if (closureMs > SlowClosureWarnMs)
+                    Debug.LogWarning($"[scene-analyzer] dispatcher closure took {closureMs:F1}ms — " +
+                                     "tool is doing heavy work on the main thread; consider async.");
             }
         }
     }

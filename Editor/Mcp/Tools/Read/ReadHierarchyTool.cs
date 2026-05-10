@@ -7,7 +7,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
     {
         public string Name => "read_hierarchy";
         public string Description =>
-            "Returns the active scene hierarchy as a flat list of {instanceId, name, parentId, isActive, isStatic, childIds, componentTypes}. Lightweight (no serialized field values). Use this before analyze_performance or batch authoring to know what already exists.";
+            "Returns the loaded-scenes hierarchy (active + additive) as a flat list of {instanceId, name, parentId, sceneName, tag, layer, isActive, isStatic, prefabStatus, childIds, componentTypes}. Lightweight (no serialized field values). Use this before analyze_performance or batch authoring to know what already exists.";
 
         public JObject InputSchema => new JObject
         {
@@ -37,10 +37,27 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                     ["instanceId"] = info.InstanceID,
                     ["name"] = info.Name,
                     ["parentId"] = info.ParentId,
+                    ["sceneName"] = info.SceneName,
+                    ["tag"] = info.Tag,
+                    ["layer"] = info.Layer,
                     ["isActive"] = info.IsActive,
                     ["isStatic"] = info.IsStatic,
+                    ["staticFlags"] = (int)info.StaticFlags,
+                    ["prefabStatus"] = info.PrefabStatus.ToString(),
+                    ["prefabPath"] = info.PrefabAssetPath,
                     ["childIds"] = children,
                     ["componentTypes"] = componentTypes,
+                });
+            }
+
+            var loadedScenes = new JArray();
+            foreach (var s in snapshot.LoadedScenes)
+            {
+                loadedScenes.Add(new JObject
+                {
+                    ["name"] = s.Name,
+                    ["path"] = s.Path,
+                    ["isActive"] = s.IsActive,
                 });
             }
 
@@ -48,6 +65,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             {
                 ["sceneName"] = snapshot.SceneName,
                 ["scenePath"] = snapshot.ScenePath,
+                ["loadedScenes"] = loadedScenes,
                 ["count"] = snapshot.Count,
                 ["nodes"] = nodes,
             };

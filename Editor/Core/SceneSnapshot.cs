@@ -2,24 +2,35 @@ using System.Collections.Generic;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
 namespace Maicon.SceneAnalyzer.Editor.Core
 {
-    /// In-memory mirror of the active scene keyed by InstanceID. Refreshed lazily by
-    /// ChangeWatcher; tools and analyzers read from it instead of walking the scene
-    /// each call. Main-thread only — no locking.
+    /// In-memory mirror of all loaded scenes (active + additive) keyed by
+    /// InstanceID. Refreshed lazily by ChangeWatcher; tools and analyzers read
+    /// from it instead of walking the scene each call. Main-thread only — no
+    /// locking.
     public sealed class SceneSnapshot
     {
         private readonly Dictionary<int, GameObjectInfo> _byId = new();
+        private readonly Dictionary<int, RendererSummary> _renderers = new();
+        private readonly List<LoadedScene> _loadedScenes = new();
         private string _sceneName;
         private string _scenePath;
         private bool _stale = true;
+        private long _revision;
 
         public int Count => _byId.Count;
         public bool IsStale => _stale;
         public string SceneName => _sceneName;
         public string ScenePath => _scenePath;
+        public IReadOnlyList<LoadedScene> LoadedScenes => _loadedScenes;
+
+        /// Monotonic counter; bumped on every MarkStale and on every Refresh.
+        /// Consumers (AnalysisRunner) use it to detect mutations that didn't go
+        /// through their own InvalidateCache.
+        public long Revision => _revision;
 
         public IEnumerable<GameObjectInfo> All() => _byId.Values;
 
@@ -28,7 +39,19 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             return _byId.TryGetValue(instanceId, out var info) ? info : null;
         }
 
-        public void MarkStale() => _stale = true;
+        /// Cached renderer surface keyed by Renderer InstanceID. Populated during
+        /// Refresh; null when the GO has no renderer or the renderer was missing
+        /// at capture time.
+        public RendererSummary GetRenderer(int rendererInstanceId)
+            => _renderers.TryGetValue(rendererInstanceId, out var r) ? r : null;
+
+        public IEnumerable<KeyValuePair<int, RendererSummary>> AllRenderers() => _renderers;
+
+        public void MarkStale()
+        {
+            _stale = true;
+            unchecked { _revision++; }
+        }
 
         public void RefreshIfNeeded()
         {
@@ -40,44 +63,116 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         public void Refresh()
         {
             _byId.Clear();
+            _renderers.Clear();
+            _loadedScenes.Clear();
+
             var active = SceneManager.GetActiveScene();
             _sceneName = active.name;
             _scenePath = active.path;
-            if (!active.IsValid() || !active.isLoaded) return;
+            unchecked { _revision++; }
 
-            foreach (var root in active.GetRootGameObjects())
+            for (int s = 0; s < SceneManager.sceneCount; s++)
             {
-                Capture(root, parentId: 0);
+                var scene = SceneManager.GetSceneAt(s);
+                if (!scene.IsValid() || !scene.isLoaded) continue;
+                _loadedScenes.Add(new LoadedScene
+                {
+                    Name = scene.name,
+                    Path = scene.path,
+                    IsActive = scene == active,
+                });
+                foreach (var root in scene.GetRootGameObjects())
+                {
+                    Capture(root, parentId: 0, sceneName: scene.name);
+                }
             }
         }
 
-        private void Capture(GameObject go, int parentId)
+        private void Capture(GameObject go, int parentId, string sceneName)
         {
+            var staticFlags = GameObjectUtility.GetStaticEditorFlags(go);
             var info = new GameObjectInfo
             {
                 InstanceID = go.GetInstanceID(),
                 Name = go.name,
                 ParentId = parentId,
+                SceneName = sceneName,
                 LocalPosition = go.transform.localPosition,
                 LocalRotation = go.transform.localRotation,
                 LocalScale = go.transform.localScale,
+                WorldPosition = go.transform.position,
+                WorldRotation = go.transform.rotation,
+                Tag = go.tag,
+                Layer = go.layer,
                 IsActive = go.activeInHierarchy,
                 IsStatic = go.isStatic,
+                StaticFlags = staticFlags,
                 Components = new List<ComponentInfo>(),
                 ChildIds = new List<int>(),
             };
 
+            // Prefab info: capture even if asset is missing so authoring tools
+            // can detect broken prefab links without a separate scan.
+            if (PrefabUtility.IsPartOfPrefabInstance(go))
+            {
+                var source = PrefabUtility.GetCorrespondingObjectFromSource(go);
+                info.PrefabAssetPath = source != null ? AssetDatabase.GetAssetPath(source) : null;
+                info.PrefabStatus = PrefabUtility.IsPrefabAssetMissing(go)
+                    ? PrefabInstanceStatus.MissingAsset
+                    : PrefabInstanceStatus.Connected;
+            }
+            else
+            {
+                info.PrefabStatus = PrefabInstanceStatus.NotAPrefab;
+            }
+
+            // Don't skip missing-script slots — capturing them as IsMissing=true
+            // gives consumers (read tools, validators) a direct signal without a
+            // second scan via `go.GetComponents<Component>()`.
             foreach (var c in go.GetComponents<Component>())
             {
-                if (c == null) continue; // missing script
-                var ci = new ComponentInfo
+                if (c == null)
+                {
+                    info.Components.Add(new ComponentInfo
+                    {
+                        InstanceID = 0,
+                        TypeName = "[Missing]",
+                        Enabled = false,
+                        IsMissing = true,
+                    });
+                    continue;
+                }
+
+                info.Components.Add(new ComponentInfo
                 {
                     InstanceID = c.GetInstanceID(),
                     TypeName = c.GetType().FullName,
-                };
-                if (c is Behaviour b) ci.Enabled = b.enabled;
-                else ci.Enabled = true;
-                info.Components.Add(ci);
+                    Enabled = c is Behaviour b ? b.enabled : true,
+                    IsMissing = false,
+                });
+
+                if (c is Renderer r)
+                {
+                    var sharedMats = r.sharedMaterials;
+                    var paths = new string[sharedMats.Length];
+                    for (int mi = 0; mi < sharedMats.Length; mi++)
+                    {
+                        paths[mi] = sharedMats[mi] != null
+                            ? AssetDatabase.GetAssetPath(sharedMats[mi])
+                            : null;
+                    }
+                    _renderers[r.GetInstanceID()] = new RendererSummary
+                    {
+                        OwnerInstanceID = go.GetInstanceID(),
+                        MaterialPaths = paths,
+                        MaterialCount = paths.Length,
+                        ShadowCasting = r.shadowCastingMode,
+                        LightmapIndex = r.lightmapIndex,
+                        IsBatchableStatic = (staticFlags & StaticEditorFlags.BatchingStatic) != 0,
+                        WorldBounds = r.bounds,
+                        IsEnabled = r.enabled,
+                    };
+                }
             }
 
             _byId[info.InstanceID] = info;
@@ -86,7 +181,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             {
                 var child = go.transform.GetChild(i).gameObject;
                 info.ChildIds.Add(child.GetInstanceID());
-                Capture(child, info.InstanceID);
+                Capture(child, info.InstanceID, sceneName);
             }
         }
 
@@ -111,11 +206,19 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         public int InstanceID;
         public string Name;
         public int ParentId;
+        public string SceneName;
         public Vector3 LocalPosition;
         public Quaternion LocalRotation;
         public Vector3 LocalScale;
+        public Vector3 WorldPosition;
+        public Quaternion WorldRotation;
+        public string Tag;
+        public int Layer;
         public bool IsActive;
         public bool IsStatic;
+        public StaticEditorFlags StaticFlags;
+        public string PrefabAssetPath;
+        public PrefabInstanceStatus PrefabStatus;
         public List<ComponentInfo> Components;
         public List<int> ChildIds;
     }
@@ -125,5 +228,35 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         public int InstanceID;
         public string TypeName;
         public bool Enabled;
+        /// True when the component slot exists but the script type couldn't be
+        /// resolved (broken MonoBehaviour reference). When true, InstanceID is 0
+        /// and TypeName is "[Missing]".
+        public bool IsMissing;
+    }
+
+    public sealed class LoadedScene
+    {
+        public string Name;
+        public string Path;
+        public bool IsActive;
+    }
+
+    public enum PrefabInstanceStatus
+    {
+        NotAPrefab,
+        Connected,
+        MissingAsset,
+    }
+
+    public sealed class RendererSummary
+    {
+        public int OwnerInstanceID;
+        public string[] MaterialPaths;
+        public int MaterialCount;
+        public ShadowCastingMode ShadowCasting;
+        public int LightmapIndex;
+        public bool IsBatchableStatic;
+        public Bounds WorldBounds;
+        public bool IsEnabled;
     }
 }

@@ -38,7 +38,10 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 case "rotationoverlifetime": SetRotationOverLifetime(ps, fields, changes); break;
                 case "noise": SetNoise(ps, fields, changes); break;
                 case "trails": SetTrails(ps, fields, changes); break;
-                case "renderer": SetRenderer(ps, fields, changes); break;
+                case "renderer":
+                    if (!SetRenderer(ps, fields, changes))
+                        return OpResult.Fail("MISSING_COMPONENT: GameObject has no ParticleSystemRenderer.");
+                    break;
                 case "collision": SetCollision(ps, fields, changes); break;
                 default: return OpResult.Fail($"unknown module '{moduleName}'. Known: main, emission, shape, colorOverLifetime, sizeOverLifetime, velocityOverLifetime, rotationOverLifetime, noise, trails, renderer, collision");
             }
@@ -186,10 +189,10 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (f["colorOverLifetime"] != null) { t.colorOverLifetime = ParseGradient(f["colorOverLifetime"]); log.Add("colorOverLifetime"); }
         }
 
-        private static void SetRenderer(ParticleSystem ps, JObject f, List<string> log)
+        private static bool SetRenderer(ParticleSystem ps, JObject f, List<string> log)
         {
             var r = ps.GetComponent<ParticleSystemRenderer>();
-            if (r == null) return;
+            if (r == null) return false;
             if (f["renderMode"] != null && System.Enum.TryParse((string)f["renderMode"], true, out ParticleSystemRenderMode rm))
             { r.renderMode = rm; log.Add("renderMode"); }
             if (f["sortingOrder"] != null) { r.sortingOrder = (int)f["sortingOrder"]; log.Add("sortingOrder"); }
@@ -203,6 +206,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
                 if (mat != null) { r.sharedMaterial = mat; log.Add("material"); }
             }
+            return true;
         }
 
         private static void SetCollision(ParticleSystem ps, JObject f, List<string> log)

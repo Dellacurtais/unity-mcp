@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -9,13 +10,16 @@ using UnityEngine.SceneManagement;
 namespace Maicon.SceneAnalyzer.Editor.Authoring
 {
     /// Tweaks scene-level rendering settings: ambient lighting, fog, skybox, and
-    /// reflection intensity. RenderSettings is a static API, so individual
-    /// undo isn't reliable; we mark the scene dirty so it's at least obvious
-    /// that something changed.
+    /// reflection intensity. RenderSettings is a static facade backed by a
+    /// per-scene UnityObject; we resolve it via reflection and register a
+    /// Complete-Object Undo when the API is reachable, falling back to a
+    /// dirty-only mark and tagging the result `(no-undo)` when not.
     public static class RenderSettingsEditor
     {
         public static OpResult Apply(JObject args)
         {
+            var noUndoTag = TryRegisterUndo() ? "" : " (no-undo)";
+
             // Ambient
             if (args["ambientMode"] != null
                 && Enum.TryParse((string)args["ambientMode"], true, out AmbientMode mode))
@@ -50,7 +54,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     ? matRef
                     : AssetDatabase.GUIDToAssetPath(matRef);
                 var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
-                if (mat == null) return OpResult.Fail($"skybox material not found: {matRef}");
+                if (mat == null) return OpResult.Fail($"ASSET_NOT_FOUND: skybox material '{matRef}'");
                 RenderSettings.skybox = mat;
             }
 
@@ -59,7 +63,28 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 RenderSettings.reflectionIntensity = (float)args["reflectionIntensity"];
 
             EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
-            return OpResult.Success(0, "render settings updated");
+            return OpResult.Success(0, $"render settings updated{noUndoTag}");
+        }
+
+        private static bool TryRegisterUndo()
+        {
+            try
+            {
+                var method = typeof(RenderSettings).GetMethod(
+                    "GetRenderSettings",
+                    BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (method == null) return false;
+                if (method.Invoke(null, null) is UnityEngine.Object backing && backing != null)
+                {
+                    Undo.RegisterCompleteObjectUndo(backing, "Apply Render Settings");
+                    return true;
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[RenderSettingsEditor] could not register Undo: {e.Message}");
+            }
+            return false;
         }
     }
 }

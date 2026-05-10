@@ -209,7 +209,13 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (!path.EndsWith(".controller")) path += ".controller";
             EnsureFolder(Path.GetDirectoryName(path));
             var ac = AnimatorController.CreateAnimatorControllerAtPath(path);
-            return OpResult.Success(ac.GetInstanceID(), $"created '{ac.name}' at {path}");
+            return new OpResult
+            {
+                Ok = true,
+                InstanceID = ac.GetInstanceID(),
+                Summary = $"created '{ac.name}' at {path}",
+                CreatedAssetPath = path,
+            };
         }
 
         public static OpResult AddState(JObject args)
@@ -222,6 +228,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (layerIndex >= ac.layers.Length) return OpResult.Fail($"layer {layerIndex} out of range (controller has {ac.layers.Length})");
 
             var layer = ac.layers[layerIndex];
+            Undo.RecordObject(ac, "Add Animator State");
+            Undo.RecordObject(layer.stateMachine, "Add Animator State");
             var s = layer.stateMachine.AddState(stateName);
             if (args["clipGuidOrPath"] != null)
             {
@@ -250,6 +258,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var toState = sm.states.FirstOrDefault(s => s.state.name == toName).state;
             if (toState == null) return OpResult.Fail($"to state '{toName}' not found");
 
+            Undo.RecordObject(ac, "Add Animator Transition");
+            Undo.RecordObject(sm, "Add Animator Transition");
             AnimatorStateTransition tr;
             if (string.IsNullOrEmpty(fromName) || fromName == "AnyState" || fromName == "*")
             {
@@ -297,6 +307,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (!Enum.TryParse<AnimatorControllerParameterType>(typeStr, true, out var pType))
                 return OpResult.Fail($"unknown parameter type '{typeStr}' (use Float/Int/Bool/Trigger)");
 
+            Undo.RecordObject(ac, "Add Animator Parameter");
             ac.AddParameter(name, pType);
 
             // Set default if provided. AnimatorController.parameters returns a copy
@@ -345,6 +356,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var ac = ResolveController(args, out var err);
             if (ac == null) return OpResult.Fail(err);
             var name = (string)args["name"] ?? $"Layer {ac.layers.Length}";
+            Undo.RecordObject(ac, "Add Animator Layer");
             ac.AddLayer(name);
 
             // Modify by copy-and-write-back.
@@ -382,6 +394,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
             BlendTree tree;
             var sm = ac.layers[layerIndex].stateMachine;
+            Undo.RecordObject(ac, "Create Blend Tree");
+            Undo.RecordObject(sm, "Create Blend Tree");
             ac.CreateBlendTreeInController(stateName, out tree, layerIndex);
             if (Enum.TryParse<BlendTreeType>(blendType, true, out var bt)) tree.blendType = bt;
             if (!string.IsNullOrEmpty(blendParameter)) tree.blendParameter = blendParameter;
@@ -407,6 +421,9 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var tree = state.motion as BlendTree;
             if (tree == null) return OpResult.Fail($"state '{stateName}' is not a blend tree");
 
+            // Sub-asset: recording only the controller misses tree mutations.
+            Undo.RecordObject(ac, "Add Blend Tree Motion");
+            Undo.RecordObject(tree, "Add Blend Tree Motion");
             if (args["position"] is JArray pos && pos.Count >= 2)
                 tree.AddChild(clip, new Vector2((float)pos[0], (float)pos[1]));
             else
@@ -433,6 +450,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
             var events = AnimationUtility.GetAnimationEvents(clip).ToList();
             events.Add(ev);
+            Undo.RecordObject(clip, "Add Animation Event");
             AnimationUtility.SetAnimationEvents(clip, events.ToArray());
             EditorUtility.SetDirty(clip);
             return OpResult.Success(clip.GetInstanceID(),

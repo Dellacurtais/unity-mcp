@@ -10,7 +10,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var id = (int?)args["instanceId"] ?? 0;
             var go = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+            if (go == null) return OpResult.Fail($"REF_BROKEN: GameObject not found: instanceId={id}");
 
             Undo.RecordObject(go.transform, "Set Transform");
 
@@ -39,9 +39,23 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var id = (int?)args["instanceId"] ?? 0;
             var go = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+            if (go == null) return OpResult.Fail($"REF_BROKEN: GameObject not found: instanceId={id}");
 
-            var parent = JsonHelpers.ResolveParent(args["newParentId"]);
+            var newParentArg = args["newParentId"];
+            var parent = JsonHelpers.ResolveParent(newParentArg);
+            // Caller passed an explicit non-null/non-zero newParentId but it didn't
+            // resolve. Refuse rather than silently unparenting — silent is the bug
+            // the caller will spend the next hour debugging.
+            if (newParentArg != null
+                && newParentArg.Type != Newtonsoft.Json.Linq.JTokenType.Null
+                && parent == null)
+            {
+                bool isExplicitUnparent =
+                    newParentArg.Type == Newtonsoft.Json.Linq.JTokenType.Integer && (int)newParentArg == 0;
+                if (!isExplicitUnparent)
+                    return OpResult.Fail($"REF_BROKEN: newParentId={newParentArg} does not resolve to a live GameObject");
+            }
+
             bool worldStays = (bool?)args["worldPositionStays"] ?? true;
             Undo.SetTransformParent(go.transform, parent != null ? parent.transform : null, "Reparent");
             if (!worldStays)

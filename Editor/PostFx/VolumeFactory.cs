@@ -26,6 +26,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
             // Volume profile is an asset on disk. Reuse if it exists, otherwise create.
             VolumeProfile profile = null;
+            bool profileWasCreated = false;
             if (File.Exists(profilePath))
             {
                 profile = AssetDatabase.LoadAssetAtPath<VolumeProfile>(profilePath);
@@ -36,6 +37,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 EnsureFolder(Path.GetDirectoryName(profilePath));
                 AssetDatabase.CreateAsset(profile, profilePath);
                 AssetDatabase.SaveAssets();
+                profileWasCreated = true;
             }
             volume.sharedProfile = profile;
 
@@ -43,7 +45,13 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (parent != null) Undo.SetTransformParent(go.transform, parent.transform, "Parent");
             go.transform.localPosition = JsonHelpers.ParseVector3(args["position"]);
 
-            return OpResult.Success(go.GetInstanceID(), $"created Volume '{name}' with profile {profilePath}");
+            return new OpResult
+            {
+                Ok = true,
+                InstanceID = go.GetInstanceID(),
+                Summary = $"created Volume '{name}' with profile {profilePath}",
+                CreatedAssetPath = profileWasCreated ? profilePath : null,
+            };
         }
 
         private static void EnsureFolder(string folder)

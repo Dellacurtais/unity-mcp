@@ -26,7 +26,13 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
             AssetDatabase.CreateAsset(asset, path);
             AssetDatabase.SaveAssets();
 
-            return OpResult.Success(asset.GetInstanceID(), $"created TimelineAsset at {path}");
+            return new OpResult
+            {
+                Ok = true,
+                InstanceID = asset.GetInstanceID(),
+                Summary = $"created TimelineAsset at {path}",
+                CreatedAssetPath = path,
+            };
         }
 
         public static OpResult AddTrack(JObject args)
@@ -39,6 +45,7 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
             var trackType = ResolveTrackType(trackKind);
             if (trackType == null) return OpResult.Fail($"unknown track type '{trackKind}' (Animation/Audio/Activation/Control/Signal/Marker, or full type name)");
 
+            Undo.RecordObject(asset, "Add Timeline Track");
             var track = asset.CreateTrack(trackType, null, trackName);
             EditorUtility.SetDirty(asset);
             return OpResult.Success(asset.GetInstanceID(), $"added {trackType.Name} '{trackName}'");
@@ -54,6 +61,8 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
             var track = asset.GetOutputTracks().FirstOrDefault(t => t.name == trackName);
             if (track == null) return OpResult.Fail($"track '{trackName}' not found");
 
+            Undo.RecordObject(asset, "Add Timeline Clip");
+            Undo.RecordObject(track, "Add Timeline Clip");
             var clip = track.CreateDefaultClip();
             if (args["start"] != null) clip.start = (double)args["start"];
             if (args["duration"] != null) clip.duration = (double)args["duration"];

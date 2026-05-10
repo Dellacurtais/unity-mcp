@@ -207,10 +207,13 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "`list_post_effects` (effects on a volume OR all VolumeComponent types available), " +
                 "`describe_post_effect` (parameter schema of an effect type).\n" +
                 "- **Batch & selection**: `apply_changeset` (atomic batch — all create/modify ops above as ONE Undo group, " +
-                "with `label`+`{ref:…}` chaining for parent references), `select_object`.\n\n" +
+                "with `label`+`{ref:…}` chaining for parent references), `select_object`.\n" +
+                "- **Console / build verification**: `read_console` (Debug.Log/Warning/Error + uncaught exceptions + structured compile errors with file:line; filter by severity / since-seq / messageContains), " +
+                "`clear_console` (mark a clean slate before a complex op so the next read_console only shows what happened during it), " +
+                "`wait_for_compile_clean` (refresh + cooperatively wait for compile + report errors+warnings since start in a single call).\n\n" +
                 "When asked to add or tweak a component you don't know yet, the typical loop is: " +
                 "`list_component_types` → `describe_component_type` → `add_component` → `set_property` per field.\n\n" +
-                "**After creating a NEW `.cs` MonoBehaviour script** (via filesystem write), call `refresh_assets` (wait=true) BEFORE `add_component`. Otherwise Unity hasn't compiled the script yet and `add_component` returns `unknown component type`. If `add_component` still fails right after refresh_assets, the script likely has a compile error — read the Unity Console.\n\n" +
+                "**After creating a NEW `.cs` MonoBehaviour script** (via filesystem write), prefer `wait_for_compile_clean` over `refresh_assets` — it tells you in ONE call whether the compile succeeded AND surfaces any error with file:line. If you still call `refresh_assets`, follow up with `read_console severity=errors_only since=<seq before refresh>` to verify there were no compile errors before calling `add_component`.\n\n" +
                 "**Avoid redundant tool calls**: the dashboard refuses identical tool+args calls after a few retries (`Refused: was called with these exact arguments N times`). Strategy: keep findings as plain text in your reply (instead of recalling the same query), change one argument when you do need fresh data, and after any error change strategy rather than repeat. The Unity tool responses end with `[unity-call #N @ HH:mm:ss.fff]` so revalidation against an unchanged scene works — but only when the INPUT args differ.\n\n" +
                 "Two project skill tools to use them:\n" +
                 "- `get_skills_list` — discover all installed skills (returns id/name/description/slashCommand).\n" +
@@ -220,6 +223,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "- **`unity-scene-audit`** — read-only diagnostic flow (performance + validation). Use when the user asks to audit, diagnose, " +
                 "find broken refs, or understand the scene.\n" +
                 "- **`unity-scene-author`** — authoring flow with `apply_changeset` (create/modify/post-fx/render-settings) preserving Unity Undo. " +
+                "Hierarquia de discovery em 3 níveis ensinada ao agente via prompt:\n" +
+                "list_skill_namespaces({}) (nova tool) — retorna {totalSkills, namespaces: [{namespace, count, repo?, commit?, sampleSkillIds}]} com até 5 IDs representativos por pack\n" +
+                "get_skills_list({namespace?}) — sem args dá overview compacto; com namespace retorna lista filtrada ordenada por id; namespace inválido retorna erro instrutivo com lista de namespaces válidos\n" +
+                "get_skill_content({skill_id})\n\n" +
                 "Use when the user asks to create, modify, decorate, or stylize the scene.\n\n" +
                 "Typical pattern: when the user's request matches one of those skills, call `invoke_skill` with the matching `skill_id` and the user's intent as `input` — then follow the skill's instructions, which include calling `ext_unity_editor__*` tools. If unsure which skill applies (or you need details), `get_skill_content` first.\n\n" +
                 "Subsequent messages in this session don't need this preamble — the agent should remember. Now respond to the user message that follows.";
@@ -948,11 +955,27 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                         payload?["input"]?.ToString(FormattingNs.None) ?? "");
                     break;
                 case "tool_call_result":
+                {
+                    var resultText = TruncateJson(payload?["result"], 800);
                     _session.CompleteToolCall(
                         AsString(payload?["id"]) ?? "",
-                        TruncateJson(payload?["result"], 800),
+                        resultText,
                         AsDouble(payload?["duration_ms"]) ?? 0.0);
+
+                    // Surface a focused hint when the Unity MCP server timed
+                    // out — most common cause is an assembly reload mid-call.
+                    // Helps the agent (and the dev) understand the right
+                    // action is to wait ~5s and retry.
+                    if (LooksLikeUnityMcpTimeout(resultText))
+                    {
+                        _session.AddSystemNote(
+                            "Unity MCP server didn't respond in time. " +
+                            "Most likely an assembly reload happened (you saved a .cs file) " +
+                            "OR refresh_assets held the main thread on an older plugin build. " +
+                            "The plugin auto-restarts after reload — wait ~5s and retry.");
+                    }
                     break;
+                }
                 case "plan":
                 {
                     var p = new PendingPlan
@@ -1023,6 +1046,18 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (token == null) return "";
             var s = token.ToString(Newtonsoft.Json.Formatting.None);
             return s.Length > max ? s.Substring(0, max) + " …" : s;
+        }
+
+        private static bool LooksLikeUnityMcpTimeout(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            // Match symptoms of either MCP SDK timeout (-32001) or our own
+            // server announcing it shut down for an assembly reload.
+            return text.IndexOf("-32001", StringComparison.Ordinal) >= 0
+                || text.IndexOf("Request timed out", StringComparison.OrdinalIgnoreCase) >= 0
+                || text.IndexOf("assembly reload", StringComparison.OrdinalIgnoreCase) >= 0
+                || (text.IndexOf("ext_unity", StringComparison.OrdinalIgnoreCase) >= 0
+                    && text.IndexOf("disconnected", StringComparison.OrdinalIgnoreCase) >= 0);
         }
     }
 }

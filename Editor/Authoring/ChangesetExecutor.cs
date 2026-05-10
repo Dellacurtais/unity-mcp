@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+using UnityEngine;
 using UnityEngine.SceneManagement;
 
 namespace Maicon.SceneAnalyzer.Editor.Authoring
@@ -92,6 +93,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         public static IReadOnlyCollection<string> KnownKinds => Handlers.Keys;
 
+        /// Fires after a successful (non-preview, non-failed) Apply. Lets
+        /// Bootstrap invalidate the snapshot/runner cache without coupling
+        /// this Authoring asmdef back to Editor namespace.
+        public static event Action OnApplied;
+
         public static Report Apply(string name, JArray ops, bool preview)
         {
             var report = new Report();
@@ -99,11 +105,51 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
             if (preview)
             {
-                foreach (var token in ops)
+                for (int i = 0; i < ops.Count; i++)
                 {
-                    if (token is JObject op)
-                        report.Results.Add(OpResult.Success(0,
-                            $"would apply: {op["kind"]}" + (op["label"] != null ? $" (label={op["label"]})" : "")));
+                    if (!(ops[i] is JObject op))
+                    {
+                        report.Failed = true;
+                        report.FailedAtIndex = i;
+                        report.Results.Add(OpResult.Fail($"op #{i}: not an object"));
+                        continue;
+                    }
+
+                    var clone = (JObject)op.DeepClone();
+                    ResolveRefs(clone, labels);
+
+                    var kind = (string)clone["kind"];
+                    if (string.IsNullOrEmpty(kind))
+                    {
+                        report.Failed = true;
+                        report.FailedAtIndex = i;
+                        report.Results.Add(OpResult.Fail("INVALID_ARG: missing kind"));
+                        continue;
+                    }
+                    if (!Handlers.ContainsKey(kind))
+                    {
+                        report.Failed = true;
+                        report.FailedAtIndex = i;
+                        report.Results.Add(OpResult.Fail($"REF_BROKEN: unknown kind '{kind}'"));
+                        continue;
+                    }
+
+                    var args = clone["args"] as JObject ?? clone;
+                    var refErr = ValidateRefsAndIds(args, labels);
+                    if (refErr != null)
+                    {
+                        report.Failed = true;
+                        report.FailedAtIndex = i;
+                        report.Results.Add(OpResult.Fail(refErr));
+                        continue;
+                    }
+
+                    report.Results.Add(OpResult.Success(0, $"would apply: {kind}"));
+                    report.OpsApplied++;
+
+                    var label = (string)clone["label"];
+                    if (!string.IsNullOrEmpty(label) && !labels.ContainsKey(label))
+                        labels[label] = -1; // sentinel: later refs validate against it
                 }
                 return report;
             }
@@ -120,7 +166,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     report.Failed = true;
                     report.Error = $"op #{i} is not an object";
                     report.FailedAtIndex = i;
-                    Undo.RevertAllInCurrentGroup();
+                    RevertAndCleanup(report);
                     return report;
                 }
 
@@ -128,7 +174,20 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
                 OpResult r;
                 try { r = ApplyOne(op); }
-                catch (Exception e) { r = OpResult.Fail($"exception: {e.Message}"); }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                    var inner = e.InnerException != null
+                        ? $" -> {e.InnerException.GetType().Name}: {e.InnerException.Message}"
+                        : "";
+                    r = new OpResult
+                    {
+                        Ok = false,
+                        Error = $"{e.GetType().Name}: {e.Message}{inner}",
+                        ExceptionType = e.GetType().FullName,
+                        StackTrace = e.StackTrace,
+                    };
+                }
 
                 report.Results.Add(r);
                 if (!r.Ok)
@@ -136,20 +195,107 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     report.Failed = true;
                     report.Error = $"op #{i} failed: {r.Error}";
                     report.FailedAtIndex = i;
-                    Undo.RevertAllInCurrentGroup();
+                    RevertAndCleanup(report);
                     return report;
                 }
 
                 var label = (string)op["label"];
                 if (!string.IsNullOrEmpty(label) && r.InstanceID != 0)
+                {
+                    if (labels.ContainsKey(label))
+                    {
+                        report.Failed = true;
+                        report.Error = $"op #{i}: duplicate label '{label}' (already bound by an earlier op)";
+                        report.FailedAtIndex = i;
+                        // Replace the success entry with a failure but preserve
+                        // CreatedAssetPath so RevertAndCleanup can still delete
+                        // any asset this op just made.
+                        var failure = OpResult.Fail($"DUPLICATE_LABEL: '{label}' already bound by an earlier op");
+                        failure.CreatedAssetPath = r.CreatedAssetPath;
+                        failure.InstanceID = r.InstanceID;
+                        report.Results[report.Results.Count - 1] = failure;
+                        RevertAndCleanup(report);
+                        return report;
+                    }
                     labels[label] = r.InstanceID;
+                }
 
                 report.OpsApplied++;
             }
 
             Undo.CollapseUndoOperations(group);
             EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+            try { AssetDatabase.SaveAssets(); }
+            catch (Exception e) { Debug.LogException(e); }
+            try { OnApplied?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
             return report;
+        }
+
+        private static void SafeRevertAll()
+        {
+            try { Undo.RevertAllInCurrentGroup(); }
+            catch (Exception e) { Debug.LogException(e); }
+        }
+
+        /// Reverts the Undo group AND deletes any assets created earlier in
+        /// the batch. Asset-creation handlers (CreateController, CreateTimeline,
+        /// VolumeFactory.Create) write a path to OpResult.CreatedAssetPath;
+        /// this loop deletes those paths so the failed batch leaves no
+        /// orphan files behind.
+        private static void RevertAndCleanup(Report report)
+        {
+            SafeRevertAll();
+            foreach (var prior in report.Results)
+            {
+                if (string.IsNullOrEmpty(prior?.CreatedAssetPath)) continue;
+                try { AssetDatabase.DeleteAsset(prior.CreatedAssetPath); }
+                catch (Exception e) { Debug.LogException(e); }
+            }
+        }
+
+        /// Walks args looking for unresolved `{ ref: "x" }` objects and
+        /// `instanceId`-shaped int properties. Returns the first error, or
+        /// null when clean. Used by preview to catch broken refs / dangling
+        /// instanceIds before Apply mutates anything.
+        private static string ValidateRefsAndIds(JToken token, Dictionary<string, int> labels)
+        {
+            if (token is JObject obj)
+            {
+                if (obj.Count == 1 && obj["ref"] != null)
+                {
+                    var refName = (string)obj["ref"];
+                    if (string.IsNullOrEmpty(refName) || !labels.ContainsKey(refName))
+                        return $"REF_BROKEN: label '{refName}' not defined by any earlier op";
+                    return null;
+                }
+
+                foreach (var prop in obj.Properties())
+                {
+                    if (IsIdProperty(prop.Name) && prop.Value is JValue jv && jv.Type == JTokenType.Integer)
+                    {
+                        var id = (int)jv;
+                        if (id > 0 && EditorUtility.InstanceIDToObject(id) == null)
+                            return $"REF_BROKEN: {prop.Name}={id} does not resolve to a live object";
+                    }
+                    var nested = ValidateRefsAndIds(prop.Value, labels);
+                    if (nested != null) return nested;
+                }
+            }
+            else if (token is JArray arr)
+            {
+                foreach (var item in arr)
+                {
+                    var nested = ValidateRefsAndIds(item, labels);
+                    if (nested != null) return nested;
+                }
+            }
+            return null;
+        }
+
+        private static bool IsIdProperty(string name)
+        {
+            return name == "instanceId" || name == "parentId"
+                || name == "newParentId" || name == "volumeInstanceId";
         }
 
         public static OpResult ApplyOne(JObject op)

@@ -1,10 +1,14 @@
+using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp
 {
     /// Contract for an MCP tool exposed by the plugin. Implementations describe
-    /// themselves via Name/Description/InputSchema and are invoked synchronously
-    /// on the editor main thread.
+    /// themselves via Name/Description/InputSchema. Tools normally implement
+    /// the synchronous Execute (the framework dispatches it onto the editor
+    /// main thread). Tools that need cooperative async — wait for a Unity
+    /// callback without blocking the main thread — override ExecuteAsync
+    /// directly so the dispatcher pump stays responsive while they wait.
     public interface IMcpTool
     {
         string Name { get; }
@@ -13,6 +17,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         bool IsWrite { get; }
 
         ToolResult Execute(JObject arguments);
+
+        /// Default: run the sync `Execute` on the editor main thread via the
+        /// dispatcher. Override when the tool needs to await something that
+        /// would otherwise block the main thread (e.g. polling
+        /// `EditorApplication.isCompiling` after `AssetDatabase.Refresh`).
+        Task<ToolResult> ExecuteAsync(JObject arguments)
+            => MainThreadDispatcher.RunAsync(() => Execute(arguments));
     }
 
     public sealed class ToolResult

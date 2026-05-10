@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Text;
@@ -25,6 +26,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         private CancellationTokenSource _cts;
         private string _token;
         private int _port;
+
+        // Active in-flight contexts. On Stop() (typically because Unity is
+        // about to do an assembly reload) we walk these and write a 503 to
+        // each so the MCP client fails fast instead of sitting on a stalled
+        // socket until its 60s request timeout fires.
+        private readonly ConcurrentDictionary<HttpListenerContext, byte> _activeContexts = new();
 
         // Monotonically incremented per tools/call. Appended to every response
         // so two queries against an unchanged scene still produce different
@@ -57,14 +64,40 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             Log($"listening on http://127.0.0.1:{port}/mcp/");
         }
 
-        public void Stop()
+        public void Stop() => Stop(reason: null);
+
+        public void Stop(string reason)
         {
             if (_listener == null) return;
+
+            // Notify in-flight requests so the client (D:\MCP coder) fails
+            // fast with a clear status instead of waiting for its request
+            // timeout. Crucial for the assembly-reload path where this Stop()
+            // happens microseconds before the AppDomain is torn down.
+            foreach (var ctx in _activeContexts.Keys)
+            {
+                try
+                {
+                    var resp = ctx.Response;
+                    resp.StatusCode = 503;
+                    resp.AddHeader("Connection", "close");
+                    if (!string.IsNullOrEmpty(reason))
+                    {
+                        var body = Encoding.UTF8.GetBytes(reason);
+                        resp.ContentLength64 = body.Length;
+                        resp.OutputStream.Write(body, 0, body.Length);
+                    }
+                    resp.Close();
+                }
+                catch { /* response may already be closed/disposed */ }
+            }
+            _activeContexts.Clear();
+
             try { _cts?.Cancel(); } catch { }
             try { _listener.Stop(); } catch { }
             try { _listener.Close(); } catch { }
             _listener = null;
-            Log("stopped");
+            Log(string.IsNullOrEmpty(reason) ? "stopped" : $"stopped ({reason})");
         }
 
         public void Dispose() => Stop();
@@ -82,6 +115,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 
         private async Task HandleAsync(HttpListenerContext ctx, CancellationToken ct)
         {
+            _activeContexts.TryAdd(ctx, 0);
             try
             {
                 if (ctx.Request.HttpMethod == "OPTIONS")
@@ -129,6 +163,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             {
                 Debug.LogException(e);
                 try { ctx.Response.StatusCode = 500; ctx.Response.Close(); } catch { }
+            }
+            finally
+            {
+                _activeContexts.TryRemove(ctx, out _);
             }
         }
 
@@ -236,19 +274,40 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             ToolResult result;
             try
             {
-                // Run BOTH the AllowWrites guard and the actual tool on the
-                // editor main thread. EditorPrefs (used by Settings.*) and any
-                // UnityEditor / UnityEngine API will throw from the HTTP
-                // listener thread pool ("can only be called from the main
-                // thread"). Dispatching the whole block keeps the tool free to
-                // hit the editor APIs without surprise crashes.
-                result = await MainThreadDispatcher.RunAsync(() =>
+                // The AllowWrites guard reads EditorPrefs which is main-thread-
+                // only. Dispatch a tiny check first (returns null when allowed)
+                // and then delegate the actual work to tool.ExecuteAsync —
+                // which lets cooperative-async tools (e.g. RefreshAssetsTool)
+                // wait on EditorApplication.update WITHOUT blocking the
+                // dispatcher pump. Sync tools fall through to the default
+                // ExecuteAsync that wraps Execute via the dispatcher.
+                var guard = await MainThreadDispatcher.RunAsync<ToolResult>(() =>
                 {
                     if (tool.IsWrite && !Settings.AllowWrites)
                         return ToolResult.Error("WRITE_DISABLED",
                             "Writes are disabled in the Scene Analyzer panel.");
-                    return tool.Execute(args);
+                    return null;
                 });
+                if (guard != null)
+                    result = guard;
+                else
+                {
+                    result = await tool.ExecuteAsync(args);
+                    // Centralized post-write invalidation: every successful write
+                    // tool marks the snapshot stale + invalidates the analyzer
+                    // cache, so an immediately-following read sees fresh state
+                    // instead of waiting for ChangeWatcher's 250ms debounce.
+                    // Bootstrap.NotifyWriteCompleted touches Snapshot/Runner/
+                    // events — main-thread only, so dispatch.
+                    if (tool.IsWrite && result != null && !result.IsError)
+                    {
+                        await MainThreadDispatcher.RunAsync<object>(() =>
+                        {
+                            Bootstrap.NotifyWriteCompleted();
+                            return null;
+                        });
+                    }
+                }
             }
             catch (Exception e)
             {

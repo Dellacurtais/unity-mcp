@@ -36,10 +36,17 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             _byType.Clear();
 
             // Indexed types we surface in list_assets. Add more as needed.
+            // Order matters: the dedup check `_byGuid.ContainsKey(g)` keeps the
+            // first entry, so SPECIFIC types must come BEFORE generic
+            // ScriptableObject — otherwise VolumeProfile / TimelineAsset would
+            // be tagged as ScriptableObject and fail typed filters.
             var types = new[]
             {
                 "Prefab", "Material", "Texture", "Texture2D", "Mesh",
-                "AudioClip", "AnimationClip", "Shader", "Sprite", "ScriptableObject"
+                "AudioClip", "AnimationClip", "Shader", "Sprite",
+                "AnimatorController", "AudioMixer", "TimelineAsset",
+                "VolumeProfile", "PhysicMaterial", "AvatarMask",
+                "ScriptableObject",
             };
             foreach (var t in types)
             {

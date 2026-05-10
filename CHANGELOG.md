@@ -5,6 +5,57 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-05-10
+
+### Added — Console / build verification (3 tools)
+
+- **`read_console`** — reads recent Unity Console messages from a 1000-entry ring buffer maintained at editor load. Captures `Debug.Log/Warning/Error`, uncaught exceptions, AND structured compile errors/warnings (with file:line:column extracted via `CompilationPipeline.assemblyCompilationFinished`, not just the stringified version). Filters: severity (`all` / `warnings_and_errors` / `errors_only`), `since` seq number (anchor a "since this op started" window), `messageContains`, `limit`, `includeStack`.
+- **`clear_console`** — clears the captured buffer; with `clearUnityConsole=true` also clears Unity's own Console window via `UnityEditor.LogEntries.Clear` (internal API, tolerated to fail). Useful as a marker before a complex op.
+- **`wait_for_compile_clean`** — single-call replacement for `refresh_assets` + `read_console errors_only since=N`. Triggers `AssetDatabase.Refresh`, cooperatively waits for `EditorApplication.isCompiling` (no main-thread block; uses the same TCS + `EditorApplication.update` pattern as 0.8.2's `refresh_assets`), then returns "✓ clean" or the list of compile errors/warnings since the wait started. Includes file:line for compile messages.
+
+### Authoring helper
+
+- `Editor/Core/ConsoleCapture.cs` — `[InitializeOnLoad]` ring buffer subscribing to `Application.logMessageReceivedThreaded` (catches messages from any thread, including the HTTP listener and async tools) and `CompilationPipeline.assemblyCompilationFinished` (structured compile messages). Thread-safe (lock-based). 1000-entry capacity. Per-AppDomain — assembly reload resets the buffer (acceptable; reloads only happen on clean compile, so there are no errors to lose).
+
+### Changed
+
+- Default context preamble adds **Console / build verification** section listing the three new tools, plus a refined recipe for "after creating a new .cs script" — recommends `wait_for_compile_clean` (one call) over the older `refresh_assets` + `read_console` two-step.
+- Tool count is now **95** with Timeline / **90** without (was 92/87 in 0.8.2; +3 this release).
+
+### Notes
+
+- The seq counter and buffer reset on every assembly reload. If your `since=N` was captured before a reload, you'll get 0 entries — the reload erased pre-existing messages, which is fine because compile reloads only happen on success.
+- Compile errors do NOT trigger a reload (no DLL produced) — those entries persist in the buffer until the next successful compile.
+- `wait_for_compile_clean` failure mode on a SUCCESSFUL compile that triggers a reload: the request gets caught by the 0.8.2 graceful-shutdown path (HTTP 503 with "Unity assembly reload — retry in ~5s"), and the agent retries → the second call returns clean immediately. Documented in the tool description.
+
+## [0.8.2] - 2026-05-10
+
+### Fixed — `MCP error -32001: Request timed out` on tool calls
+
+User-reported: trivial reads like `ext_unity__get_project_meta` were returning `MCP error -32001: Request timed out` even though the tool itself executes in <50ms. Diagnosed three blocking patterns interacting:
+
+**(1) `RefreshAssetsTool` was busy-blocking the editor main thread** — `Thread.Sleep(100)` in a loop while waiting for `EditorApplication.isCompiling`. That sleep ran inside a `MainThreadDispatcher.RunAsync` continuation, which means `EditorApplication.update` couldn't fire while the sleep was active, so `MainThreadDispatcher.Pump` couldn't drain other queued tool calls. Concurrent calls stalled until `refresh_assets` returned (up to 30s).
+
+**(2) Pump budget was 32 tasks/frame** (count-based). With the recently-added analyzers and `ChangesetExecutor.OnApplied` re-firing analysis, queues could grow faster than they drain.
+
+**(3) Assembly reload silently killed the listener** — when the user saved a `.cs` script mid-session, `Bootstrap.OnBeforeReload` called `Server.Stop()` but didn't notify in-flight HTTP clients. The MCP client sat on the dead socket until its 60s request timeout fired.
+
+### Changes
+
+- **`IMcpTool` gained `Task<ToolResult> ExecuteAsync(JObject)` with a default that wraps `Execute` via `MainThreadDispatcher.RunAsync`.** Tools that need cooperative async can override directly. Sync tools migrate transparently.
+- **`HttpMcpServer.CallToolAsync` now calls `tool.ExecuteAsync(args)`** instead of dispatching `Execute` itself. The `Settings.AllowWrites` guard still runs on the main thread (cheap pre-check) before delegating to ExecuteAsync.
+- **`MainThreadDispatcher.Pump` switched to a 5ms time budget** (replaces `const int budget = 32`). Drains as much as possible without taxing the editor; bursts clear in 1-2 frames instead of dozens. Logs a warning when a single closure exceeds 50ms — flags tools doing too much on the main thread.
+- **`RefreshAssetsTool` rewritten with cooperative async wait.** No more `Thread.Sleep`. `wait=true` registers an `EditorApplication.update` polling closure that checks `isCompiling` once per frame and completes a `TaskCompletionSource`. Bounded by `Task.WhenAny(tcs.Task, Task.Delay(timeoutMs))` so the timeout still works. The dispatcher pump fires every frame normally; concurrent tool calls drain. Editor doesn't freeze.
+- **`HttpMcpServer` tracks active in-flight contexts** and now exposes `Stop(string reason)`. On stop, walks every active response and writes `HTTP/1.1 503 Service Unavailable` + `Connection: close` + the reason body before tearing down the listener. Clients fail fast (~1s) with a meaningful payload instead of hanging on the request timeout.
+- **`Bootstrap.OnBeforeReload` calls `Server.Stop("Unity assembly reload — server restarting; retry in ~5s")`** so the MCP client sees the proper 503 with a clear message before the AppDomain dies.
+- **`CoderChatWindow`/`CoderApiClient` detect `-32001` / "Request timed out" / "assembly reload" patterns in `tool_call_result` and surface a focused system note** explaining the likely cause and recovery (wait 5s, retry).
+
+### Notes
+
+- Default interface methods require Unity 6 / C# 8+ — already our target.
+- The migration is transparent for the other 90+ tools — they keep `Execute` and inherit the default ExecuteAsync.
+- Skipped (deferred): MCP `notifications/progress` heartbeat per call, analyzer time-budget caps, per-tool client-side timeout overrides. Not needed once the dispatcher and refresh paths are well-behaved.
+
 ## [0.8.1] - 2026-05-10
 
 ### Fixed — Coder sessions silently attaching to the wrong dashboard project

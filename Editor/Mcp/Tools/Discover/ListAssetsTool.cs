@@ -6,7 +6,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
     {
         public string Name => "list_assets";
         public string Description =>
-            "Lists project assets indexed by AssetCatalog, optionally filtered by type (Prefab, Material, Texture, Mesh, AudioClip, AnimationClip, Shader, Sprite, ScriptableObject), name substring, or folder prefix. Returns guid, path, name, typeName, labels.";
+            "Lists project assets indexed by AssetCatalog, optionally filtered by type (Prefab, Material, Texture, Texture2D, Mesh, AudioClip, AnimationClip, Shader, Sprite, AnimatorController, AudioMixer, TimelineAsset, VolumeProfile, PhysicMaterial, AvatarMask, ScriptableObject), name substring, or folder prefix. Returns guid, path, name, typeName, labels.";
 
         public JObject InputSchema => new JObject
         {
