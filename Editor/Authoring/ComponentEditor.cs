@@ -167,7 +167,26 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             switch (prop.propertyType)
             {
                 case SerializedPropertyType.Integer:
-                    prop.intValue = (int)value;
+                case SerializedPropertyType.LayerMask:
+                case SerializedPropertyType.Character:
+                    // LayerMask serializes as int (bitmask). Accept int directly,
+                    // OR an array of layer-name strings → resolve to bitmask via
+                    // LayerMask.GetMask, OR a single layer-name string.
+                    if (value is JArray layerArr)
+                    {
+                        var names = new System.Collections.Generic.List<string>();
+                        foreach (var n in layerArr) if (n.Type == JTokenType.String) names.Add((string)n);
+                        prop.intValue = names.Count > 0 ? UnityEngine.LayerMask.GetMask(names.ToArray()) : (int)value;
+                    }
+                    else if (value.Type == JTokenType.String)
+                    {
+                        var idx = UnityEngine.LayerMask.NameToLayer((string)value);
+                        prop.intValue = idx >= 0 ? (1 << idx) : 0;
+                    }
+                    else
+                    {
+                        prop.intValue = (int)value;
+                    }
                     break;
                 case SerializedPropertyType.Boolean:
                     prop.boolValue = (bool)value;
@@ -188,6 +207,41 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 case SerializedPropertyType.Vector3:
                     prop.vector3Value = JsonHelpers.ParseVector3(value);
                     break;
+                case SerializedPropertyType.Vector4:
+                {
+                    if (value is JArray a4 && a4.Count >= 4)
+                        prop.vector4Value = new Vector4((float)a4[0], (float)a4[1], (float)a4[2], (float)a4[3]);
+                    else { var v3 = JsonHelpers.ParseVector3(value); prop.vector4Value = new Vector4(v3.x, v3.y, v3.z, 0f); }
+                    break;
+                }
+                case SerializedPropertyType.Vector2Int:
+                {
+                    var v = JsonHelpers.ParseVector3(value);
+                    prop.vector2IntValue = new Vector2Int(Mathf.RoundToInt(v.x), Mathf.RoundToInt(v.y));
+                    break;
+                }
+                case SerializedPropertyType.Vector3Int:
+                {
+                    var v = JsonHelpers.ParseVector3(value);
+                    prop.vector3IntValue = new Vector3Int(Mathf.RoundToInt(v.x), Mathf.RoundToInt(v.y), Mathf.RoundToInt(v.z));
+                    break;
+                }
+                case SerializedPropertyType.Rect:
+                {
+                    if (value is JArray ar && ar.Count >= 4)
+                        prop.rectValue = new Rect((float)ar[0], (float)ar[1], (float)ar[2], (float)ar[3]);
+                    break;
+                }
+                case SerializedPropertyType.Bounds:
+                {
+                    if (value is JObject bo)
+                    {
+                        var center = JsonHelpers.ParseVector3(bo["center"]);
+                        var size = JsonHelpers.ParseVector3(bo["size"], Vector3.one);
+                        prop.boundsValue = new Bounds(center, size);
+                    }
+                    break;
+                }
                 case SerializedPropertyType.Quaternion:
                     prop.quaternionValue = JsonHelpers.ParseRotation(value);
                     break;

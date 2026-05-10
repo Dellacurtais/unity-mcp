@@ -5,6 +5,22 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-05-10
+
+### Fixed
+
+- **`set_property` on LayerMask fields** — the agent was setting `_collisionMask = -1` (every-layer mask) and got `[OP_FAILED] INVALID_ARG: failed to apply value: UNSUPPORTED_TYPE: LayerMask` because `ComponentEditor.ApplyValue` had no case for `SerializedPropertyType.LayerMask`. LayerMask serialises as int (bitmask). Now accepts: int (raw bitmask, e.g. `-1` for "Everything"), single layer-name string (resolves to `1 << NameToLayer`), or array of layer-name strings (`LayerMask.GetMask(...)`). Same case also covers `Character`.
+- While we were in there, also added `Vector4`, `Vector2Int`, `Vector3Int`, `Rect`, and `Bounds` (`{center, size}`) — the previous switch covered scalars/vectors/colors/quaternions/enums/object-refs/strings but threw for these.
+
+### Changed — agent-friendly aliases
+
+Two real misuses surfaced from a session transcript: agent called `look_at` with `target:[...]` (we wanted `targetPosition`/`targetInstanceId`) and `parent_object` with `parentInstanceId` + `keepWorldPosition` (we wanted `newParentId` + `worldPositionStays`). Plugin now accepts both:
+
+- **`look_at`** — accepts `target` as auto-detect alias: integer → instanceId, array/object → world position. The original `targetInstanceId` / `targetPosition` still work.
+- **`parent_object`** — accepts `parentInstanceId` and `parent` as aliases for `newParentId`. Accepts `keepWorldPosition` as alias for `worldPositionStays`. Canonical names still preferred but no longer required.
+
+These mismatches were 50/50 plugin/agent issues — strict naming was correct, but tolerant aliases cost almost nothing and avoid retry loops on field-name guessing.
+
 ## [0.9.3] - 2026-05-10
 
 ### Fixed — MCP server losing the dev across every assembly reload

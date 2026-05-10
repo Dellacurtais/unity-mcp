@@ -57,7 +57,12 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var go = EditorUtility.InstanceIDToObject(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
 
+            // Accept the explicit pair (targetInstanceId / targetPosition) OR a
+            // generic `target` alias that auto-detects: integer → instanceId,
+            // array/object → world position. Easier on agents that pick the
+            // wrong field name.
             Vector3 worldTarget;
+            var targetAlias = args["target"];
             if (args["targetInstanceId"] != null && args["targetInstanceId"].Type != JTokenType.Null)
             {
                 var tid = (int?)args["targetInstanceId"] ?? 0;
@@ -69,9 +74,20 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             {
                 worldTarget = JsonHelpers.ParseVector3(args["targetPosition"]);
             }
+            else if (targetAlias != null && targetAlias.Type == JTokenType.Integer)
+            {
+                var tid = (int)targetAlias;
+                var tgo = EditorUtility.InstanceIDToObject(tid) as GameObject;
+                if (tgo == null) return OpResult.Fail($"target GameObject not found: instanceId={tid}");
+                worldTarget = tgo.transform.position;
+            }
+            else if (targetAlias != null && (targetAlias is JArray || targetAlias is JObject))
+            {
+                worldTarget = JsonHelpers.ParseVector3(targetAlias);
+            }
             else
             {
-                return OpResult.Fail("provide either targetInstanceId or targetPosition");
+                return OpResult.Fail("provide either targetInstanceId, targetPosition, or target (instanceId int OR vec3 array/object)");
             }
 
             var up = args["worldUp"] != null ? JsonHelpers.ParseVector3(args["worldUp"]) : Vector3.up;
