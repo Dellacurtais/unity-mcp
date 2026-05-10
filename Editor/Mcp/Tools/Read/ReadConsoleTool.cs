@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text;
 using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
@@ -9,15 +10,19 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
     {
         public string Name => "read_console";
         public string Description =>
-            "Reads recent Unity Console messages — Debug.Log/Warning/Error, uncaught exceptions, AND structured compile errors/warnings (with file:line). " +
-            "Filters: severity (`all` / `warnings_and_errors` / `errors_only`), `since` (only entries with seq >= N — pair with read_console first to get the current seq, then pass that as since on a follow-up call), `messageContains` (substring match), `limit` (default 50), `includeStack` (default false; on for exceptions). " +
-            "Note: an assembly reload (after a successful .cs compile) resets the buffer and the seq counter. If your since= is from before such a reload, you'll see 0 entries — interpret as 'clean compile, buffer reset'.";
+            "Reads Unity Console messages from TWO sources merged together:\n" +
+            " 1. **Unity's own Console** (`UnityEditor.LogEntries` via reflection) — persistent across domain reloads, includes pre-existing compile errors and anything currently visible in the Console window. No `seq` available.\n" +
+            " 2. **Our live capture buffer** (subscribed to `Application.logMessageReceivedThreaded` + `CompilationPipeline.assemblyCompilationFinished`) — stable `seq` numbers for delta queries.\n\n" +
+            "Filters: `source` (`all` default / `unity` / `buffer`), `severity` (`all` / `warnings_and_errors` / `errors_only`), `since` (only entries with seq >= N — implies source=buffer because LogEntries has no seq), `messageContains`, `limit` (default 50), `includeStack`.\n" +
+            "When `since` is set OR `source=buffer`, only the live buffer is read — enables 'what changed during my op'. Without `since`, you get the full Console as the user sees it.\n" +
+            "Note: domain reload (after a successful .cs compile) resets the live buffer's seq counter; LogEntries persists.";
 
         public JObject InputSchema => new JObject
         {
             ["type"] = "object",
             ["properties"] = new JObject
             {
+                ["source"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "all", "unity", "buffer" }, ["default"] = "all" },
                 ["severity"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "all", "warnings_and_errors", "errors_only" }, ["default"] = "all" },
                 ["since"] = new JObject { ["type"] = "integer" },
                 ["messageContains"] = new JObject { ["type"] = "string" },
@@ -31,51 +36,95 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
 
         public ToolResult Execute(JObject args)
         {
-            LogType? min = ((string)args["severity"] ?? "all").ToLowerInvariant() switch
-            {
-                "errors_only" => LogType.Error,
-                "warnings_and_errors" => LogType.Warning,
-                _ => null,
-            };
+            var source = ((string)args["source"] ?? "all").ToLowerInvariant();
+            var severityFilter = ((string)args["severity"] ?? "all").ToLowerInvariant();
             var since = (int?)args["since"];
             var contains = (string)args["messageContains"];
             var limit = (int?)args["limit"] ?? 50;
             var includeStack = (bool?)args["includeStack"] ?? false;
 
-            var entries = ConsoleCapture.Snapshot(since, min, contains, limit);
-
-            int errors = 0, warnings = 0, info = 0;
-            foreach (var e in entries)
-            {
-                if (e.Severity == LogType.Error || e.Severity == LogType.Exception || e.Severity == LogType.Assert) errors++;
-                else if (e.Severity == LogType.Warning) warnings++;
-                else info++;
-            }
+            // `since` only applies to the live buffer (LogEntries has no seq).
+            if (since.HasValue && source == "all") source = "buffer";
 
             var sb = new StringBuilder();
-            sb.AppendLine($"Console — buffer={ConsoleCapture.BufferSize}, currentSeq={ConsoleCapture.CurrentSeq}");
-            sb.AppendLine($"Returned {entries.Count} entries  ({errors} error/exception, {warnings} warning, {info} info)");
-            if (entries.Count == 0)
+            int totalErrors = 0, totalWarnings = 0, totalInfo = 0;
+
+            // 1) Unity LogEntries (persistent, full Console snapshot)
+            if (source == "all" || source == "unity")
             {
-                sb.AppendLine("  (no matching entries)");
-            }
-            else
-            {
-                foreach (var e in entries)
+                if (!UnityConsoleReader.IsAvailable && source == "unity")
                 {
-                    var loc = e.IsCompile && !string.IsNullOrEmpty(e.SourceFile)
-                        ? $"[{e.SourceFile}:{e.SourceLine}{(e.SourceColumn > 0 ? $":{e.SourceColumn}" : "")}]"
-                        : $"[{e.Severity}]";
-                    sb.AppendLine($"#{e.Seq} {e.Time:HH:mm:ss.fff} {loc} {e.Message}");
-                    if (includeStack && !string.IsNullOrEmpty(e.Stack))
+                    return ToolResult.Error("UNAVAILABLE",
+                        "UnityEditor.LogEntries reflection failed — internal API may have changed in this Unity version. Try source=buffer.");
+                }
+
+                var unityItems = UnityConsoleReader.IsAvailable
+                    ? UnityConsoleReader.Read(severityFilter == "all" ? null : severityFilter, contains, limit)
+                    : new List<UnityConsoleReader.Item>();
+
+                if (unityItems.Count > 0)
+                {
+                    var (e, w, l) = UnityConsoleReader.Counts();
+                    sb.AppendLine($"=== Unity Console (full state) — {e} error(s), {w} warning(s), {l} log(s) total ===");
+                    foreach (var it in unityItems)
                     {
-                        var indented = e.Stack.TrimEnd();
-                        if (indented.Length > 0)
-                            sb.AppendLine("    " + indented.Replace("\n", "\n    "));
+                        if (it.Severity == "Error") totalErrors++;
+                        else if (it.Severity == "Warning") totalWarnings++;
+                        else totalInfo++;
+                        var loc = !string.IsNullOrEmpty(it.File)
+                            ? $"[{it.File}:{it.Line}]"
+                            : $"[{it.Severity}]";
+                        sb.AppendLine($"row#{it.Row} {loc} {it.Message}");
                     }
                 }
+                else if (source == "unity")
+                {
+                    sb.AppendLine("Unity Console is empty (or no entries match the filter).");
+                }
             }
-            return ToolResult.Ok(sb.ToString());
+
+            // 2) Live capture buffer (delta-friendly via `since`)
+            if (source == "all" || source == "buffer")
+            {
+                LogType? min = severityFilter switch
+                {
+                    "errors_only" => LogType.Error,
+                    "warnings_and_errors" => LogType.Warning,
+                    _ => null,
+                };
+                var captured = ConsoleCapture.Snapshot(since, min, contains, limit);
+                if (captured.Count > 0)
+                {
+                    if (sb.Length > 0) sb.AppendLine();
+                    sb.AppendLine($"=== Live capture buffer — {ConsoleCapture.BufferSize} buffered, currentSeq={ConsoleCapture.CurrentSeq} ===");
+                    foreach (var e in captured)
+                    {
+                        if (e.Severity == LogType.Error || e.Severity == LogType.Exception || e.Severity == LogType.Assert) totalErrors++;
+                        else if (e.Severity == LogType.Warning) totalWarnings++;
+                        else totalInfo++;
+                        var loc = e.IsCompile && !string.IsNullOrEmpty(e.SourceFile)
+                            ? $"[{e.SourceFile}:{e.SourceLine}{(e.SourceColumn > 0 ? $":{e.SourceColumn}" : "")}]"
+                            : $"[{e.Severity}]";
+                        sb.AppendLine($"#{e.Seq} {e.Time:HH:mm:ss.fff} {loc} {e.Message}");
+                        if (includeStack && !string.IsNullOrEmpty(e.Stack))
+                        {
+                            var stack = e.Stack.TrimEnd();
+                            if (stack.Length > 0) sb.AppendLine("    " + stack.Replace("\n", "\n    "));
+                        }
+                    }
+                }
+                else if (source == "buffer")
+                {
+                    sb.AppendLine("Live buffer is empty (or no entries match the filter).");
+                }
+            }
+
+            if (sb.Length == 0)
+                sb.AppendLine("(no console entries — both sources empty for these filters)");
+
+            // Summary header
+            var header = $"{totalErrors} error/exception, {totalWarnings} warning, {totalInfo} info  (source={source})\n\n";
+            return ToolResult.Ok(header + sb.ToString());
         }
     }
 }

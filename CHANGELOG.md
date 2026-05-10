@@ -5,6 +5,29 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-05-10
+
+### Fixed — `read_console` missed pre-existing compile errors
+
+User-reported (with screenshot): `read_console` returned empty / only the dispatcher's own warnings while Unity's Console clearly showed `error CS0122: 'PlayerState.Controller' is inaccessible due to its protection level` and a `warning CS0414` from before the plugin was loaded. Cause: `ConsoleCapture` only subscribes to `Application.logMessageReceivedThreaded` at `[InitializeOnLoad]` time — it captures messages emitted AFTER the static ctor runs. Compile errors that arrived before our load (or that survived a prior assembly reload) live only in Unity's persistent Console buffer and weren't being read.
+
+### Added
+
+- **`Editor/Core/UnityConsoleReader.cs`** — reads Unity's actual Console buffer via reflection over the internal `UnityEditor.LogEntries` API (`GetCount`, `StartGettingEntries` / `EndGettingEntries`, `GetEntryInternal`, `LogEntry.message/file/line/mode`). Surfaces every entry visible to the user, including pre-existing compile errors. Severity is derived from the `mode` bitfield with a textual fallback (`error CS…`, `warning CS…`, `Exception:`) so labelling stays correct across Unity revisions where bit positions drift.
+
+### Changed
+
+- **`read_console` now merges TWO sources by default**:
+  1. Unity's persistent Console (full state visible to the user, no `seq`)
+  2. Our live capture buffer (with `seq` for delta queries via `since`)
+- New `source` arg: `all` (default) / `unity` (LogEntries only) / `buffer` (live capture only). Passing `since=N` automatically scopes to `buffer` since LogEntries has no seq numbering.
+- Summary header at the top reports total error / warning / info counts and the selected source. The two sources are clearly delineated in the body so the agent knows which entries persisted vs which were captured live.
+
+### Notes
+
+- LogEntries bit flags aren't part of any public API; the constants used (StickyError, ScriptingError, ScriptingException, ScriptCompileError, AssetImportError, etc.) are best-effort. The textual fallback handles Unity versions where the bit layout shifts.
+- `UnityConsoleReader.IsAvailable` returns false if reflection fails (drift in the internal API). When `source=unity` is requested explicitly and the API is unavailable, returns a clear error pointing at `source=buffer` as the alternative.
+
 ## [0.9.0] - 2026-05-10
 
 ### Added — Console / build verification (3 tools)
