@@ -63,6 +63,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             // NavMesh Tier 1
             ["bake_navmesh"]                = NavMeshAuthor.BakeLegacy,
             ["set_navmesh_agent"]           = NavMeshAuthor.SetAgent,
+            ["add_offmesh_link"]            = NavMeshAuthor.AddOffMeshLink,
+            ["add_navmesh_obstacle"]        = NavMeshAuthor.AddObstacle,
             // Animation
             ["set_animator_parameter"]   = AnimationAuthor.SetAnimatorParameter,
             ["play_animator_state"]      = AnimationAuthor.PlayAnimatorState,

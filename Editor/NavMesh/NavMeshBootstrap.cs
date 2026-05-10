@@ -27,13 +27,15 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
                 ChangesetExecutor.RegisterHandler("bake_navmesh_surface", NavMeshSurfaceAuthor.BakeSurface);
                 ChangesetExecutor.RegisterHandler("add_navmesh_surface", NavMeshSurfaceAuthor.AddSurface);
                 ChangesetExecutor.RegisterHandler("add_navmesh_modifier", NavMeshSurfaceAuthor.AddModifier);
+                ChangesetExecutor.RegisterHandler("add_navmesh_link", NavMeshSurfaceAuthor.AddLink);
 
                 Bootstrap.ToolRegistry.Register(new ListNavMeshSurfacesTool());
                 Bootstrap.ToolRegistry.Register(new BakeNavMeshSurfaceTool());
                 Bootstrap.ToolRegistry.Register(new AddNavMeshSurfaceTool());
                 Bootstrap.ToolRegistry.Register(new AddNavMeshModifierTool());
+                Bootstrap.ToolRegistry.Register(new AddNavMeshLinkTool());
 
-                Bootstrap.RecordEntry("[navmesh] registered 4 modern NavMesh tools (com.unity.ai.navigation present)");
+                Bootstrap.RecordEntry("[navmesh] registered 5 modern NavMesh tools (com.unity.ai.navigation present)");
             }
             catch (Exception e) { Debug.LogException(e); }
         }

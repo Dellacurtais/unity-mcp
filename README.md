@@ -20,6 +20,7 @@ Inside the Unity Editor:
 - **Screenshots** the active SceneView and returns a PNG so the LLM can visually reason about appearance
 - **Authors** scene content (primitives, prefab instances, lights, cameras, particle systems, audio sources, post-processing volumes) — with full Undo support
 - **Tunes** rendering (camera fov/clip planes, ambient + fog + skybox, color grading, bloom, vignette, tonemapping, etc.)
+- **Drives editor menus and static APIs** — `execute_menu_item` invokes any `[MenuItem]` (built-in, your own, or third-party like Probuilder/Odin); `invoke_static_method` calls public/non-public static methods reflectively. Powerful — gated by the same `Allow writes` kill switch.
 
 Reactive: the plugin keeps a live snapshot driven by `ObjectChangeEvents`, with a 250 ms debounce.
 
@@ -95,6 +96,17 @@ The plugin runs an MCP server (`streamable_http`) on `127.0.0.1:8765`. The agent
 | --- | --- |
 | `apply_changeset` | Run N ops as ONE Undo group. Supports `preview: true` for dry-run. Ops can carry a `label` and later ops can reference earlier results via `{ ref: <label> }` (e.g. set `parent` on children to the labeled root). |
 | `select_object` | Select in Hierarchy and optionally frame in SceneView. |
+
+### Reflect — menu items & static methods
+
+| Tool | Purpose |
+| --- | --- |
+| `list_menu_items` | Enumerates `[MenuItem]` attributes in loaded assemblies (filter by path prefix or assembly). Built-in Unity menus live in C++ and are NOT listed here; `execute_menu_item` still runs them when the path is known. |
+| `describe_static_method` | Returns parameter and return-type info for every static overload of a method. Use before `invoke_static_method` to learn the right `argTypes` and arg shapes. |
+| `execute_menu_item` | Wraps `EditorApplication.ExecuteMenuItem(path)`. Covers every `[MenuItem]` — your own, built-in, or third-party (Probuilder, Odin, asset-store). |
+| `invoke_static_method` | Reflectively calls any public/non-public static method. Coerces JSON args to .NET types (Vector3/Quaternion/Color, `UnityEngine.Object` via `instanceId`, enums by name). |
+
+> ⚠️ **Powerful tools.** `execute_menu_item` and `invoke_static_method` can run arbitrary editor code — they're how you reach tools that don't have a dedicated MCP wrapper. Both honour the same `Allow writes` kill switch as the rest of the write surface; turn it off when not authoring. Menu items that open MODAL dialogs (Build Settings, File/Save..., Player Settings) BLOCK the editor — avoid them. Generic and ref/out methods are explicitly unsupported.
 
 ## Embedded chat panel (Model B)
 
@@ -198,11 +210,12 @@ Other notes:
 
 - HTTP listener binds to `127.0.0.1` only.
 - Bearer token required on every MCP request.
-- **Allow writes** toggle in the Scene Analyzer panel kills all write tools when off.
+- **Allow writes** toggle in the Scene Analyzer panel kills all write tools when off — including `execute_menu_item` and `invoke_static_method`.
 - `delete_object` refuses recursive deletes of large subtrees without `force: true`.
 - All write ops register with `Undo`; `apply_changeset` collapses N ops into one undo step.
 - Plugin never auto-saves the scene.
 - Chat panel never executes commands locally — all execution flows through the coder runtime in D:\MCP.
+- `execute_menu_item` and `invoke_static_method` are intentionally unsandboxed: they let the agent drive arbitrary editor code (your own scripts, asset-store tools). The localhost bind + bearer token + `Allow writes` toggle are the only guard rails.
 
 ## License
 

@@ -74,6 +74,46 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new OpResult { Ok = true, Summary = $"{count} ScriptableObject type(s):\n" + sb, InstanceID = 0 };
         }
 
+        // ============== Find instances by subclass ==============
+
+        public static OpResult FindInstances(JObject args)
+        {
+            var typeName = (string)args["className"];
+            if (string.IsNullOrEmpty(typeName)) return OpResult.Fail("className is required");
+            var pathPrefix = (string)args["pathPrefix"];
+            var limit = (int?)args["limit"] ?? 200;
+
+            var type = ResolveScriptableObjectType(typeName);
+            if (type == null) return OpResult.Fail(
+                $"unknown ScriptableObject type '{typeName}'. " +
+                $"Use list_scriptable_object_types nameContains=\"{typeName}\" to find the real name.");
+
+            // Unity's `t:` filter matches the simple type name across the project. Two
+            // unrelated classes sharing a name would both surface, so we re-validate
+            // each hit against the resolved Type. IsAssignableFrom also lets a query
+            // for a base class surface its derived assets.
+            var guids = AssetDatabase.FindAssets($"t:{type.Name}");
+            if (guids == null || guids.Length == 0)
+                return new OpResult { Ok = true, Summary = $"0 instance(s) of {type.FullName}" };
+
+            var sb = new System.Text.StringBuilder();
+            int count = 0;
+            foreach (var guid in guids)
+            {
+                var p = AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrEmpty(p)) continue;
+                if (!string.IsNullOrEmpty(pathPrefix)
+                    && !p.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+                var assetType = AssetDatabase.GetMainAssetTypeAtPath(p);
+                if (assetType == null || !type.IsAssignableFrom(assetType)) continue;
+                var asset = AssetDatabase.LoadAssetAtPath<ScriptableObject>(p);
+                sb.AppendLine($"  {p}  guid={guid}  name='{(asset != null ? asset.name : "<unloaded>")}'  type={assetType.Name}");
+                count++;
+                if (count >= limit) { sb.AppendLine($"  [+more truncated at limit={limit}]"); break; }
+            }
+            return new OpResult { Ok = true, Summary = $"{count} instance(s) of {type.FullName}:\n{sb}" };
+        }
+
         // ============== Create ==============
 
         public static OpResult Create(JObject args)
@@ -94,6 +134,9 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var so = ScriptableObject.CreateInstance(type);
             so.name = Path.GetFileNameWithoutExtension(path);
             AssetDatabase.CreateAsset(so, path);
+            // Register so Ctrl+Z removes the freshly-created asset, matching the
+            // single-Undo-group contract used elsewhere in the toolkit.
+            Undo.RegisterCreatedObjectUndo(so, $"Create {type.Name}");
 
             // Apply initialFields if provided. Each key = SerializedProperty name; value goes through ApplyValue.
             int applied = 0;
@@ -111,7 +154,9 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             }
 
             EditorUtility.SetDirty(so);
-            AssetDatabase.SaveAssets();
+            // SaveAssetIfDirty is surgical — SaveAssets() would persist every other
+            // dirty asset in the project as a side-effect of this single create.
+            AssetDatabase.SaveAssetIfDirty(so);
             return OpResult.Success(so.GetInstanceID(),
                 $"created {type.Name} at {path}" + (applied > 0 ? $" (set {applied} initial field(s))" : ""));
         }
@@ -183,11 +228,17 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var src = AssetDatabase.LoadAssetAtPath<ScriptableObject>(srcPath);
             if (src == null) return OpResult.Fail($"source not found: {srcRef}");
 
-            var clone = Object.Instantiate(src);
-            clone.name = Path.GetFileNameWithoutExtension(newPath);
             EnsureFolder(Path.GetDirectoryName(newPath));
-            AssetDatabase.CreateAsset(clone, newPath);
-            AssetDatabase.SaveAssets();
+            // CopyAsset preserves sub-assets (BlendTrees, sub-clips, etc.) and is
+            // the official Unity way to clone an .asset with full fidelity.
+            // Object.Instantiate would only clone the root SO and silently lose
+            // anything attached via AssetDatabase.AddObjectToAsset.
+            if (!AssetDatabase.CopyAsset(srcPath, newPath))
+                return OpResult.Fail($"AssetDatabase.CopyAsset failed: {srcPath} → {newPath}");
+            var clone = AssetDatabase.LoadAssetAtPath<ScriptableObject>(newPath);
+            if (clone == null) return OpResult.Fail($"copy succeeded but clone not loadable at {newPath}");
+            Undo.RegisterCreatedObjectUndo(clone, $"Duplicate {src.GetType().Name}");
+            AssetDatabase.SaveAssetIfDirty(clone);
             return OpResult.Success(clone.GetInstanceID(),
                 $"duplicated {src.GetType().Name} '{src.name}' → {newPath}");
         }
@@ -341,10 +392,17 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         private static void EnsureFolder(string folder)
         {
-            if (string.IsNullOrEmpty(folder) || AssetDatabase.IsValidFolder(folder)) return;
-            var parent = Path.GetDirectoryName(folder);
+            if (string.IsNullOrEmpty(folder)) return;
+            // Path.GetDirectoryName returns Windows-style backslashes which
+            // AssetDatabase.IsValidFolder/CreateFolder reject — they expect
+            // forward-slash paths regardless of host OS. Normalize before
+            // anything else.
+            folder = folder.Replace('\\', '/');
+            if (AssetDatabase.IsValidFolder(folder)) return;
+            int slash = folder.LastIndexOf('/');
+            var parent = slash >= 0 ? folder.Substring(0, slash) : "";
+            var name = slash >= 0 ? folder.Substring(slash + 1) : folder;
             if (!string.IsNullOrEmpty(parent)) EnsureFolder(parent);
-            var name = Path.GetFileName(folder);
             if (!string.IsNullOrEmpty(parent)) AssetDatabase.CreateFolder(parent, name);
         }
 

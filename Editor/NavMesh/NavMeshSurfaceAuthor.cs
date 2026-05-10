@@ -4,6 +4,7 @@ using Maicon.SceneAnalyzer.Editor.Authoring;
 using Newtonsoft.Json.Linq;
 using Unity.AI.Navigation;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 // `NavMeshCollectGeometry` lives in UnityEngine.AI (core AIModule), not in
 // Unity.AI.Navigation (which has CollectObjects + the surface/modifier
@@ -47,15 +48,20 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
 
                 surface.BuildNavMesh();
                 EditorUtility.SetDirty(surface);
+                EditorSceneManager.MarkSceneDirty(go.scene);
                 return OpResult.Success(id, $"baked NavMeshSurface on '{go.name}'");
             }
 
-            // No id supplied → bake all surfaces in the active scene.
+            // No id supplied → bake every surface in every loaded scene. Inactive
+            // surfaces are valid bake targets, so explicitly include them — the
+            // default FindObjectsByType overload would skip them.
             int count = 0;
-            foreach (var s in UnityEngine.Object.FindObjectsByType<NavMeshSurface>(UnityEngine.FindObjectsSortMode.None))
+            foreach (var s in UnityEngine.Object.FindObjectsByType<NavMeshSurface>(
+                         FindObjectsInactive.Include, UnityEngine.FindObjectsSortMode.None))
             {
                 s.BuildNavMesh();
                 EditorUtility.SetDirty(s);
+                EditorSceneManager.MarkSceneDirty(s.gameObject.scene);
                 count++;
             }
             return OpResult.Success(0, $"baked {count} NavMeshSurface(s)");
@@ -93,6 +99,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
             if (autoBake) surface.BuildNavMesh();
 
             EditorUtility.SetDirty(surface);
+            EditorSceneManager.MarkSceneDirty(go.scene);
             return OpResult.Success(surface.GetInstanceID(),
                 $"NavMeshSurface ready on '{go.name}'  agentTypeID={surface.agentTypeID}  collect={surface.collectObjects}" +
                 (autoBake ? " + baked" : ""));
@@ -116,6 +123,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
                 if (args["size"] != null) mod.size = JsonHelpers.ParseVector3(args["size"], Vector3.one * 4f);
 
                 EditorUtility.SetDirty(mod);
+                EditorSceneManager.MarkSceneDirty(go.scene);
                 return OpResult.Success(mod.GetInstanceID(),
                     $"NavMeshModifierVolume on '{go.name}'  area=#{mod.area}  size={mod.size}");
             }
@@ -131,9 +139,37 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
                 if (args["applyToChildren"] != null) mod.applyToChildren = (bool)args["applyToChildren"];
 
                 EditorUtility.SetDirty(mod);
+                EditorSceneManager.MarkSceneDirty(go.scene);
                 return OpResult.Success(mod.GetInstanceID(),
                     $"NavMeshModifier on '{go.name}'  overrideArea={mod.overrideArea}  area=#{mod.area}  ignore={mod.ignoreFromBuild}");
             }
+        }
+
+        // ============== NavMeshLink (modern equivalent of OffMeshLink) ==============
+
+        public static OpResult AddLink(JObject args)
+        {
+            var id = (int?)args["instanceId"] ?? 0;
+            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+
+            var link = go.GetComponent<NavMeshLink>();
+            if (link == null) link = Undo.AddComponent<NavMeshLink>(go);
+            else Undo.RecordObject(link, "Configure NavMeshLink");
+
+            if (args["startPoint"] != null) link.startPoint = JsonHelpers.ParseVector3(args["startPoint"]);
+            if (args["endPoint"] != null) link.endPoint = JsonHelpers.ParseVector3(args["endPoint"]);
+            if (args["width"] != null) link.width = (float)args["width"];
+            if (args["agentTypeID"] != null) link.agentTypeID = (int)args["agentTypeID"];
+            if (args["area"] != null) link.area = ParseAreaIndex(args["area"]);
+            if (args["bidirectional"] != null) link.bidirectional = (bool)args["bidirectional"];
+            if (args["autoUpdate"] != null) link.autoUpdate = (bool)args["autoUpdate"];
+            if (args["costModifier"] != null) link.costModifier = (float)args["costModifier"];
+
+            EditorUtility.SetDirty(link);
+            EditorSceneManager.MarkSceneDirty(go.scene);
+            return OpResult.Success(link.GetInstanceID(),
+                $"NavMeshLink on '{go.name}'  start={link.startPoint}  end={link.endPoint}  width={link.width}  agentTypeID={link.agentTypeID}  area=#{link.area}  bidir={link.bidirectional}");
         }
 
         // ---- helpers ----

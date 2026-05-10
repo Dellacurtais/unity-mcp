@@ -5,6 +5,38 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-05-10
+
+### Added — ScriptableObject + NavMesh discovery / authoring (6 tools)
+
+- **`find_scriptable_objects`** (Discover, read-only) — lists every `.asset` of a given ScriptableObject subclass under the project. Bridges `list_scriptable_object_types` (which surfaces TYPES) to actual asset instances. `className` accepts simple or fully-qualified; optional `pathPrefix` filters to a folder; querying a base class also surfaces derived assets via `IsAssignableFrom`.
+- **`list_navmesh_areas`** (Read, built-in) — lists every named NavMesh area (Project Settings > Navigation > Areas) with its index and traversal cost. Indices map directly to bit positions in `NavMesh.areaMask`. Without this, area-mask use was guesswork.
+- **`list_navmesh_agent_types`** (Read, built-in) — lists every NavMesh agent type (`agentTypeID`, name, radius, height, slope, climb) via `NavMesh.GetSettingsCount()` + `GetSettingsByIndex()` + `GetSettingsNameFromID()`. Required input for `add_navmesh_surface` / `add_navmesh_link` to be usable on projects with custom agents.
+- **`add_offmesh_link`** (Write, built-in) — adds a built-in `OffMeshLink` and resolves its `startTransform` / `endTransform` from instance IDs. Supports `costOverride`, `biDirectional`, `activated`, `autoUpdatePositions`, `area` (string name or int index — single value, not mask).
+- **`add_navmesh_obstacle`** (Write, built-in) — adds (or reconfigures) `NavMeshObstacle` for dynamic carving. Supports `shape` (Box/Capsule), `center`, `size`, `radius`, `height`, `carving`, `carveOnlyStationary`, `carvingMoveThreshold`, `carvingTimeToStationary`. Re-adds patch only the props provided.
+- **`add_navmesh_link`** (Write, gated by `com.unity.ai.navigation`) — modern equivalent of `OffMeshLink`. Supports `startPoint`/`endPoint` (local-space), `width`, `agentTypeID`, `area`, `bidirectional`, `autoUpdate`, `costModifier`.
+
+### Fixed — ScriptableObject
+
+- **Undo broken on create/duplicate.** `create_scriptable_object` and `duplicate_scriptable_object` did not call `Undo.RegisterCreatedObjectUndo`, so Ctrl+Z left the on-disk asset behind — divergent from the rest of the toolkit's single-Undo-group contract. Both now register the created asset with Undo.
+- **Sub-assets lost on duplicate.** `duplicate_scriptable_object` used `Object.Instantiate(src)` which only clones the root SO and silently discards anything attached via `AddObjectToAsset` (BlendTrees, sub-clips, etc.). Switched to `AssetDatabase.CopyAsset(srcPath, newPath)` — the official Unity API for cloning `.asset` files with full fidelity.
+- **`EnsureFolder` failed on Windows for nested paths.** `Path.GetDirectoryName("Assets/Data/Foo.asset")` returns `"Assets\Data"` on Windows and `AssetDatabase.IsValidFolder` rejects backslashes, so multi-level auto-folder creation silently no-op'd. Path is now normalized to forward slashes before any AssetDatabase call.
+- **`SaveAssets()` was global.** `create_scriptable_object` / `duplicate_scriptable_object` called `AssetDatabase.SaveAssets()` which persists EVERY dirty asset in the project as a side-effect. Switched to surgical `AssetDatabase.SaveAssetIfDirty(asset)`.
+
+### Fixed — NavMesh
+
+- **`set_navmesh_agent` silent destination failures.** `agent.SetDestination()` returns `false` when the agent is not on a baked NavMesh, but the result was discarded. Now captured and surfaced as a `WARNING:` line in the response when either `SetDestination` returns false or `agent.isOnNavMesh == false`.
+- **`set_navmesh_agent` missing dirty marking.** Lacked `EditorUtility.SetDirty(agent)` and `EditorSceneManager.MarkSceneDirty(go.scene)`, so prefab-stage edits could be lost and unsaved-scene mutations didn't trigger a Save prompt.
+- **`bake_navmesh_surface` skipped inactive surfaces.** The "bake all" code path used `FindObjectsByType<NavMeshSurface>(FindObjectsSortMode.None)` which excludes inactive GameObjects — inactive surfaces are valid bake targets. Now passes `FindObjectsInactive.Include`. Also marks each scene dirty per surface.
+- **`add_navmesh_surface` / `add_navmesh_modifier` left scene clean.** Mutating scene components without `MarkSceneDirty` meant the user got no Save prompt on close. Added `EditorSceneManager.MarkSceneDirty(go.scene)` to `AddSurface`, `AddModifier` (volume + plain branches).
+- **`bake_navmesh async:true` had a confusing summary.** Old text told the caller to "query NavMeshBuilder.isRunning" but no MCP tool surfaced that. Replaced with a clearer note that there is no MCP polling endpoint and pointing to `async: false` for synchronous waits.
+- **`DescribeArea` showed `#0/#1` instead of names.** Now reverse-looks-up area names via `GameObjectUtility.GetNavMeshAreaNames()` so query summaries report `Walkable` / `Jump` / etc. and combine multiple set bits comma-separated.
+
+### Changed
+
+- `ChangesetExecutor` registers 3 new write op kinds: `add_offmesh_link`, `add_navmesh_obstacle` (main asmdef) and `add_navmesh_link` (registered by `NavMeshBootstrap` from the gated asmdef).
+- The gated NavMesh asmdef now registers 5 modern tools (was 4).
+
 ## [0.11.2] - 2026-05-10
 
 ### Fixed

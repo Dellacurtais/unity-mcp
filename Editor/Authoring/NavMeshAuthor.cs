@@ -1,6 +1,7 @@
 using System;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.AI;
 // `NavMeshBuilder` exists in BOTH UnityEditor.AI (legacy bake API we want)
@@ -119,7 +120,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             {
                 Ok = true,
                 Summary = asyncBake
-                    ? "legacy NavMesh bake started (async — query NavMeshBuilder.isRunning to know completion)"
+                    ? "legacy NavMesh bake started (async). No MCP polling endpoint yet — re-issue with `async: false` if you need a synchronous wait."
                     : "legacy NavMesh bake completed (sync)",
             };
         }
@@ -136,11 +137,15 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
             Undo.RecordObject(agent, "Set NavMeshAgent");
 
-            // Optional setters
+            // Track destination warning so the response surfaces silent failures
+            // (SetDestination returns false when the agent isn't on the NavMesh).
+            string destWarning = null;
             if (args["destination"] != null)
             {
                 var dest = JsonHelpers.ParseVector3(args["destination"]);
-                agent.SetDestination(dest);
+                bool setOk = agent.SetDestination(dest);
+                if (!setOk || !agent.isOnNavMesh)
+                    destWarning = $"WARNING: SetDestination failed (isOnNavMesh={agent.isOnNavMesh}). Bake the NavMesh and ensure the agent's spawn point is within sampling distance.";
             }
             if (args["isStopped"] != null) agent.isStopped = (bool)args["isStopped"];
             if (args["speed"] != null) agent.speed = (float)args["speed"];
@@ -162,7 +167,126 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             sb.AppendLine($"  speed={agent.speed}  accel={agent.acceleration}  angSpeed={agent.angularSpeed}  stopDist={agent.stoppingDistance}");
             sb.AppendLine($"  radius={agent.radius}  height={agent.height}  baseOffset={agent.baseOffset}  areaMask=0x{agent.areaMask:X8}");
             if (agent.path != null) sb.AppendLine($"  pathStatus={agent.path.status}  corners={agent.path.corners.Length}");
+            if (destWarning != null) sb.AppendLine($"  {destWarning}");
+
+            // Without SetDirty + scene-dirty, prefab-stage edits and unsaved-scene
+            // changes don't trigger a Save prompt and the Inspector may not refresh.
+            EditorUtility.SetDirty(agent);
+            EditorSceneManager.MarkSceneDirty(go.scene);
             return new OpResult { Ok = true, Summary = sb.ToString(), InstanceID = id };
+        }
+
+        // ============== Discovery: areas + agent types ==============
+
+        public static OpResult ListAreas(JObject args)
+        {
+            // GetNavMeshAreaNames maps directly to bit positions in NavMesh.areaMask;
+            // the indices are stable across all queries that take an area mask.
+            var names = GameObjectUtility.GetNavMeshAreaNames();
+            var sb = new System.Text.StringBuilder();
+            int count = 0;
+            for (int i = 0; i < names.Length; i++)
+            {
+                var n = names[i];
+                if (string.IsNullOrEmpty(n)) continue;
+                float cost = NavMesh.GetAreaCost(i);
+                sb.AppendLine($"  #{i}  '{n}'  cost={cost:F2}");
+                count++;
+            }
+            return new OpResult { Ok = true, Summary = $"{count} NavMesh area(s):\n{sb}" };
+        }
+
+        public static OpResult ListAgentTypes(JObject args)
+        {
+            var sb = new System.Text.StringBuilder();
+            int n = NavMesh.GetSettingsCount();
+            for (int i = 0; i < n; i++)
+            {
+                var s = NavMesh.GetSettingsByIndex(i);
+                string name = NavMesh.GetSettingsNameFromID(s.agentTypeID);
+                sb.AppendLine($"  agentTypeID={s.agentTypeID}  '{name}'  radius={s.agentRadius:F2}  height={s.agentHeight:F2}  slope={s.agentSlope:F1}  climb={s.agentClimb:F2}");
+            }
+            return new OpResult { Ok = true, Summary = $"{n} NavMesh agent type(s):\n{sb}" };
+        }
+
+        // ============== OffMeshLink + NavMeshObstacle (built-in components) ==============
+
+        public static OpResult AddOffMeshLink(JObject args)
+        {
+            var id = (int?)args["instanceId"] ?? 0;
+            var host = EditorUtility.InstanceIDToObject(id) as GameObject;
+            if (host == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+
+            var link = Undo.AddComponent<OffMeshLink>(host);
+
+            Transform startT = host.transform;
+            Transform endT = null;
+            var startId = (int?)args["startInstanceId"] ?? 0;
+            if (startId != 0)
+            {
+                var startGo = EditorUtility.InstanceIDToObject(startId) as GameObject;
+                if (startGo == null) return OpResult.Fail($"start GameObject not found: instanceId={startId}");
+                startT = startGo.transform;
+            }
+            var endId = (int?)args["endInstanceId"] ?? 0;
+            if (endId != 0)
+            {
+                var endGo = EditorUtility.InstanceIDToObject(endId) as GameObject;
+                if (endGo == null) return OpResult.Fail($"end GameObject not found: instanceId={endId}");
+                endT = endGo.transform;
+            }
+
+            link.startTransform = startT;
+            link.endTransform = endT;
+            if (args["costOverride"] != null) link.costOverride = (float)args["costOverride"];
+            if (args["biDirectional"] != null) link.biDirectional = (bool)args["biDirectional"];
+            if (args["activated"] != null) link.activated = (bool)args["activated"];
+            if (args["autoUpdatePositions"] != null) link.autoUpdatePositions = (bool)args["autoUpdatePositions"];
+            if (args["area"] != null)
+            {
+                // OffMeshLink.area is an index, not a mask. Reuse the area-name resolution
+                // that NavMeshAuthor.ParseAreaMask uses for the single-name path.
+                var t = args["area"];
+                if (t.Type == JTokenType.Integer) link.area = (int)t;
+                else if (t.Type == JTokenType.String)
+                {
+                    var idx = NavMesh.GetAreaFromName((string)t);
+                    if (idx >= 0) link.area = idx;
+                }
+            }
+
+            EditorUtility.SetDirty(link);
+            EditorSceneManager.MarkSceneDirty(host.scene);
+            return OpResult.Success(link.GetInstanceID(),
+                $"OffMeshLink on '{host.name}'  start='{(startT != null ? startT.name : "null")}'  end='{(endT != null ? endT.name : "null")}'  area=#{link.area}  biDirectional={link.biDirectional}");
+        }
+
+        public static OpResult AddObstacle(JObject args)
+        {
+            var id = (int?)args["instanceId"] ?? 0;
+            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+
+            var obstacle = go.GetComponent<NavMeshObstacle>();
+            if (obstacle == null) obstacle = Undo.AddComponent<NavMeshObstacle>(go);
+            else Undo.RecordObject(obstacle, "Configure NavMeshObstacle");
+
+            if (args["shape"] != null
+                && Enum.TryParse<NavMeshObstacleShape>((string)args["shape"], true, out var shape))
+                obstacle.shape = shape;
+            if (args["center"] != null) obstacle.center = JsonHelpers.ParseVector3(args["center"]);
+            if (args["size"] != null) obstacle.size = JsonHelpers.ParseVector3(args["size"], Vector3.one);
+            if (args["radius"] != null) obstacle.radius = (float)args["radius"];
+            if (args["height"] != null) obstacle.height = (float)args["height"];
+            if (args["carving"] != null) obstacle.carving = (bool)args["carving"];
+            if (args["carveOnlyStationary"] != null) obstacle.carveOnlyStationary = (bool)args["carveOnlyStationary"];
+            if (args["carvingMoveThreshold"] != null) obstacle.carvingMoveThreshold = (float)args["carvingMoveThreshold"];
+            if (args["carvingTimeToStationary"] != null) obstacle.carvingTimeToStationary = (float)args["carvingTimeToStationary"];
+
+            EditorUtility.SetDirty(obstacle);
+            EditorSceneManager.MarkSceneDirty(go.scene);
+            return OpResult.Success(obstacle.GetInstanceID(),
+                $"NavMeshObstacle on '{go.name}'  shape={obstacle.shape}  carving={obstacle.carving}  size={obstacle.size}  center={obstacle.center}");
         }
 
         // ============== Helpers ==============
@@ -199,16 +323,19 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         private static string DescribeArea(int mask)
         {
             if (mask == NavMesh.AllAreas) return "All";
-            // First set bit indicates the primary area.
+            string[] names = null;
+            try { names = GameObjectUtility.GetNavMeshAreaNames(); }
+            catch { /* names lookup is editor-only and best-effort */ }
+
+            var sb = new System.Text.StringBuilder();
             for (int i = 0; i < 32; i++)
             {
-                if ((mask & (1 << i)) != 0)
-                {
-                    // No public reverse-lookup; return index + mask.
-                    return $"#{i} (mask=0x{mask:X8})";
-                }
+                if ((mask & (1 << i)) == 0) continue;
+                string n = (names != null && i < names.Length) ? names[i] : null;
+                if (sb.Length > 0) sb.Append(',');
+                sb.Append(string.IsNullOrEmpty(n) ? $"#{i}" : n);
             }
-            return $"none (0x{mask:X8})";
+            return sb.Length > 0 ? $"{sb} (mask=0x{mask:X8})" : $"none (0x{mask:X8})";
         }
     }
 }

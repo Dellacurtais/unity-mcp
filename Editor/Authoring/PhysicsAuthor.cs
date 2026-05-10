@@ -203,49 +203,87 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var limit = (int?)args["limit"] ?? 100;
             var sortBy = ((string)args["sortBy"] ?? "name").ToLowerInvariant();
 
+            // Pre-resolve componentTypes once (was inside the per-GO loop, dominating cost).
+            // Fail fast on bad names so the agent gets a clear error instead of an empty result.
+            Type[] resolvedTypes = null;
+            if (componentTypes != null && componentTypes.Length > 0)
+            {
+                resolvedTypes = new Type[componentTypes.Length];
+                for (int i = 0; i < componentTypes.Length; i++)
+                {
+                    var ct = componentTypes[i];
+                    var t = ComponentTypeInspector.ResolveType(ct);
+                    if (t == null) return OpResult.Fail($"INVALID_ARG: unknown component type '{ct}'");
+                    if (!typeof(Component).IsAssignableFrom(t))
+                        return OpResult.Fail($"INVALID_ARG: '{ct}' is not a Component subtype (resolved to {t.FullName})");
+                    resolvedTypes[i] = t;
+                }
+            }
+
             var snapshot = Bootstrap.Snapshot;
             snapshot.RefreshIfNeeded();
 
-            var matches = new List<(GameObject go, float dist, int depth)>();
-            foreach (var info in snapshot.All())
+            // Aux filters shared between the two iteration strategies.
+            bool TryMatchAux(GameObject go, out float distance, out int depth)
             {
-                var go = EditorUtility.InstanceIDToObject(info.InstanceID) as GameObject;
-                if (go == null) continue;
-
-                if (!string.IsNullOrEmpty(tag) && go.tag != tag) continue;
-                if (layerFilter.HasValue && go.layer != layerFilter.Value) continue;
+                distance = 0; depth = 0;
+                if (!string.IsNullOrEmpty(tag) && go.tag != tag) return false;
+                if (layerFilter.HasValue && go.layer != layerFilter.Value) return false;
                 if (!string.IsNullOrEmpty(nameContains)
-                    && go.name.IndexOf(nameContains, StringComparison.OrdinalIgnoreCase) < 0) continue;
-
-                if (componentTypes != null && componentTypes.Length > 0)
-                {
-                    bool hasAll = true;
-                    foreach (var ct in componentTypes)
-                    {
-                        var t = ComponentTypeInspector.ResolveType(ct);
-                        if (t == null || go.GetComponent(t) == null) { hasAll = false; break; }
-                    }
-                    if (!hasAll) continue;
-                }
-
-                float distance = 0;
+                    && go.name.IndexOf(nameContains, StringComparison.OrdinalIgnoreCase) < 0) return false;
                 if (center.HasValue)
                 {
                     distance = Vector3.Distance(center.Value, go.transform.position);
-                    if (radius > 0 && distance > radius) continue;
+                    if (radius > 0 && distance > radius) return false;
                 }
-
                 if (!string.IsNullOrEmpty(pathContains))
                 {
-                    var path = snapshot.GetPath(info.InstanceID);
-                    if (path == null || path.IndexOf(pathContains, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    var path = snapshot.GetPath(go.GetInstanceID());
+                    if (path == null || path.IndexOf(pathContains, StringComparison.OrdinalIgnoreCase) < 0) return false;
                 }
-
-                int depth = 0;
                 var p = go.transform.parent;
                 while (p != null) { depth++; p = p.parent; }
+                return true;
+            }
 
-                matches.Add((go, distance, depth));
+            var matches = new List<(GameObject go, float dist, int depth)>();
+
+            if (resolvedTypes != null && resolvedTypes.Length > 0)
+            {
+                // Algorithmic flip: when filtering by componentType, seed from FindObjectsByType
+                // (~K results) instead of walking every GO in the snapshot (~N). For custom MBs,
+                // K is typically 10-100 vs N=5000+.
+                var seeds = UnityEngine.Object.FindObjectsByType(resolvedTypes[0], FindObjectsInactive.Include, FindObjectsSortMode.None);
+                var seenIds = new HashSet<int>();
+                foreach (var seed in seeds)
+                {
+                    var seedComp = seed as Component;
+                    if (seedComp == null) continue;
+                    var go = seedComp.gameObject;
+                    if (go == null) continue;
+                    // A GO may carry multiple instances of the seed type (e.g. 2 BoxColliders); process once.
+                    if (!seenIds.Add(go.GetInstanceID())) continue;
+
+                    bool hasAll = true;
+                    for (int i = 1; i < resolvedTypes.Length; i++)
+                    {
+                        if (go.GetComponent(resolvedTypes[i]) == null) { hasAll = false; break; }
+                    }
+                    if (!hasAll) continue;
+
+                    if (TryMatchAux(go, out float distance, out int depth))
+                        matches.Add((go, distance, depth));
+                }
+            }
+            else
+            {
+                foreach (var info in snapshot.All())
+                {
+                    var go = EditorUtility.InstanceIDToObject(info.InstanceID) as GameObject;
+                    if (go == null) continue;
+                    if (TryMatchAux(go, out float distance, out int depth))
+                        matches.Add((go, distance, depth));
+                }
             }
 
             switch (sortBy)

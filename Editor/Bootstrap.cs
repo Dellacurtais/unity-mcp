@@ -8,6 +8,7 @@ using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Analyze;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read;
+using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write;
 using UnityEditor;
 using UnityEngine;
@@ -136,6 +137,7 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new DescribeComponentTypeTool());
                 ToolRegistry.Register(new ListScriptableObjectTypesTool());
                 ToolRegistry.Register(new ReadScriptableObjectTool());
+                ToolRegistry.Register(new FindScriptableObjectsTool());
                 ToolRegistry.Register(new ListAnimatorControllersTool());
                 ToolRegistry.Register(new ReadAnimatorControllerTool());
                 ToolRegistry.Register(new ReadAnimationClipTool());
@@ -157,13 +159,17 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new QuerySceneTool());
                 ToolRegistry.Register(new ClassifySceneTool());
                 ToolRegistry.Register(new QueryCollisionLayersTool());
-                // NavMesh Tier 1 — built-in queries + legacy bake + agent
+                // NavMesh Tier 1 — built-in queries + discovery + legacy bake + agent + links/obstacle
                 ToolRegistry.Register(new NavMeshSamplePositionTool());
                 ToolRegistry.Register(new NavMeshCalculatePathTool());
                 ToolRegistry.Register(new NavMeshRaycastTool());
                 ToolRegistry.Register(new NavMeshFindClosestEdgeTool());
+                ToolRegistry.Register(new ListNavMeshAreasTool());
+                ToolRegistry.Register(new ListNavMeshAgentTypesTool());
                 ToolRegistry.Register(new BakeNavMeshTool());
                 ToolRegistry.Register(new SetNavMeshAgentTool());
+                ToolRegistry.Register(new AddOffMeshLinkTool());
+                ToolRegistry.Register(new AddNavMeshObstacleTool());
                 // Write — create
                 ToolRegistry.Register(new CreatePrimitiveTool());
                 ToolRegistry.Register(new CreateEmptyTool());
@@ -227,6 +233,13 @@ namespace Maicon.SceneAnalyzer.Editor
                 // Batch + selection
                 ToolRegistry.Register(new ApplyChangesetTool());
                 ToolRegistry.Register(new SelectObjectTool());
+                // Reflect — menu items + static method invocation. execute_menu_item and
+                // invoke_static_method are write-gated; list_menu_items and
+                // describe_static_method are read-only discovery aids.
+                ToolRegistry.Register(new ListMenuItemsTool());
+                ToolRegistry.Register(new DescribeStaticMethodTool());
+                ToolRegistry.Register(new ExecuteMenuItemTool());
+                ToolRegistry.Register(new InvokeStaticMethodTool());
                 // Post-processing tools (create_volume, add_post_effect, set_post_effect_property,
                 // apply_color_grading) live in com.maicon.scene-analyzer.Editor.PostFx and are
                 // registered there via PostFxBootstrap when SRP Core is present.

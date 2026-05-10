@@ -181,9 +181,23 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return list;
         }
 
+        // Reflection over AppDomain.GetAssemblies() + asm.GetTypes() costs ~1M ops per
+        // miss on a typical Unity project. Cache hits (including null misses) skip it
+        // entirely. Domain reload destroys statics → cache repopulates naturally.
+        // Safe without locks: all callers reach this via MainThreadDispatcher.
+        private static readonly Dictionary<string, Type> _typeCache = new Dictionary<string, Type>();
+
         public static Type ResolveType(string name)
         {
             if (string.IsNullOrEmpty(name)) return null;
+            if (_typeCache.TryGetValue(name, out var cached)) return cached;
+            var resolved = ResolveTypeUncached(name);
+            _typeCache[name] = resolved;
+            return resolved;
+        }
+
+        private static Type ResolveTypeUncached(string name)
+        {
             // try full names + UnityEngine fast path
             var direct = Type.GetType(name) ?? Type.GetType($"UnityEngine.{name}, UnityEngine");
             if (direct != null) return direct;

@@ -142,23 +142,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         }
 
         public static Type ResolveComponentType(string name)
-        {
-            // Try exact / fast paths first.
-            var t = Type.GetType(name);
-            if (t != null) return t;
-            // Walk loaded assemblies as fallback (matches simple names too).
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                t = asm.GetType(name);
-                if (t != null) return t;
-                foreach (var candidate in asm.GetTypes())
-                {
-                    if (candidate.Name == name && typeof(Component).IsAssignableFrom(candidate))
-                        return candidate;
-                }
-            }
-            return null;
-        }
+            => ComponentTypeInspector.ResolveType(name);
 
         public static void ApplyValue(SerializedProperty prop, JToken value)
         {
