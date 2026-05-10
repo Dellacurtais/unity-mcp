@@ -54,6 +54,18 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             ["set_layer"]              = GameObjectEditor.SetLayer,
             ["delete_object"]          = DeleteObject,
             ["set_render_settings"]    = RenderSettingsEditor.Apply,
+            // Animation
+            ["set_animator_parameter"]   = AnimationAuthor.SetAnimatorParameter,
+            ["play_animator_state"]      = AnimationAuthor.PlayAnimatorState,
+            ["create_animator_controller"] = AnimationAuthor.CreateController,
+            ["add_animator_state"]       = AnimationAuthor.AddState,
+            ["add_animator_transition"]  = AnimationAuthor.AddTransition,
+            ["add_animator_parameter"]   = AnimationAuthor.AddParameter,
+            ["assign_controller_to_animator"] = AnimationAuthor.AssignControllerToAnimator,
+            ["add_animator_layer"]       = AnimationAuthor.AddLayer,
+            ["create_blend_tree"]        = AnimationAuthor.CreateBlendTree,
+            ["add_blend_tree_motion"]    = AnimationAuthor.AddBlendTreeMotion,
+            ["add_animation_event"]      = AnimationAuthor.AddAnimationEvent,
         };
 
         /// External assemblies (e.g. PostFx) call this from [InitializeOnLoad]

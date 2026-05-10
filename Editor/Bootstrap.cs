@@ -87,6 +87,11 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new FindReferencesToAssetTool());
                 ToolRegistry.Register(new ListComponentTypesTool());
                 ToolRegistry.Register(new DescribeComponentTypeTool());
+                ToolRegistry.Register(new ListAnimatorControllersTool());
+                ToolRegistry.Register(new ReadAnimatorControllerTool());
+                ToolRegistry.Register(new ReadAnimationClipTool());
+                ToolRegistry.Register(new ReadAvatarTool());
+                ToolRegistry.Register(new ReadAnimatorStateTool());
                 // Write — create
                 ToolRegistry.Register(new CreatePrimitiveTool());
                 ToolRegistry.Register(new CreateEmptyTool());
@@ -114,6 +119,18 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new SetParticleModuleTool());
                 ToolRegistry.Register(new PlayParticlePreviewTool());
                 ToolRegistry.Register(new RefreshAssetsTool());
+                // Animation (Mecanim) — Tier 1 + 2
+                ToolRegistry.Register(new SetAnimatorParameterTool());
+                ToolRegistry.Register(new PlayAnimatorStateTool());
+                ToolRegistry.Register(new CreateAnimatorControllerTool());
+                ToolRegistry.Register(new AddAnimatorStateTool());
+                ToolRegistry.Register(new AddAnimatorTransitionTool());
+                ToolRegistry.Register(new AddAnimatorParameterTool());
+                ToolRegistry.Register(new AssignAnimatorControllerTool());
+                ToolRegistry.Register(new AddAnimatorLayerTool());
+                ToolRegistry.Register(new CreateBlendTreeTool());
+                ToolRegistry.Register(new AddBlendTreeMotionTool());
+                ToolRegistry.Register(new AddAnimationEventTool());
                 // Write — render settings
                 ToolRegistry.Register(new SetRenderSettingsTool());
                 // Batch + selection

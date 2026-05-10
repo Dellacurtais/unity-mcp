@@ -1,0 +1,30 @@
+{
+    "name": "com.maicon.scene-analyzer.Editor.Timeline",
+    "rootNamespace": "Maicon.SceneAnalyzer.Editor.Timeline",
+    "references": [
+        "com.maicon.scene-analyzer",
+        "com.maicon.scene-analyzer.Editor",
+        "Unity.Newtonsoft.Json",
+        "Unity.Timeline",
+        "Unity.Timeline.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "SCENE_ANALYZER_HAS_TIMELINE"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.timeline",
+            "expression": "1.0.0",
+            "define": "SCENE_ANALYZER_HAS_TIMELINE"
+        }
+    ],
+    "noEngineReferences": false
+}

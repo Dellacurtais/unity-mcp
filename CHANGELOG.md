@@ -5,6 +5,54 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-10
+
+### Added — Mecanim (Tier 1 + 2)
+
+**Discovery (5):**
+- `list_animator_controllers` — `.controller` assets, filter by name/folder.
+- `read_animator_controller` — full structure: parameters, layers, per-layer states + transitions (with conditions), AnyState transitions.
+- `read_animation_clip` — length, frameRate, looping, curve bindings (path/property/type, capped at 30), animation events.
+- `read_avatar` — humanoid avatar info: human-bone → bone-name mapping, twist values, skeleton transform count.
+- `read_animator_state` — runtime state per layer: current state hash, normalizedTime, length, weight, parameter values.
+
+**Runtime (2):**
+- `set_animator_parameter` — float/int/bool/trigger setter (auto-detects type from controller).
+- `play_animator_state` — `Animator.Play(state, layer, normalizedTime)`.
+
+**Authoring (9):**
+- `create_animator_controller` — new `.controller` asset (auto-creates parent folders).
+- `add_animator_parameter` — Float/Int/Bool/Trigger with optional default.
+- `add_animator_state` — with optional motion (clip GUID/path), speed, isDefault.
+- `add_animator_transition` — from→to (or AnyState→to) with hasExitTime/duration/offset and conditions array `[{parameter, mode, threshold}]`.
+- `add_animator_layer` — name, weight, blendingMode (Override/Additive), optional avatar mask.
+- `create_blend_tree` — Simple1D / SimpleDirectional2D / FreeformDirectional2D / FreeformCartesian2D / Direct, with blendParameter (+ Y for 2D).
+- `add_blend_tree_motion` — `threshold` for 1D, `position: [x,y]` for 2D.
+- `add_animation_event` — function call at time T with optional string/float/int parameter (DontRequireReceiver).
+- `assign_controller_to_animator` — sets Animator.runtimeAnimatorController on a scene GameObject.
+
+### Added — Timeline (Tier 3) in secondary asmdef
+
+New `com.maicon.scene-analyzer.Editor.Timeline` asmdef gated by `defineConstraints: ["SCENE_ANALYZER_HAS_TIMELINE"]` with `versionDefines` on `com.unity.timeline >= 1.0.0`. Doesn't break projects without the Timeline package — the asmdef simply doesn't compile, the 5 tools are absent.
+
+- `create_timeline_asset` — new TimelineAsset (.playable).
+- `add_timeline_track` — Animation/Audio/Activation/Control/Signal/Marker (or full custom TrackAsset type name).
+- `add_timeline_clip` — start/duration on a named track, optional source asset (AnimationClip → AnimationTrack auto-bound; generic reflection assignment for other PlayableAsset shapes).
+- `assign_timeline_to_director` — sets `PlayableDirector.playableAsset` on a GameObject (auto-adds the component if missing).
+- `play_timeline` — play / stop / pause / resume / evaluate(time) on the director.
+
+### Authoring helpers
+
+- `Editor/Authoring/AnimationAuthor.cs` — all Mecanim helpers in one place (16 ops).
+- `Editor/Timeline/TimelineAuthor.cs` — all Timeline helpers (5 ops).
+- `Editor/Timeline/TimelineBootstrap.cs` — `[InitializeOnLoad]` registers tools + changeset op kinds when SCENE_ANALYZER_HAS_TIMELINE is defined.
+
+### Changed
+
+- `ChangesetExecutor` registers 11 new Mecanim op kinds (main asmdef) + 5 new Timeline op kinds (Timeline asmdef registers them at editor load).
+- Default context preamble updated with **Animation (Mecanim)** and **Timeline** sections, listing every new tool grouped by intent.
+- Tool count is now **69** when Timeline is installed (was 48 in 0.5.4; +21 this release: 16 Mecanim + 5 Timeline). Without Timeline: 64.
+
 ## [0.5.4] - 2026-05-10
 
 ### Fixed — based on real-session error patterns (session 651 forensics)

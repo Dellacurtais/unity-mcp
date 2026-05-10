@@ -189,6 +189,14 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "`set_active`, `rename_object`, `set_tag`, `set_layer`, `parent_object`, `duplicate_object` (clones with components+children, supports offset/position), `delete_object`.\n" +
                 "- **Particles**: `set_particle_module` (typed setter for main/emission/shape/colorOverLifetime/sizeOverLifetime/velocityOverLifetime/noise/trails/renderer/collision), " +
                 "`play_particle_preview` (play/stop/pause/clear/restart/simulate the in-editor preview).\n" +
+                "- **Animation (Mecanim)**: `list_animator_controllers`, `read_animator_controller` (states/transitions/parameters/layers), " +
+                "`read_animation_clip` (curves + events), `read_avatar` (humanoid bones), `read_animator_state` (runtime state). " +
+                "Authoring: `create_animator_controller`, `add_animator_parameter` (Float/Int/Bool/Trigger), `add_animator_state` (with optional motion clip), " +
+                "`add_animator_transition` (from/to + conditions), `add_animator_layer` (with weight/avatarMask), " +
+                "`create_blend_tree` + `add_blend_tree_motion` (1D/2D), `add_animation_event` (function call at time T), " +
+                "`assign_controller_to_animator` (set Animator.runtimeAnimatorController). Runtime: `set_animator_parameter`, `play_animator_state`.\n" +
+                "- **Timeline** (when `com.unity.timeline` is installed): `create_timeline_asset`, `add_timeline_track` " +
+                "(Animation/Audio/Activation/Control/Signal/Marker), `add_timeline_clip`, `assign_timeline_to_director`, `play_timeline`.\n" +
                 "- **Render & post-fx** (URP/HDRP): `set_render_settings`, `create_volume`, `add_post_effect`, " +
                 "`remove_post_effect`, `set_post_effect_property`, `apply_color_grading`, " +
                 "`list_post_effects` (effects on a volume OR all VolumeComponent types available), " +
