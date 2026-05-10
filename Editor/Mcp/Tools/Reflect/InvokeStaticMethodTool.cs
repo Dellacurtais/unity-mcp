@@ -41,12 +41,24 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                 ["args"] = new JObject
                 {
                     ["type"] = "array",
-                    // items is intentionally permissive: args is heterogeneous (numbers,
-                    // strings, {instanceId:int} for UnityEngine.Object, arrays for
-                    // Vector3, etc). OpenAI strict-mode validators reject type:array
-                    // without an items field, so use the empty-schema "any value" form.
-                    ["items"] = new JObject(),
-                    ["description"] = "JSON values, one per parameter. UnityEngine.Object params accept {instanceId:int}.",
+                    // anyOf with explicit primitive/object branches — empty-schema
+                    // items ({}) gets stripped by some provider validators (OpenAI
+                    // strict-mode, Gemini), so enumerate valid JSON value kinds.
+                    // Vector3/Quaternion/Color args should use object form
+                    // ({x,y,z}, {r,g,b,a}); JsonHelpers.Parse* already accepts those.
+                    ["items"] = new JObject
+                    {
+                        ["anyOf"] = new JArray
+                        {
+                            new JObject { ["type"] = "string" },
+                            new JObject { ["type"] = "number" },
+                            new JObject { ["type"] = "integer" },
+                            new JObject { ["type"] = "boolean" },
+                            new JObject { ["type"] = "object" },
+                            new JObject { ["type"] = "null" },
+                        },
+                    },
+                    ["description"] = "JSON values, one per parameter. UnityEngine.Object params accept {instanceId:int}; Vector3/Quaternion/Color use object form like {x,y,z} or {r,g,b,a}.",
                 },
             },
             ["required"] = new JArray { "typeName", "methodName" },
