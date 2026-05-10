@@ -41,6 +41,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                 ["args"] = new JObject
                 {
                     ["type"] = "array",
+                    // items is intentionally permissive: args is heterogeneous (numbers,
+                    // strings, {instanceId:int} for UnityEngine.Object, arrays for
+                    // Vector3, etc). OpenAI strict-mode validators reject type:array
+                    // without an items field, so use the empty-schema "any value" form.
+                    ["items"] = new JObject(),
                     ["description"] = "JSON values, one per parameter. UnityEngine.Object params accept {instanceId:int}.",
                 },
             },
