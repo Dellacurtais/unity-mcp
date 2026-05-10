@@ -85,6 +85,8 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new SearchAssetsTool());
                 ToolRegistry.Register(new ReadAssetMetadataTool());
                 ToolRegistry.Register(new FindReferencesToAssetTool());
+                ToolRegistry.Register(new ListComponentTypesTool());
+                ToolRegistry.Register(new DescribeComponentTypeTool());
                 // Write — create
                 ToolRegistry.Register(new CreatePrimitiveTool());
                 ToolRegistry.Register(new CreateEmptyTool());
@@ -98,6 +100,12 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new SetCameraPropsTool());
                 ToolRegistry.Register(new SetPropertyTool());
                 ToolRegistry.Register(new AddComponentTool());
+                ToolRegistry.Register(new RemoveComponentTool());
+                ToolRegistry.Register(new SetEnabledTool());
+                ToolRegistry.Register(new SetActiveTool());
+                ToolRegistry.Register(new RenameObjectTool());
+                ToolRegistry.Register(new SetTagTool());
+                ToolRegistry.Register(new SetLayerTool());
                 ToolRegistry.Register(new SetMaterialTool());
                 ToolRegistry.Register(new ParentObjectTool());
                 ToolRegistry.Register(new DeleteObjectTool());

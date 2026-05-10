@@ -11,6 +11,76 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
     /// semantics.
     public static class ComponentEditor
     {
+        public static OpResult RemoveComponent(JObject args)
+        {
+            var id = (int?)args["instanceId"] ?? 0;
+            var typeName = (string)args["componentType"];
+            if (string.IsNullOrEmpty(typeName)) return OpResult.Fail("componentType is required");
+
+            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+
+            var type = ResolveComponentType(typeName);
+            if (type == null) return OpResult.Fail($"unknown component type '{typeName}'");
+
+            // Cannot remove Transform — Unity refuses.
+            if (type == typeof(Transform)) return OpResult.Fail("cannot remove Transform");
+
+            var component = go.GetComponent(type);
+            if (component == null) return OpResult.Fail($"component {typeName} not found on '{go.name}'");
+
+            // Optional `nth` arg to disambiguate when multiple of the same type are attached.
+            var nth = (int?)args["nth"];
+            if (nth.HasValue && nth.Value > 0)
+            {
+                var all = go.GetComponents(type);
+                if (nth.Value >= all.Length) return OpResult.Fail($"nth={nth.Value} out of range (only {all.Length} of type {typeName})");
+                component = all[nth.Value];
+            }
+
+            Undo.DestroyObjectImmediate(component);
+            return OpResult.Success(id, $"removed {type.Name}");
+        }
+
+        public static OpResult SetEnabled(JObject args)
+        {
+            var id = (int?)args["instanceId"] ?? 0;
+            var typeName = (string)args["componentType"];
+            if (string.IsNullOrEmpty(typeName)) return OpResult.Fail("componentType is required");
+            var enabled = (bool?)args["enabled"] ?? true;
+
+            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+
+            var type = ResolveComponentType(typeName);
+            if (type == null) return OpResult.Fail($"unknown component type '{typeName}'");
+
+            var component = go.GetComponent(type);
+            if (component == null) return OpResult.Fail($"component {typeName} not found on '{go.name}'");
+
+            // Behaviour.enabled covers MonoBehaviour + most renderers/colliders
+            // (Renderer.enabled / Collider.enabled exist but inherit differently).
+            if (component is Behaviour b)
+            {
+                Undo.RecordObject(b, enabled ? "Enable Component" : "Disable Component");
+                b.enabled = enabled;
+                return OpResult.Success(id, $"{type.Name}.enabled = {enabled}");
+            }
+            if (component is Renderer r)
+            {
+                Undo.RecordObject(r, enabled ? "Enable Renderer" : "Disable Renderer");
+                r.enabled = enabled;
+                return OpResult.Success(id, $"{type.Name}.enabled = {enabled}");
+            }
+            if (component is Collider c)
+            {
+                Undo.RecordObject(c, enabled ? "Enable Collider" : "Disable Collider");
+                c.enabled = enabled;
+                return OpResult.Success(id, $"{type.Name}.enabled = {enabled}");
+            }
+            return OpResult.Fail($"{type.Name} has no 'enabled' field (not a Behaviour/Renderer/Collider)");
+        }
+
         public static OpResult AddComponent(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;

@@ -175,14 +175,23 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             return
                 "[unity-context — auto-injected by the Unity Scene Analyzer plugin on the first message of this session]\n\n" +
                 $"You're connected to the Unity Editor running at `{unityRoot ?? "<unknown>"}` via the Model Context Protocol. " +
-                "The plugin `com.maicon.scene-analyzer` exposes scene tools prefixed `ext_unity_editor__` — examples: " +
-                "`read_hierarchy`, `read_scene`, `read_component`, `get_project_meta`, `screenshot_scene_view`, " +
-                "`analyze_performance`, `validate_scene`, `list_assets`, `search_assets`, `read_asset_metadata`, " +
-                "`find_references_to_asset`, `create_primitive`, `create_empty`, `instantiate_prefab`, `create_light`, " +
-                "`create_camera`, `create_audio_source`, `create_particle_system`, `set_transform`, `set_camera_props`, " +
-                "`set_property`, `add_component`, `set_material`, `parent_object`, `delete_object`, `apply_changeset`, " +
-                "`select_object`, `set_render_settings`, plus (when URP/HDRP is installed) `create_volume`, " +
-                "`add_post_effect`, `set_post_effect_property`, `apply_color_grading`. They appear in your tools/list automatically.\n\n" +
+                "The plugin `com.maicon.scene-analyzer` exposes scene tools prefixed `ext_unity_editor__`:\n" +
+                "- **Read / inspect**: `read_hierarchy`, `read_scene`, `read_component`, `get_project_meta`, `screenshot_scene_view`.\n" +
+                "- **Analyze**: `analyze_performance`, `validate_scene`.\n" +
+                "- **Discover assets & types**: `list_assets`, `search_assets`, `read_asset_metadata`, `find_references_to_asset`, " +
+                "`list_component_types` (every Component subclass loaded — built-in + user MonoBehaviours), " +
+                "`describe_component_type` (schema of a type without an instance: serialized fields, attributes like Range/Tooltip, RequireComponent list).\n" +
+                "- **Create**: `create_primitive`, `create_empty`, `instantiate_prefab`, `create_light`, `create_camera`, " +
+                "`create_audio_source`, `create_particle_system`.\n" +
+                "- **Modify scene**: `set_transform`, `set_camera_props`, `set_property` (any SerializedProperty), `set_material`, " +
+                "`add_component`, `remove_component` (drops a script/collider/etc), `set_enabled` (Behaviour/Renderer/Collider on/off without removing), " +
+                "`set_active` (GameObject SetActive), `rename_object`, `set_tag`, `set_layer`, `parent_object`, `delete_object`.\n" +
+                "- **Render & post-fx** (URP/HDRP): `set_render_settings`, `create_volume`, `add_post_effect`, " +
+                "`set_post_effect_property`, `apply_color_grading`.\n" +
+                "- **Batch & selection**: `apply_changeset` (atomic batch — all create/modify ops above as ONE Undo group, " +
+                "with `label`+`{ref:…}` chaining for parent references), `select_object`.\n\n" +
+                "When asked to add or tweak a component you don't know yet, the typical loop is: " +
+                "`list_component_types` → `describe_component_type` → `add_component` → `set_property` per field.\n\n" +
                 "Two skills live under `.claude/skills/` of this project. Invoke them **by name** via the skill-runner tool when the user's intent matches:\n" +
                 "- `unity-scene-audit` — read-only diagnostic flow (performance + validation). Use when the user asks to audit, diagnose, " +
                 "find broken refs, or understand the scene.\n" +

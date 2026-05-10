@@ -5,6 +5,31 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-05-09
+
+### Added — component lifecycle + reflection-based discovery
+
+- **`remove_component`** — drops a Behaviour/MonoBehaviour/Collider/Rigidbody/Renderer/etc. from a GameObject. Refuses Transform. Supports `nth` to disambiguate when several of the same type are attached. Single Undo step.
+- **`set_enabled`** — toggles `Behaviour.enabled` / `Renderer.enabled` / `Collider.enabled` without removing the component. Errors clearly when the type doesn't expose the flag.
+- **`set_active`** — `gameObject.SetActive(bool)`.
+- **`rename_object`** — sets `gameObject.name` (does not touch the underlying prefab asset).
+- **`set_tag`** — sets `gameObject.tag`. Errors when the tag isn't registered in Project Settings → Tags & Layers.
+- **`set_layer`** — accepts int (0..31) or layer name string. Pass `recursive: true` to apply to children.
+- **`list_component_types`** — enumerates every concrete `UnityEngine.Component` subclass the editor has loaded, across every assembly. Filters by `nameContains`, `category` (`all` / `builtin` / `user`), `limit`. Returns name, fullName, namespace, assembly, isMonoBehaviour, isBuiltin, plus the `[RequireComponent]` list when present. Lets the agent discover what's installable on a GameObject (built-in physics/rendering/audio + every custom MonoBehaviour in the project) before calling `add_component`.
+- **`describe_component_type`** — returns the SCHEMA of a Component type without needing a scene instance: serialized fields (name, type, isArray, elementType, isRequired) with attribute metadata (`Range`, `Tooltip`, `Header`, `Min`, `Multiline`, `TextArea`, our `[RequiredField]`, hideInInspector). Optional `includeMethods` lists public instance methods. Ideal pre-step before `set_property` so the agent knows the valid `propertyPath`s.
+
+### Added — authoring helpers
+
+- `Editor/Authoring/ComponentTypeInspector.cs` — reflection over `AppDomain.CurrentDomain.GetAssemblies()` with safe handling of `ReflectionTypeLoadException`. Returns shape-rich `TypeDescriptor` / `FieldDescriptor` records.
+- `Editor/Authoring/GameObjectEditor.cs` — SetActive / Rename / SetTag / SetLayer.
+- `Editor/Authoring/ComponentEditor.cs` — `RemoveComponent`, `SetEnabled`.
+
+### Changed
+
+- `ChangesetExecutor` handler dictionary now routes 6 new op kinds: `remove_component`, `set_enabled`, `set_active`, `rename_object`, `set_tag`, `set_layer`. They batch into a single Undo group like the existing ops.
+- Default context preamble (auto-injected on first message of a new session) was reorganised into bulleted categories AND mentions the new component-discovery loop: `list_component_types → describe_component_type → add_component → set_property`. Helps the agent pick the right tool without trial-and-error.
+- Tool count is now **40** (was 32 in 0.3.x; +8 in this release).
+
 ## [0.3.15] - 2026-05-09
 
 ### Fixed
