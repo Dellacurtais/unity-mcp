@@ -13,6 +13,7 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KPort = "Maicon.SceneAnalyzer.Port";
         private const string KToken = "Maicon.SceneAnalyzer.Token";
         private const string KMaxBatchOps = "Maicon.SceneAnalyzer.MaxBatchOps";
+        private const string KSnapshotIncludeRendererSummary = "Maicon.SceneAnalyzer.SnapshotIncludeRendererSummary";
 
         // Coder client (Model B — chat panel inside Unity that talks to D:\MCP).
         private const string KCoderUrl = "Maicon.SceneAnalyzer.Coder.Url";
@@ -59,6 +60,17 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             get => EditorPrefs.GetInt(KMaxBatchOps, 500);
             set => EditorPrefs.SetInt(KMaxBatchOps, value);
+        }
+
+        /// When true, SceneSnapshot.Refresh populates a per-Renderer summary
+        /// (materials, shadow casting, batchable static, world bounds) keyed by
+        /// renderer InstanceID. Off by default — the populate adds 10-50ms per
+        /// refresh on medium scenes (sharedMaterials + AssetDatabase paths +
+        /// r.bounds force-compute). Turn on when an analyzer needs the cache.
+        public static bool SnapshotIncludeRendererSummary
+        {
+            get => EditorPrefs.GetBool(KSnapshotIncludeRendererSummary, false);
+            set => EditorPrefs.SetBool(KSnapshotIncludeRendererSummary, value);
         }
 
         public static string CoderUrl

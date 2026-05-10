@@ -71,6 +71,10 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             _scenePath = active.path;
             unchecked { _revision++; }
 
+            // Settings flag is read once per Refresh — flipping it mid-refresh
+            // would split the snapshot between with/without renderer cache.
+            var includeRenderers = Settings.SnapshotIncludeRendererSummary;
+
             for (int s = 0; s < SceneManager.sceneCount; s++)
             {
                 var scene = SceneManager.GetSceneAt(s);
@@ -83,12 +87,12 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                 });
                 foreach (var root in scene.GetRootGameObjects())
                 {
-                    Capture(root, parentId: 0, sceneName: scene.name);
+                    Capture(root, parentId: 0, sceneName: scene.name, includeRenderers: includeRenderers);
                 }
             }
         }
 
-        private void Capture(GameObject go, int parentId, string sceneName)
+        private void Capture(GameObject go, int parentId, string sceneName, bool includeRenderers)
         {
             var staticFlags = GameObjectUtility.GetStaticEditorFlags(go);
             var info = new GameObjectInfo
@@ -151,7 +155,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                     IsMissing = false,
                 });
 
-                if (c is Renderer r)
+                if (includeRenderers && c is Renderer r)
                 {
                     var sharedMats = r.sharedMaterials;
                     var paths = new string[sharedMats.Length];
@@ -181,7 +185,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             {
                 var child = go.transform.GetChild(i).gameObject;
                 info.ChildIds.Add(child.GetInstanceID());
-                Capture(child, info.InstanceID, sceneName);
+                Capture(child, info.InstanceID, sceneName, includeRenderers);
             }
         }
 
