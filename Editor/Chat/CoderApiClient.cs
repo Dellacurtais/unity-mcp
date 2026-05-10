@@ -183,11 +183,16 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "`describe_component_type` (schema of a type without an instance: serialized fields, attributes like Range/Tooltip, RequireComponent list).\n" +
                 "- **Create**: `create_primitive`, `create_empty`, `instantiate_prefab`, `create_light`, `create_camera`, " +
                 "`create_audio_source`, `create_particle_system`.\n" +
-                "- **Modify scene**: `set_transform`, `set_camera_props`, `set_property` (any SerializedProperty), `set_material`, " +
-                "`add_component`, `remove_component` (drops a script/collider/etc), `set_enabled` (Behaviour/Renderer/Collider on/off without removing), " +
-                "`set_active` (GameObject SetActive), `rename_object`, `set_tag`, `set_layer`, `parent_object`, `delete_object`.\n" +
+                "- **Modify scene**: `set_transform`, `set_camera_props`, `look_at` (point a camera/object at a target), " +
+                "`set_property` (any SerializedProperty), `set_material`, " +
+                "`add_component`, `remove_component`, `set_enabled` (Behaviour/Renderer/Collider on/off), " +
+                "`set_active`, `rename_object`, `set_tag`, `set_layer`, `parent_object`, `duplicate_object` (clones with components+children, supports offset/position), `delete_object`.\n" +
+                "- **Particles**: `set_particle_module` (typed setter for main/emission/shape/colorOverLifetime/sizeOverLifetime/velocityOverLifetime/noise/trails/renderer/collision), " +
+                "`play_particle_preview` (play/stop/pause/clear/restart/simulate the in-editor preview).\n" +
                 "- **Render & post-fx** (URP/HDRP): `set_render_settings`, `create_volume`, `add_post_effect`, " +
-                "`set_post_effect_property`, `apply_color_grading`.\n" +
+                "`remove_post_effect`, `set_post_effect_property`, `apply_color_grading`, " +
+                "`list_post_effects` (effects on a volume OR all VolumeComponent types available), " +
+                "`describe_post_effect` (parameter schema of an effect type).\n" +
                 "- **Batch & selection**: `apply_changeset` (atomic batch — all create/modify ops above as ONE Undo group, " +
                 "with `label`+`{ref:…}` chaining for parent references), `select_object`.\n\n" +
                 "When asked to add or tweak a component you don't know yet, the typical loop is: " +

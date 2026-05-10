@@ -1,5 +1,6 @@
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write;
+using Maicon.SceneAnalyzer.Editor.PostFx.Tools;
 using UnityEditor;
 using UnityEngine;
 
@@ -27,16 +28,20 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx
                 // Op kinds (used by apply_changeset).
                 ChangesetExecutor.RegisterHandler("create_volume", VolumeFactory.Create);
                 ChangesetExecutor.RegisterHandler("add_post_effect", PostEffectEditor.AddEffect);
+                ChangesetExecutor.RegisterHandler("remove_post_effect", PostEffectEditor.RemoveEffect);
                 ChangesetExecutor.RegisterHandler("set_post_effect_property", PostEffectEditor.SetEffectProperty);
                 ChangesetExecutor.RegisterHandler("apply_color_grading", PostEffectEditor.ApplyColorGrading);
 
                 // MCP tools.
                 Bootstrap.ToolRegistry.Register(new CreateVolumeTool());
                 Bootstrap.ToolRegistry.Register(new AddPostEffectTool());
+                Bootstrap.ToolRegistry.Register(new RemovePostEffectTool());
                 Bootstrap.ToolRegistry.Register(new SetPostEffectPropertyTool());
                 Bootstrap.ToolRegistry.Register(new ApplyColorGradingTool());
+                Bootstrap.ToolRegistry.Register(new ListPostEffectsTool());
+                Bootstrap.ToolRegistry.Register(new DescribePostEffectTool());
 
-                Bootstrap.RecordEntry("[postfx] registered 4 volume/post-fx tools (SRP Core present)");
+                Bootstrap.RecordEntry("[postfx] registered 7 volume/post-fx tools (SRP Core present)");
             }
             catch (System.Exception e)
             {

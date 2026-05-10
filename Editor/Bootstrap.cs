@@ -109,6 +109,10 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new SetMaterialTool());
                 ToolRegistry.Register(new ParentObjectTool());
                 ToolRegistry.Register(new DeleteObjectTool());
+                ToolRegistry.Register(new DuplicateObjectTool());
+                ToolRegistry.Register(new LookAtTool());
+                ToolRegistry.Register(new SetParticleModuleTool());
+                ToolRegistry.Register(new PlayParticlePreviewTool());
                 // Write — render settings
                 ToolRegistry.Register(new SetRenderSettingsTool());
                 // Batch + selection

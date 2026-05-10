@@ -5,6 +5,36 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-05-09
+
+### Added — GameObject ergonomics
+
+- **`duplicate_object`** — clones a GameObject with all its components and children via `Object.Instantiate`. Default parent = source's parent. Supports `offset` (delta from source position) OR `position`/`rotation`/`scale` (outright override), plus `name`. Returns the clone's instanceId.
+- **`look_at`** — `Transform.LookAt` wrapper. Pass `targetInstanceId` (use that GO's world position) or `targetPosition` (raw Vector3). Optional `worldUp`. `flipForCamera: true` rotates 180° on Y for non-camera renderers (Quad/Plane face -Z by default).
+
+### Added — Particles
+
+- **`set_particle_module`** — typed setter for ParticleSystem modules: `main`, `emission`, `shape`, `colorOverLifetime`, `sizeOverLifetime`, `velocityOverLifetime`, `rotationOverLifetime`, `noise`, `trails`, `renderer`, `collision`. Numeric fields accept scalar / `[min,max]` / `{constant}` / `{min,max}` / `{multiplier}`. Color fields accept hex / `[r,g,b,a]` / `{min,max}` / `{gradient:[{time,color},…]}`. Bursts: `bursts:[{time, count}]`. Replaces dozens of brittle `set_property` paths with one ergonomic call per module.
+- **`play_particle_preview`** — drives the in-editor preview without entering Play Mode. Actions: `play`, `stop`, `pause`, `clear`, `restart`, `simulate` (advance to `time` seconds and freeze). `withChildren: true` cascades. Lets the agent visually verify a freshly-tuned emitter.
+
+### Added — Post-processing
+
+- **`remove_post_effect`** — drops a VolumeComponent (Bloom, Vignette, ColorAdjustments, etc.) from a Volume's profile. Errors when the effect isn't present.
+- **`list_post_effects`** — two modes: with `volumeInstanceId` lists effects on that volume (with active-override count); with `available: true` enumerates every VolumeComponent type loaded across URP/HDRP/SRP-Core.
+- **`describe_post_effect`** — schema of a VolumeComponent type without an instance: each `VolumeParameter` field name, wrapper type (`FloatParameter`, `ColorParameter`, `MinFloatParameter`, …) and underlying value type (float, Color, int, …). Pre-step before `set_post_effect_property`.
+
+### Added — authoring helpers
+
+- `Editor/Authoring/ParticleEditor.cs` — module-typed setters with `MinMaxCurve`/`MinMaxGradient` parsers.
+- `Editor/Authoring/GameObjectEditor.cs` — `Duplicate`, `LookAt` (+ existing SetActive/Rename/SetTag/SetLayer).
+- `Editor/PostFx/PostEffectEditor.cs` — `RemoveEffect`, `ListEffects`, `ListAvailableEffectTypes`, `DescribeEffectType`, `CountActiveOverrides`.
+
+### Changed
+
+- `ChangesetExecutor` registers 5 new op kinds: `duplicate_object`, `look_at`, `set_particle_module`, `play_particle_preview` (main asmdef) + `remove_post_effect` (PostFx asmdef). All compose inside `apply_changeset` for atomic batches with a single Undo group.
+- Default context preamble updated with the new tools and a dedicated **Particles** category, plus new Render & post-fx entries (`remove_post_effect`, `list_post_effects`, `describe_post_effect`).
+- Tool count is now **47** (was 40 in 0.4.0; +7 in this release).
+
 ## [0.4.0] - 2026-05-09
 
 ### Added — component lifecycle + reflection-based discovery

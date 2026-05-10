@@ -13,6 +13,105 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
     /// Resolves effect type names across pipeline namespaces (URP/HDRP/SRP Core).
     public static class PostEffectEditor
     {
+        public static OpResult RemoveEffect(JObject args)
+        {
+            var (volume, err) = ResolveVolume(args);
+            if (err != null) return OpResult.Fail(err);
+            var profile = volume.sharedProfile;
+            if (profile == null) return OpResult.Fail("volume has no profile");
+
+            var typeName = (string)args["effect"];
+            if (string.IsNullOrEmpty(typeName)) return OpResult.Fail("effect type name is required");
+            var effectType = ResolveEffectType(typeName);
+            if (effectType == null) return OpResult.Fail($"unknown effect type '{typeName}'");
+
+            var existing = profile.components.Find(c => c != null && c.GetType() == effectType);
+            if (existing == null) return OpResult.Fail($"effect {effectType.Name} not present on volume");
+
+            profile.Remove(effectType);
+            EditorUtility.SetDirty(profile);
+            return OpResult.Success(volume.GetInstanceID(), $"removed {effectType.Name}");
+        }
+
+        public static OpResult ListEffects(JObject args)
+        {
+            var (volume, err) = ResolveVolume(args);
+            if (err != null) return OpResult.Fail(err);
+            var profile = volume.sharedProfile;
+            if (profile == null) return OpResult.Fail("volume has no profile");
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"volume #{volume.GetInstanceID()} '{volume.name}' has {profile.components.Count} effect(s):");
+            foreach (var c in profile.components)
+            {
+                if (c == null) continue;
+                int overrides = CountActiveOverrides(c);
+                sb.Append($"\n  {c.GetType().Name}  ({overrides} active override(s))");
+            }
+            return OpResult.Success(volume.GetInstanceID(), sb.ToString());
+        }
+
+        public static IEnumerable<string> ListAvailableEffectTypes()
+        {
+            var seen = new HashSet<string>();
+            foreach (var asm in System.AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type[] types;
+                try { types = asm.GetTypes(); } catch { continue; }
+                foreach (var t in types)
+                {
+                    if (t == null || t.IsAbstract) continue;
+                    if (!typeof(VolumeComponent).IsAssignableFrom(t)) continue;
+                    if (seen.Add(t.FullName)) yield return t.FullName;
+                }
+            }
+        }
+
+        public static OpResult DescribeEffectType(JObject args)
+        {
+            var typeName = (string)args["effect"];
+            if (string.IsNullOrEmpty(typeName)) return OpResult.Fail("effect type name is required");
+            var effectType = ResolveEffectType(typeName);
+            if (effectType == null) return OpResult.Fail($"unknown effect type '{typeName}'");
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"{effectType.FullName}");
+            foreach (var f in effectType.GetFields(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (!typeof(VolumeParameter).IsAssignableFrom(f.FieldType)) continue;
+
+                Type valueType = null;
+                var pt = f.FieldType;
+                while (pt != null && pt != typeof(object))
+                {
+                    if (pt.IsGenericType && pt.GetGenericTypeDefinition() == typeof(VolumeParameter<>))
+                    { valueType = pt.GetGenericArguments()[0]; break; }
+                    pt = pt.BaseType;
+                }
+                sb.AppendLine($"  {f.Name}: {f.FieldType.Name}" +
+                    (valueType != null ? $" → {valueType.Name}" : ""));
+            }
+            return OpResult.Success(0, sb.ToString());
+        }
+
+        private static int CountActiveOverrides(VolumeComponent effect)
+        {
+            int count = 0;
+            foreach (var f in effect.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (!typeof(VolumeParameter).IsAssignableFrom(f.FieldType)) continue;
+                var p = f.GetValue(effect);
+                if (p == null) continue;
+                var ofMember = (MemberInfo)p.GetType().GetField("overrideState") ?? p.GetType().GetProperty("overrideState");
+                if (ofMember == null) continue;
+                bool active = ofMember is FieldInfo fi
+                    ? (bool)fi.GetValue(p)
+                    : (bool)((PropertyInfo)ofMember).GetValue(p);
+                if (active) count++;
+            }
+            return count;
+        }
+
         public static OpResult AddEffect(JObject args)
         {
             var (volume, err) = ResolveVolume(args);

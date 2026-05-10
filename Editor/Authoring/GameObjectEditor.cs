@@ -1,6 +1,7 @@
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace Maicon.SceneAnalyzer.Editor.Authoring
 {
@@ -8,6 +9,85 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
     /// TransformEditor). All ops register an Undo entry.
     public static class GameObjectEditor
     {
+        public static OpResult Duplicate(JObject args)
+        {
+            var id = (int?)args["instanceId"] ?? 0;
+            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+
+            var clone = Object.Instantiate(go);
+            Undo.RegisterCreatedObjectUndo(clone, "Duplicate");
+
+            var name = (string)args["name"];
+            clone.name = string.IsNullOrEmpty(name) ? go.name + " (Copy)" : name;
+
+            // Parent: explicit > source's parent
+            var parentArg = args["parent"];
+            if (parentArg != null && parentArg.Type != JTokenType.Null)
+            {
+                var parent = JsonHelpers.ResolveParent(parentArg);
+                if (parent != null) Undo.SetTransformParent(clone.transform, parent.transform, "Parent");
+            }
+            else if (go.transform.parent != null)
+            {
+                Undo.SetTransformParent(clone.transform, go.transform.parent, "Parent");
+            }
+
+            // Position: explicit override > source pos + offset > source pos (already set by Instantiate)
+            if (args["position"] != null)
+            {
+                clone.transform.localPosition = JsonHelpers.ParseVector3(args["position"]);
+            }
+            else if (args["offset"] != null)
+            {
+                clone.transform.localPosition = go.transform.localPosition + JsonHelpers.ParseVector3(args["offset"]);
+            }
+
+            if (args["rotation"] != null)
+                clone.transform.localRotation = JsonHelpers.ParseRotation(args["rotation"]);
+            if (args["scale"] != null)
+                clone.transform.localScale = JsonHelpers.ParseVector3(args["scale"], Vector3.one);
+
+            return OpResult.Success(clone.GetInstanceID(), $"duplicated '{go.name}' → '{clone.name}'");
+        }
+
+        public static OpResult LookAt(JObject args)
+        {
+            var id = (int?)args["instanceId"] ?? 0;
+            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+
+            Vector3 worldTarget;
+            if (args["targetInstanceId"] != null && args["targetInstanceId"].Type != JTokenType.Null)
+            {
+                var tid = (int?)args["targetInstanceId"] ?? 0;
+                var tgo = EditorUtility.InstanceIDToObject(tid) as GameObject;
+                if (tgo == null) return OpResult.Fail($"target GameObject not found: instanceId={tid}");
+                worldTarget = tgo.transform.position;
+            }
+            else if (args["targetPosition"] != null)
+            {
+                worldTarget = JsonHelpers.ParseVector3(args["targetPosition"]);
+            }
+            else
+            {
+                return OpResult.Fail("provide either targetInstanceId or targetPosition");
+            }
+
+            var up = args["worldUp"] != null ? JsonHelpers.ParseVector3(args["worldUp"]) : Vector3.up;
+
+            Undo.RecordObject(go.transform, "Look At");
+            go.transform.LookAt(worldTarget, up);
+
+            // Cameras render along +Z; Quad/Plane normals are -Z. If `flipForCamera`
+            // is true and the GO has no Camera, rotate 180 on Y so the visual face
+            // points at the target. Default: respect Unity's LookAt convention.
+            if ((bool?)args["flipForCamera"] == true && go.GetComponent<Camera>() == null)
+                go.transform.Rotate(0f, 180f, 0f, Space.Self);
+
+            return OpResult.Success(id, $"looking at {worldTarget}");
+        }
+
         public static OpResult SetActive(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
