@@ -134,6 +134,8 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new FindReferencesToAssetTool());
                 ToolRegistry.Register(new ListComponentTypesTool());
                 ToolRegistry.Register(new DescribeComponentTypeTool());
+                ToolRegistry.Register(new ListScriptableObjectTypesTool());
+                ToolRegistry.Register(new ReadScriptableObjectTool());
                 ToolRegistry.Register(new ListAnimatorControllersTool());
                 ToolRegistry.Register(new ReadAnimatorControllerTool());
                 ToolRegistry.Register(new ReadAnimationClipTool());
@@ -155,6 +157,13 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new QuerySceneTool());
                 ToolRegistry.Register(new ClassifySceneTool());
                 ToolRegistry.Register(new QueryCollisionLayersTool());
+                // NavMesh Tier 1 — built-in queries + legacy bake + agent
+                ToolRegistry.Register(new NavMeshSamplePositionTool());
+                ToolRegistry.Register(new NavMeshCalculatePathTool());
+                ToolRegistry.Register(new NavMeshRaycastTool());
+                ToolRegistry.Register(new NavMeshFindClosestEdgeTool());
+                ToolRegistry.Register(new BakeNavMeshTool());
+                ToolRegistry.Register(new SetNavMeshAgentTool());
                 // Write — create
                 ToolRegistry.Register(new CreatePrimitiveTool());
                 ToolRegistry.Register(new CreateEmptyTool());
@@ -182,6 +191,11 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new SetParticleModuleTool());
                 ToolRegistry.Register(new PlayParticlePreviewTool());
                 ToolRegistry.Register(new RefreshAssetsTool());
+                // ScriptableObject + array helper
+                ToolRegistry.Register(new CreateScriptableObjectTool());
+                ToolRegistry.Register(new SetSoPropertyTool());
+                ToolRegistry.Register(new DuplicateScriptableObjectTool());
+                ToolRegistry.Register(new ModifyArrayPropertyTool());
                 // Animation (Mecanim) — Tier 1 + 2
                 ToolRegistry.Register(new SetAnimatorParameterTool());
                 ToolRegistry.Register(new PlayAnimatorStateTool());

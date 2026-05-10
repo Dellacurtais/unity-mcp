@@ -203,7 +203,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return null;
         }
 
-        private static bool IsBuiltinAssembly(string asmName)
+        public static bool IsBuiltinAssembly(string asmName)
         {
             return asmName.StartsWith("UnityEngine", StringComparison.Ordinal)
                 || asmName.StartsWith("Unity.", StringComparison.Ordinal)

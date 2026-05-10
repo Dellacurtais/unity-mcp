@@ -55,6 +55,14 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             ["set_layer"]              = GameObjectEditor.SetLayer,
             ["delete_object"]          = DeleteObject,
             ["set_render_settings"]    = RenderSettingsEditor.Apply,
+            // ScriptableObject + array helper
+            ["create_scriptable_object"]    = ScriptableObjectAuthor.Create,
+            ["set_so_property"]             = ScriptableObjectAuthor.SetProperty,
+            ["duplicate_scriptable_object"] = ScriptableObjectAuthor.Duplicate,
+            ["modify_array_property"]       = ScriptableObjectAuthor.ModifyArrayProperty,
+            // NavMesh Tier 1
+            ["bake_navmesh"]                = NavMeshAuthor.BakeLegacy,
+            ["set_navmesh_agent"]           = NavMeshAuthor.SetAgent,
             // Animation
             ["set_animator_parameter"]   = AnimationAuthor.SetAnimatorParameter,
             ["play_animator_state"]      = AnimationAuthor.PlayAnimatorState,

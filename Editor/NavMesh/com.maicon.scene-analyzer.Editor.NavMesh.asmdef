@@ -1,0 +1,30 @@
+{
+    "name": "com.maicon.scene-analyzer.Editor.NavMesh",
+    "rootNamespace": "Maicon.SceneAnalyzer.Editor.NavMesh",
+    "references": [
+        "com.maicon.scene-analyzer",
+        "com.maicon.scene-analyzer.Editor",
+        "Unity.Newtonsoft.Json",
+        "Unity.AI.Navigation",
+        "Unity.AI.Navigation.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "SCENE_ANALYZER_HAS_NAVMESH"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.ai.navigation",
+            "expression": "1.0.0",
+            "define": "SCENE_ANALYZER_HAS_NAVMESH"
+        }
+    ],
+    "noEngineReferences": false
+}

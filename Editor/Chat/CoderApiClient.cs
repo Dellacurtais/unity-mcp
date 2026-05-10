@@ -169,9 +169,15 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "- **Analyze**: `analyze_performance`, `validate_scene`.\n" +
                 "- **Discover assets & types**: `list_assets`, `search_assets`, `read_asset_metadata`, `find_references_to_asset`, " +
                 "`list_component_types` (every Component subclass loaded — built-in + user MonoBehaviours), " +
-                "`describe_component_type` (schema of a type without an instance: serialized fields, attributes like Range/Tooltip, RequireComponent list).\n" +
+                "`describe_component_type` (schema of a type without an instance: serialized fields, attributes like Range/Tooltip, RequireComponent list — works for ANY type including ScriptableObject subclasses), " +
+                "`list_scriptable_object_types` (every concrete ScriptableObject subclass loaded; surfaces [CreateAssetMenu] entries — pair with read_scriptable_object), " +
+                "`read_scriptable_object` (dump fields of an SO asset — analog of read_component but for assets, not Components on a GO).\n" +
                 "- **Create**: `create_primitive`, `create_empty`, `instantiate_prefab`, `create_light`, `create_camera`, " +
-                "`create_audio_source`, `create_particle_system`.\n" +
+                "`create_audio_source`, `create_particle_system`. " +
+                "ScriptableObject assets: `create_scriptable_object` (className + path + optional initialFields), " +
+                "`set_so_property` (set a SerializedProperty on the SO asset), " +
+                "`duplicate_scriptable_object` (clone to a new path), " +
+                "`modify_array_property` (append/insert/remove/set/resize/clear on any array field — works for Component fields AND SO fields, handles Unity's `Array.size`/`Array.data[N]` plumbing internally).\n" +
                 "- **Modify scene**: `set_transform`, `set_camera_props`, `look_at` (point a camera/object at a target), " +
                 "`set_property` (any SerializedProperty), `set_material`, " +
                 "`add_component`, `remove_component`, `set_enabled` (Behaviour/Renderer/Collider on/off), " +
@@ -193,6 +199,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "`query_scene` (combined filter: tag + layer + componentTypes (must-have-all) + nameContains + pathContains + withinRadius, sortBy name/distance/depth).\n" +
                 "- **Collider authoring**: `auto_fit_collider` (Box/Sphere/Capsule/Mesh sized to renderer bounds), " +
                 "`add_compound_colliders` (one primitive per child renderer — better fit for buildings/vehicles), `set_physics_material`.\n" +
+                "- **NavMesh — queries** (built-in, edit-time): `navmesh_sample_position` (project a point onto the navmesh — answers \"is this walkable?\"), " +
+                "`navmesh_calculate_path` (full path A→B with status/corners), `navmesh_raycast` (line-of-sight on navmesh — note INVERTED convention: returns BLOCKED when line crosses non-walkable), " +
+                "`navmesh_find_closest_edge`. areaMask accepts int, area name string, or array of names. " +
+                "**Bake & runtime**: `bake_navmesh` (legacy global), `set_navmesh_agent` (combo: optional setters for destination/speed/etc + always returns full agent state). " +
+                "**Modern per-surface** (when `com.unity.ai.navigation` is installed): `list_navmesh_surfaces`, `bake_navmesh_surface` (one surface or all), " +
+                "`add_navmesh_surface` (configure agentTypeID/collectObjects/layerMask/voxelSize + optional immediate bake), `add_navmesh_modifier` (override area on geometry, or as a volume box).\n" +
                 "- **Audio — sources & runtime**: `create_audio_source` (basic), `create_audio_source_3d` (3D point source with rolloff/min/max distance — use for ambient point emitters like an engine box), " +
                 "`set_audio_source_props` (typed setter for every common AudioSource field), `play_audio_source` (play/stop/pause/unpause/playOneShot — only emits in Play Mode), " +
                 "`add_audio_listener` (auto-removes others), `inspect_audio_setup` (audit: listeners, sources by mixer/2D/3D/loop, reverb zones, warnings).\n" +
@@ -212,7 +224,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "`clear_console` (mark a clean slate before a complex op so the next read_console only shows what happened during it), " +
                 "`wait_for_compile_clean` (refresh + cooperatively wait for compile + report errors+warnings since start in a single call).\n\n" +
                 "When asked to add or tweak a component you don't know yet, the typical loop is: " +
-                "`list_component_types` → `describe_component_type` → `add_component` → `set_property` per field.\n\n" +
+                "`list_component_types` → `describe_component_type` → `add_component` → `set_property` per field. " +
+                "For ScriptableObject data assets, the equivalent loop is " +
+                "`list_scriptable_object_types` → `describe_component_type` (works for SO too) → `create_scriptable_object` (with `initialFields`) → `set_so_property` for later edits. " +
+                "For arrays/lists on either Components or SOs, prefer `modify_array_property` over `set_property` with the raw `Array.size`/`Array.data[N]` paths.\n\n" +
                 "**After creating a NEW `.cs` MonoBehaviour script** (via filesystem write), prefer `wait_for_compile_clean` over `refresh_assets` — it tells you in ONE call whether the compile succeeded AND surfaces any error with file:line. If you still call `refresh_assets`, follow up with `read_console severity=errors_only since=<seq before refresh>` to verify there were no compile errors before calling `add_component`.\n\n" +
                 "**Avoid redundant tool calls**: the dashboard refuses identical tool+args calls after a few retries (`Refused: was called with these exact arguments N times`). Strategy: keep findings as plain text in your reply (instead of recalling the same query), change one argument when you do need fresh data, and after any error change strategy rather than repeat. The Unity tool responses end with `[unity-call #N @ HH:mm:ss.fff]` so revalidation against an unchanged scene works — but only when the INPUT args differ.\n\n" +
                 "Two project skill tools to use them:\n" +

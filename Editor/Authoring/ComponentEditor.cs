@@ -141,7 +141,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return OpResult.Success(id, $"set {typeName}.{path}");
         }
 
-        private static Type ResolveComponentType(string name)
+        public static Type ResolveComponentType(string name)
         {
             // Try exact / fast paths first.
             var t = Type.GetType(name);
@@ -160,7 +160,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return null;
         }
 
-        private static void ApplyValue(SerializedProperty prop, JToken value)
+        public static void ApplyValue(SerializedProperty prop, JToken value)
         {
             if (value == null || value.Type == JTokenType.Null) return;
 
@@ -227,21 +227,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     break;
                 }
                 case SerializedPropertyType.Rect:
-                {
-                    if (value is JArray ar && ar.Count >= 4)
-                        prop.rectValue = new Rect((float)ar[0], (float)ar[1], (float)ar[2], (float)ar[3]);
+                    prop.rectValue = ParseRect(value);
                     break;
-                }
                 case SerializedPropertyType.Bounds:
-                {
-                    if (value is JObject bo)
-                    {
-                        var center = JsonHelpers.ParseVector3(bo["center"]);
-                        var size = JsonHelpers.ParseVector3(bo["size"], Vector3.one);
-                        prop.boundsValue = new Bounds(center, size);
-                    }
+                    prop.boundsValue = ParseBounds(value);
                     break;
-                }
                 case SerializedPropertyType.Quaternion:
                     prop.quaternionValue = JsonHelpers.ParseRotation(value);
                     break;
@@ -269,12 +259,6 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     break;
                 case SerializedPropertyType.Gradient:
                     prop.gradientValue = ParseGradient(value);
-                    break;
-                case SerializedPropertyType.Bounds:
-                    prop.boundsValue = ParseBounds(value);
-                    break;
-                case SerializedPropertyType.Rect:
-                    prop.rectValue = ParseRect(value);
                     break;
                 default:
                     if ((prop.type ?? "").Contains("UnityEvent"))

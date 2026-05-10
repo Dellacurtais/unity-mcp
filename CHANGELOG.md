@@ -5,6 +5,81 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-05-10
+
+### Added — NavMesh Tier 1 (6 tools, main asmdef, no extra package)
+
+Built on `UnityEngine.AI.NavMesh` (always present) and `UnityEditor.AI.NavMeshBuilder` (legacy bake, also built-in).
+
+- **`navmesh_sample_position`** — `NavMesh.SamplePosition(point, maxDistance, areaMask)`. Answers "is this point on the walkable area?" + returns the projected position, distance, area mask, normal.
+- **`navmesh_calculate_path`** — full path from A to B with status (Complete / Partial / Invalid), corner list, total distance.
+- **`navmesh_raycast`** — line-of-sight on the navmesh. Documents the inverted convention (returns BLOCKED when the line crosses non-walkable; CLEAR when the entire line stays on the navmesh) since it's the opposite of `Physics.Raycast`.
+- **`navmesh_find_closest_edge`** — nearest walkable-area edge near a point. Useful for cover-finding / boundary AI.
+- **`bake_navmesh`** — `NavMeshBuilder.BuildNavMesh()` (legacy global). Sync default; `async: true` for fire-and-forget.
+- **`set_navmesh_agent`** — combo write+read: optional setters for destination/isStopped/speed/acceleration/angularSpeed/stoppingDistance/radius/height/baseOffset/areaMask/resetPath, plus always returns full state (isOnNavMesh / hasPath / pathPending / destination / remainingDistance / velocity / pathStatus / corner count).
+
+`areaMask` parsing accepts int (raw bitmask), single area name string ('Walkable' / 'Jump' / custom), or array of area names — same convenience as the LayerMask parser added in 0.9.4.
+
+### Added — NavMesh Tier 2 (4 tools, gated by `com.unity.ai.navigation`)
+
+New asmdef `com.maicon.scene-analyzer.Editor.NavMesh` with `defineConstraints: ["SCENE_ANALYZER_HAS_NAVMESH"]` + `versionDefines` on `com.unity.ai.navigation >= 1.0.0`. Same pattern as PostFx / Timeline — no package, no compile, the 4 tools simply aren't registered. With package present, `NavMeshBootstrap` registers via `[InitializeOnLoad]` + `delayCall`.
+
+- **`list_navmesh_surfaces`** — every NavMeshSurface in the active scene with agentTypeID, collectObjects, layerMask, useGeometry, baked status.
+- **`bake_navmesh_surface`** — `surface.BuildNavMesh()`. With `surfaceInstanceId` bakes one; without arg, bakes ALL NavMeshSurfaces in the scene.
+- **`add_navmesh_surface`** — adds + configures the component: agentTypeID (default 0 = Humanoid), collectObjects (All/Volume/Children), useGeometry (RenderMeshes/PhysicsColliders), layerMask (int OR layer name OR array), defaultArea, voxel/tile size overrides. Pass `bake: true` to bake immediately.
+- **`add_navmesh_modifier`** — adds NavMeshModifier (default) or NavMeshModifierVolume (when `volume: true`). Modifier overrides the area assignment of geometry under the GameObject; Modifier Volume overrides area within a box. `area` accepts int index or name string.
+
+### Authoring helpers
+
+- `Editor/Authoring/NavMeshAuthor.cs` — Tier 1 helpers (queries + bake + agent).
+- `Editor/NavMesh/NavMeshSurfaceAuthor.cs` — Tier 2 helpers.
+- `Editor/NavMesh/NavMeshBootstrap.cs` — `[InitializeOnLoad]` register-and-go for the gated tools and changeset op kinds.
+
+### Changed
+
+- `ChangesetExecutor` registers 5 new op kinds: `bake_navmesh`, `set_navmesh_agent` (main asmdef) plus `bake_navmesh_surface`, `add_navmesh_surface`, `add_navmesh_modifier` (registered by `NavMeshBootstrap` from the gated asmdef).
+- Default context preamble now has a **NavMesh** section listing the queries, bake, agent, and modern per-surface tools — including the inverted-convention warning for `navmesh_raycast`.
+
+### Notes
+
+- All NavMesh queries work in **edit mode** as long as a navmesh is baked. After scene mutations that affect walkable geometry, call `bake_navmesh` (legacy) or `bake_navmesh_surface` (modern) before re-querying.
+- "Coloque um inimigo perseguindo o player" workflow now fits in one batch: `add_navmesh_surface` → `bake_navmesh_surface` → `add_component NavMeshAgent` on enemy → `set_navmesh_agent destination=<player pos>`.
+
+## [0.10.0] - 2026-05-10
+
+### Added — ScriptableObject support (5 tools)
+
+Until now the plugin could *find* ScriptableObject assets via `list_assets type=ScriptableObject` and *reference* them in Component fields via `set_property`, but couldn't create, inspect, or write SO assets directly. Six new tools close that gap.
+
+- **`list_scriptable_object_types`** — enumerates every concrete `ScriptableObject` subclass loaded in the editor (project + Unity packages). Each entry shows full type name, assembly, and any `[CreateAssetMenu]` attribute (menu path + default file name) so the agent knows the right-click → Create entry. Filters: `nameContains`, `category` (all/builtin/user), `withMenuOnly: true`. Skips abstract classes, generics, and EditorWindow-derived SOs.
+- **`read_scriptable_object`** — dumps every visible SerializedProperty on an SO asset (name, type, array size, value summary). Capped at 80 fields. Replaces the awkward "load via list_assets, somehow inspect" gap.
+- **`create_scriptable_object`** — `ScriptableObject.CreateInstance<T>()` + `AssetDatabase.CreateAsset(path)` + optional `initialFields` mapping (any SerializedProperty → value, parsed by the same engine as `set_property`). Auto-creates parent folders. Returns the new asset's instanceId.
+- **`set_so_property`** — sets a SerializedProperty on an SO asset. Asset target instead of `set_property`'s GameObject+Component target. Same value coverage (int/bool/float/string/Color/Vector*/LayerMask/Bounds/Rect/Quaternion/enum/ObjectReference).
+- **`duplicate_scriptable_object`** — `Object.Instantiate(src)` + `CreateAsset(targetPath)`. Independent copy.
+
+### Added — generic array helper (1 tool, works for Component AND SO)
+
+- **`modify_array_property`** — actions: `append` / `insert` / `remove` / `set` / `resize` / `clear` on any array/list SerializedProperty. Targets either a Component on a GameObject (`instanceId` + `componentType`) OR a ScriptableObject asset (`assetGuidOrPath`). Resolves Unity's internal `Array.size` / `Array.data[N]` mechanics so the agent doesn't have to know that the size is a separate sub-property. Handles the ObjectReference array-deletion quirk (first delete nulls, second removes) automatically. `value` parsing uses the same engine as set_property.
+
+### Changed
+
+- `ComponentEditor.ApplyValue` and `ResolveComponentType` are now `public` so `ScriptableObjectAuthor` can reuse them. `ComponentTypeInspector.IsBuiltinAssembly` is also public for the same reason.
+- `ChangesetExecutor` registers 4 new op kinds (`create_scriptable_object`, `set_so_property`, `duplicate_scriptable_object`, `modify_array_property`) — all batchable in a single Undo group.
+- Default context preamble updates: SO discovery tools listed in **Discover assets & types**, SO authoring listed in **Create**, and the typical loop block now includes the SO equivalent (`list_scriptable_object_types` → `describe_component_type` → `create_scriptable_object` with initialFields → `set_so_property`) plus the array-helper guidance ("prefer `modify_array_property` over raw `Array.size`/`Array.data[N]` paths").
+- `describe_component_type` already worked for any Type via reflection. The preamble now states this explicitly so the agent doesn't need a separate `describe_scriptable_object_type` tool.
+
+### Notes
+
+- Tool count increases by 6.
+- All 7 new files have committed `.meta` so the package imports cleanly under `Packages/`.
+
+## [0.9.5] - 2026-05-10
+
+### Fixed
+
+- **Duplicate `case SerializedPropertyType.Bounds` / `Rect` in `ComponentEditor.ApplyValue`** caused CS0152 (the switch had two labels for the same enum value) and broke every editor reload — Unity refused to compile the package after a script change. Two parallel implementations had grown: an early inline-parsed version (mine, narrow shapes) and a later helper-based pair (`ParseBounds` / `ParseRect`) added when the helpers gained `extents` and array/object Rect support. Consolidated to a single case per type using the richer helpers; the inline duplicates are gone.
+- The fix was first applied by the agent directly to the user's `Library/PackageCache/.../ComponentEditor.cs` to unblock the editor reload mid-session; this commit replicates it in the source tree so the next package fetch is correct.
+
 ## [0.9.4] - 2026-05-10
 
 ### Fixed
