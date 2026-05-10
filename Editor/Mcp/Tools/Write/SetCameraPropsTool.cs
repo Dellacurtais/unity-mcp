@@ -21,7 +21,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
                 ["nearClipPlane"] = new JObject { ["type"] = "number" },
                 ["farClipPlane"] = new JObject { ["type"] = "number" },
                 ["clearFlags"] = new JObject { ["type"] = "string" },
-                ["backgroundColor"] = new JObject(),
+                ["backgroundColor"] = SchemaHelpers.ColorSchema,
                 ["orthographic"] = new JObject { ["type"] = "boolean" },
                 ["orthographicSize"] = new JObject { ["type"] = "number" },
                 ["depth"] = new JObject { ["type"] = "number" },

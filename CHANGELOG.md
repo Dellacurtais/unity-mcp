@@ -5,6 +5,25 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-05-10
+
+### Fixed — OpenAI/Codex strict schema validator rejecting tool registration
+
+User-reported on Codex/GPT: `400 Invalid schema for function 'ext_unity__create_light': In context=('properties', 'color', 'type', '1'), array schema missing items`. The OpenAI tools API enforces a stricter JSON Schema subset than Anthropic — when `type` is an array (multi-type) AND one of the entries is `"array"`, the schema MUST include `items` for the array branch. Our `["color"] = { "type": ["string", "array", "object"] }` shape was rejected.
+
+### Changes
+
+- **New `SchemaHelpers.ColorSchema`** — `oneOf [{type:string}, {type:array, items:{type:number}, minItems:3, maxItems:4}, {type:object}]`. Documented as "hex string '#rrggbb[aa]', RGB[A] array, or {r,g,b,a} object". Standardised the same way `Vec3Schema` and `RotSchema` already are.
+- **CreateLightTool** — `color` now uses `SchemaHelpers.ColorSchema` instead of the multi-type-without-items shape that broke Codex.
+- **CreateCameraTool / SetCameraPropsTool** — `backgroundColor` upgraded from empty `JObject()` to `ColorSchema` for consistency and informativeness (no validator complaint either way; the empty schema worked but was opaque).
+- **SetRenderSettingsTool** — `ambientLight`, `ambientSkyColor`, `ambientEquatorColor`, `ambientGroundColor`, `fogColor` all upgraded to `ColorSchema`.
+- **ParentObjectTool** — `newParentId` was `["integer", "null"]` (legitimate JSON Schema nullable but Codex strict mode complains). Simplified to `integer` with a doc note that 0/omit means scene root (the runtime impl already handles both).
+
+### Notes
+
+- Audited the rest of the schema surface with `grep`; no other multi-type fields with array branches remain.
+- Anthropic's tool API tolerated all of these because its validator is more permissive — that's why this only surfaced once you flipped the chat panel to Codex/GPT.
+
 ## [0.9.1] - 2026-05-10
 
 ### Fixed — `read_console` missed pre-existing compile errors

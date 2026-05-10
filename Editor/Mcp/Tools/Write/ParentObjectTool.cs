@@ -17,7 +17,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             ["properties"] = new JObject
             {
                 ["instanceId"] = new JObject { ["type"] = "integer" },
-                ["newParentId"] = new JObject { ["type"] = new JArray { "integer", "null" } },
+                ["newParentId"] = new JObject {
+                    ["type"] = "integer",
+                    ["description"] = "Parent GameObject instanceId. Omit (or pass 0) to move to the scene root.",
+                },
                 ["worldPositionStays"] = new JObject { ["type"] = "boolean", ["default"] = true },
             },
             ["required"] = new JArray { "instanceId" },

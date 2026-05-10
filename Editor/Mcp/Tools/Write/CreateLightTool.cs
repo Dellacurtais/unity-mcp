@@ -20,7 +20,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
                 ["name"] = new JObject { ["type"] = "string" },
                 ["intensity"] = new JObject { ["type"] = "number", ["default"] = 1.0 },
                 ["range"] = new JObject { ["type"] = "number", ["default"] = 10.0 },
-                ["color"] = new JObject { ["type"] = new JArray { "string", "array", "object" } },
+                ["color"] = SchemaHelpers.ColorSchema,
                 ["shadows"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "None", "Hard", "Soft" } },
                 ["mode"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Realtime", "Mixed", "Baked" } },
                 ["parent"] = new JObject { ["type"] = "integer" },

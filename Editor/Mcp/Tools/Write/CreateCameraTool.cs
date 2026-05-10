@@ -22,7 +22,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
                 ["nearClipPlane"] = new JObject { ["type"] = "number", ["default"] = 0.3 },
                 ["farClipPlane"] = new JObject { ["type"] = "number", ["default"] = 1000.0 },
                 ["clearFlags"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Skybox", "SolidColor", "Depth", "Nothing" } },
-                ["backgroundColor"] = new JObject(),
+                ["backgroundColor"] = SchemaHelpers.ColorSchema,
                 ["orthographic"] = new JObject { ["type"] = "boolean" },
                 ["orthographicSize"] = new JObject { ["type"] = "number" },
                 ["depth"] = new JObject { ["type"] = "number" },

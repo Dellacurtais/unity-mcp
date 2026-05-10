@@ -15,13 +15,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             ["properties"] = new JObject
             {
                 ["ambientMode"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Skybox", "Trilight", "Flat", "Custom" } },
-                ["ambientLight"] = new JObject(),
-                ["ambientSkyColor"] = new JObject(),
-                ["ambientEquatorColor"] = new JObject(),
-                ["ambientGroundColor"] = new JObject(),
+                ["ambientLight"] = SchemaHelpers.ColorSchema,
+                ["ambientSkyColor"] = SchemaHelpers.ColorSchema,
+                ["ambientEquatorColor"] = SchemaHelpers.ColorSchema,
+                ["ambientGroundColor"] = SchemaHelpers.ColorSchema,
                 ["ambientIntensity"] = new JObject { ["type"] = "number" },
                 ["fog"] = new JObject { ["type"] = "boolean" },
-                ["fogColor"] = new JObject(),
+                ["fogColor"] = SchemaHelpers.ColorSchema,
                 ["fogDensity"] = new JObject { ["type"] = "number" },
                 ["fogStartDistance"] = new JObject { ["type"] = "number" },
                 ["fogEndDistance"] = new JObject { ["type"] = "number" },
