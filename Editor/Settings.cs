@@ -9,6 +9,7 @@ namespace Maicon.SceneAnalyzer.Editor
     public static class Settings
     {
         private const string KAutoStart = "Maicon.SceneAnalyzer.AutoStart";
+        private const string KStickyRunning = "Maicon.SceneAnalyzer.ServerStickyRunning";
         private const string KAllowWrites = "Maicon.SceneAnalyzer.AllowWrites";
         private const string KPort = "Maicon.SceneAnalyzer.Port";
         private const string KToken = "Maicon.SceneAnalyzer.Token";
@@ -36,6 +37,19 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             get => EditorPrefs.GetBool(KAutoStart, false);
             set => EditorPrefs.SetBool(KAutoStart, value);
+        }
+
+        /// "Sticky" auto-start. Set automatically by Bootstrap.StartServer on a
+        /// successful start, cleared by Bootstrap.StopServer on an explicit user
+        /// stop. Once true, the server auto-restarts after every assembly reload
+        /// regardless of AutoStartServer — so the dev clicks Start ONCE and the
+        /// server survives Unity's domain reloads (which destroy the AppDomain).
+        /// AutoStartServer kept as separate concept for "always start on first
+        /// editor open ever".
+        public static bool ServerStickyRunning
+        {
+            get => EditorPrefs.GetBool(KStickyRunning, false);
+            set => EditorPrefs.SetBool(KStickyRunning, value);
         }
 
         public static bool AllowWrites

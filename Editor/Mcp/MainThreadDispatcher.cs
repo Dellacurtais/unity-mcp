@@ -25,8 +25,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 
         /// If a single dispatched closure exceeds this, we log a warning so
         /// it's obvious which tool is hogging the main thread. The tool ran
-        /// to completion either way — this is purely diagnostic.
-        private const double SlowClosureWarnMs = 50.0;
+        /// to completion either way — this is purely diagnostic. 200ms is the
+        /// threshold a frame stutter becomes visible to the user; below that
+        /// the heavier analyzers / GetComponentsInChildren calls are common
+        /// and noisy to warn about.
+        private const double SlowClosureWarnMs = 200.0;
 
         static MainThreadDispatcher()
         {

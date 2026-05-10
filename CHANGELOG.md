@@ -5,6 +5,33 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-05-10
+
+### Fixed — MCP server losing the dev across every assembly reload
+
+User-reported: the server "falls down too easily" with every script compile / asset refresh, disrupting the agent. Root: `AutoStartServer` defaulted to false; the dev had to manually click Start in `Window → Scene Analyzer` after every domain reload (Unity tears down the entire AppDomain, the listener dies). Anything we did in 0.8.2 to fail-fast the in-flight requests still left the dev with a dead server until the next manual click.
+
+### Added — sticky auto-start
+
+- **`Settings.ServerStickyRunning`** (persisted via EditorPrefs). Set to `true` automatically by `Bootstrap.StartServer()` when the dev clicks Start; cleared by `Bootstrap.StopServer()` when they click Stop. Once sticky, the server auto-restarts after EVERY assembly reload regardless of `AutoStartServer`. One click survives every reload until you explicitly stop.
+- **Bootstrap auto-start now checks `AutoStartServer || ServerStickyRunning`** (was just AutoStartServer). Migration is silent — first-time stickys engage on the next Start click.
+
+### Added — server-state notifications in chat
+
+- **`Bootstrap.OnServerStateChanged` event** — fires on Start / Stop / `OnAfterReload` (when the post-reload static ctor restarts the server). Subscribers get the new state string ("started at port N", "back online at port N after assembly reload", "stopped (sticky cleared)").
+- **`CoderChatWindow` subscribes** and adds a system note in the conversation when the server transitions. After a script change → reload → server back, the chat shows `MCP server: back online at port 8765 after assembly reload` — the dev (and the agent) know the previous 503 will succeed on the next call.
+- **`OnAfterReload` hook** in Bootstrap fires the notification after the AppDomain re-init completes.
+
+### Tweaked — dispatcher warning threshold 50ms → 200ms
+
+`MainThreadDispatcher` was warning on every closure that took >50ms, which means the new analyzer batch (HierarchyDepth + Geometry + Lighting + DrawCallEstimator + ScriptCost + MissingReference + RequiredField walking the whole snapshot) emitted 5+ warnings per analysis tick. 200ms is the threshold a frame stutter becomes visible to the user; below that, the analyzers' work is expected and noisy to warn about. Genuinely problematic single-call hogs (>200ms) still warn.
+
+### Notes
+
+- The server still goes briefly offline during the reload itself (typically 1-2s) — that's a Unity AppDomain limitation we can't bypass without a separate process. But the gap is now bounded by Unity's own reload time, not by manual user intervention.
+- If the dev wants the server permanently off, click Stop — sticky clears, no auto-restart on subsequent reloads. Click Start once, sticky returns.
+- `AutoStartServer` toggle is still useful: if true, the server starts the very first time the editor opens this project (before any Start click).
+
 ## [0.9.2] - 2026-05-10
 
 ### Fixed — OpenAI/Codex strict schema validator rejecting tool registration

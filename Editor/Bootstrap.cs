@@ -224,10 +224,22 @@ namespace Maicon.SceneAnalyzer.Editor
                 ChatClient = new CoderApiClient(ChatSession);
 
                 AssemblyReloadEvents.beforeAssemblyReload += OnBeforeReload;
+                AssemblyReloadEvents.afterAssemblyReload += OnAfterReload;
 
-                if (Settings.AutoStartServer && !string.IsNullOrEmpty(Settings.Token))
+                // Auto-start: if EITHER user toggled AutoStartServer once OR
+                // the sticky flag is set (meaning they clicked Start at some
+                // point in this project — survives domain reload). Sticky is
+                // the main resilience mechanism — survives Unity's frequent
+                // post-script-change reloads without forcing the dev to click
+                // Start every time.
+                bool wantAutoStart = Settings.AutoStartServer || Settings.ServerStickyRunning;
+                if (wantAutoStart && !string.IsNullOrEmpty(Settings.Token))
                 {
-                    try { Server.Start(Settings.Port, Settings.Token); }
+                    try
+                    {
+                        Server.Start(Settings.Port, Settings.Token);
+                        NotifyServerState($"online at port {Settings.Port}");
+                    }
                     catch (Exception e)
                     {
                         Debug.LogError($"[scene-analyzer] auto-start failed: {e.Message}");
@@ -240,14 +252,46 @@ namespace Maicon.SceneAnalyzer.Editor
             }
         }
 
+        /// Fired when the server transitions state (started / stopped / restarted
+        /// after assembly reload). The chat panel subscribes so the dev sees a
+        /// timestamped marker in the conversation when Unity recovers from a
+        /// reload — no more "is the server back?" guesswork.
+        public static event Action<string> OnServerStateChanged;
+
+        private static void NotifyServerState(string state)
+        {
+            try { OnServerStateChanged?.Invoke(state); }
+            catch (Exception e) { Debug.LogException(e); }
+        }
+
         public static void StartServer()
         {
             if (string.IsNullOrEmpty(Settings.Token))
                 Settings.Token = Settings.GenerateToken();
             Server.Start(Settings.Port, Settings.Token);
+            // Mark sticky so subsequent assembly reloads auto-restart without
+            // the dev clicking Start again.
+            Settings.ServerStickyRunning = true;
+            NotifyServerState($"started at port {Settings.Port}");
         }
 
-        public static void StopServer() => Server.Stop();
+        public static void StopServer()
+        {
+            Server.Stop();
+            // Explicit user-initiated stop clears sticky — they don't want it
+            // coming back automatically.
+            Settings.ServerStickyRunning = false;
+            NotifyServerState("stopped (sticky cleared)");
+        }
+
+        private static void OnAfterReload()
+        {
+            // The static ctor already auto-started the server (if sticky).
+            // Notify the chat panel that we're back so the dev / agent knows
+            // an in-flight 503 will succeed on retry.
+            if (Server != null && Server.IsRunning)
+                NotifyServerState($"back online at port {Settings.Port} after assembly reload");
+        }
 
         public static void RecordEntry(string text)
         {

@@ -46,9 +46,20 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 Bootstrap.ChatSession.OnChanged += SyncSessionBuffer;
             }
             Bootstrap.OnCoderProvidersChanged += Repaint;
+            Bootstrap.OnServerStateChanged += OnServerStateChanged;
 
             if (Bootstrap.CoderProviders != null && Bootstrap.CoderProviders.Count == 0)
                 Bootstrap.ChatClient?.RefreshProviders(Settings.CoderUrl, Settings.CoderToken);
+        }
+
+        private void OnServerStateChanged(string state)
+        {
+            // Surfaces "online / back online after assembly reload / stopped"
+            // as a chat system note, so the dev knows immediately when an
+            // in-flight 503 will succeed on retry — no more guessing whether
+            // the recompile finished.
+            try { Bootstrap.ChatSession?.AddSystemNote($"MCP server: {state}"); }
+            catch { /* never crash the editor on a UI subscription */ }
         }
 
         private void SyncSessionBuffer()
@@ -65,6 +76,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 Bootstrap.ChatSession.OnChanged -= SyncSessionBuffer;
             }
             Bootstrap.OnCoderProvidersChanged -= Repaint;
+            Bootstrap.OnServerStateChanged -= OnServerStateChanged;
         }
 
         private static void EnsureStyles()
