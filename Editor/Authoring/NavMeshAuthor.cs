@@ -1,9 +1,12 @@
 using System;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
-using UnityEditor.AI;
 using UnityEngine;
 using UnityEngine.AI;
+// `NavMeshBuilder` exists in BOTH UnityEditor.AI (legacy bake API we want)
+// AND UnityEngine.AI (lower-level data builder); avoid the ambiguity by
+// aliasing exclusively the editor one we use here.
+using LegacyBuilder = UnityEditor.AI.NavMeshBuilder;
 
 namespace Maicon.SceneAnalyzer.Editor.Authoring
 {
@@ -106,11 +109,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult BakeLegacy(JObject args)
         {
             // Cancel any running bake first to avoid stacking.
-            if (NavMeshBuilder.isRunning) NavMeshBuilder.Cancel();
+            if (LegacyBuilder.isRunning) LegacyBuilder.Cancel();
 
             var asyncBake = (bool?)args["async"] ?? false;
-            if (asyncBake) NavMeshBuilder.BuildNavMeshAsync();
-            else NavMeshBuilder.BuildNavMesh();
+            if (asyncBake) LegacyBuilder.BuildNavMeshAsync();
+            else LegacyBuilder.BuildNavMesh();
 
             return new OpResult
             {

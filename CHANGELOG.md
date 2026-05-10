@@ -5,6 +5,12 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-05-10
+
+### Fixed
+
+- `NavMeshAuthor.BakeLegacy` failed to compile (CS0104: ambiguous reference) — `NavMeshBuilder` is a type in BOTH `UnityEditor.AI` (the legacy bake API we want) AND `UnityEngine.AI` (a lower-level NavMesh data builder), and the file had `using` statements pulling in both. Aliased explicitly as `using LegacyBuilder = UnityEditor.AI.NavMeshBuilder;` and dropped `using UnityEditor.AI;`. Side effect: the cascade Burst error `Failed to resolve assembly 'com.maicon.scene-analyzer.Editor.NavMesh'` clears with the same fix — that was the gated NavMesh asmdef failing because main wasn't producing a DLL.
+
 ## [0.11.0] - 2026-05-10
 
 ### Added — NavMesh Tier 1 (6 tools, main asmdef, no extra package)
