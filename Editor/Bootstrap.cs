@@ -113,6 +113,7 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new LookAtTool());
                 ToolRegistry.Register(new SetParticleModuleTool());
                 ToolRegistry.Register(new PlayParticlePreviewTool());
+                ToolRegistry.Register(new RefreshAssetsTool());
                 // Write — render settings
                 ToolRegistry.Register(new SetRenderSettingsTool());
                 // Batch + selection

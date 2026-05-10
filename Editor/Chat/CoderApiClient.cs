@@ -197,6 +197,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "with `label`+`{ref:…}` chaining for parent references), `select_object`.\n\n" +
                 "When asked to add or tweak a component you don't know yet, the typical loop is: " +
                 "`list_component_types` → `describe_component_type` → `add_component` → `set_property` per field.\n\n" +
+                "**After creating a NEW `.cs` MonoBehaviour script** (via filesystem write), call `refresh_assets` (wait=true) BEFORE `add_component`. Otherwise Unity hasn't compiled the script yet and `add_component` returns `unknown component type`. If `add_component` still fails right after refresh_assets, the script likely has a compile error — read the Unity Console.\n\n" +
+                "**Avoid redundant tool calls**: the dashboard refuses identical tool+args calls after a few retries (`Refused: was called with these exact arguments N times`). Strategy: keep findings as plain text in your reply (instead of recalling the same query), change one argument when you do need fresh data, and after any error change strategy rather than repeat. The Unity tool responses end with `[unity-call #N @ HH:mm:ss.fff]` so revalidation against an unchanged scene works — but only when the INPUT args differ.\n\n" +
                 "Two project skill tools to use them:\n" +
                 "- `get_skills_list` — discover all installed skills (returns id/name/description/slashCommand).\n" +
                 "- `get_skill_content` — read a skill's full body before invoking, when you want to inspect its instructions.\n" +

@@ -91,7 +91,22 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
 
             var type = ResolveComponentType(typeName);
-            if (type == null) return OpResult.Fail($"unknown component type '{typeName}'");
+            if (type == null)
+            {
+                // Common cause: the agent just created a new MonoBehaviour script via
+                // file write and Unity hasn't compiled it yet. Make this actionable.
+                var hint = "";
+                if (EditorApplication.isCompiling)
+                    hint = "\nUnity is compiling RIGHT NOW — wait for the bottom-right spinner to finish, then retry.";
+                else
+                    hint = "\nIf you JUST created this script via the filesystem: " +
+                           "(1) call `refresh_assets` (with wait=true), " +
+                           "(2) check the Console for compile errors, " +
+                           "(3) verify the class name in the .cs file matches '" + typeName + "', " +
+                           "(4) retry. " +
+                           "If you didn't create it, use `list_component_types nameContains=\"" + typeName + "\"` to find the real name.";
+                return OpResult.Fail($"unknown component type '{typeName}'{hint}");
+            }
 
             var added = Undo.AddComponent(go, type);
             return OpResult.Success(added.GetInstanceID(), $"added {type.Name}");

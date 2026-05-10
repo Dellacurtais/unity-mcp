@@ -5,6 +5,25 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-05-10
+
+### Fixed — based on real-session error patterns (session 651 forensics)
+
+- **`add_component` for newly-created scripts**: agent had to retry 4× with `unknown component type 'DayNightCycle'` because the .cs was just written via filesystem and Unity hadn't compiled it. Two fixes:
+  1. New tool **`refresh_assets`** — calls `AssetDatabase.Refresh()` and (with `wait: true`, default) blocks until `EditorApplication.isCompiling` flips false. Editor UI freezes briefly during the wait — acceptable trade for determinism. Returns a hint when assembly reload is still in flight.
+  2. `add_component`'s `unknown component type` error now suggests the exact recovery sequence (`refresh_assets` → check Console → verify class name → retry) and notes when Unity is actively compiling at error-time.
+- **`describe_post_effect` enum values**: agent passed `FilmGrain.type = "Thin"` (invalid) and `Vignette.roundness` (param doesn't exist; real one is `rounded: bool`). The describe output now enumerates the legal values for enum-typed parameters (`enum [Thin1, Thin2, Medium1, Medium2, Large01, Large02]`), shows `[true, false]` for booleans, and tags clamped/min parameter wrappers so the agent picks the right name and value first try.
+
+### Changed — preamble guidance to prevent the same failures next time
+
+- New paragraph: "After creating a NEW `.cs` MonoBehaviour script, call `refresh_assets` (wait=true) BEFORE `add_component`."
+- New paragraph: "Avoid redundant tool calls — the dashboard refuses identical tool+args after a few retries. Keep findings in reply text instead of recalling, change at least one arg when re-querying, and switch strategy after errors instead of repeating." Names the `[unity-call #N]` marker explicitly so the agent knows that revalidation works only when input args differ.
+
+### Notes
+
+- Tool count is now **48** (was 47).
+- The 0.5.3 bump in `package.json` happened mid-flight without a CHANGELOG entry; this 0.5.4 covers all changes since 0.5.2.
+
 ## [0.5.2] - 2026-05-09
 
 ### Fixed

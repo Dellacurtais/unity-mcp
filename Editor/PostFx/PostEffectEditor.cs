@@ -88,8 +88,28 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     { valueType = pt.GetGenericArguments()[0]; break; }
                     pt = pt.BaseType;
                 }
-                sb.AppendLine($"  {f.Name}: {f.FieldType.Name}" +
-                    (valueType != null ? $" → {valueType.Name}" : ""));
+
+                var line = $"  {f.Name}: {f.FieldType.Name}" +
+                    (valueType != null ? $" → {valueType.Name}" : "");
+
+                // Crucial: enumerate enum values so the agent doesn't chuck "Thin"
+                // when the actual values are "Thin1"/"Thin2"/etc. Same for ranges.
+                if (valueType != null && valueType.IsEnum)
+                {
+                    var names = Enum.GetNames(valueType);
+                    line += "  enum [" + string.Join(", ", names) + "]";
+                }
+                else if (valueType == typeof(bool))
+                {
+                    line += "  values [true, false]";
+                }
+
+                // Highlight clamped parameters (MinFloatParameter, ClampedFloatParameter, etc.)
+                var paramTypeName = f.FieldType.Name;
+                if (paramTypeName.Contains("Clamped") || paramTypeName.Contains("Min") || paramTypeName.Contains("NoInterp"))
+                    line += $"  ({paramTypeName} — check pipeline docs for valid range)";
+
+                sb.AppendLine(line);
             }
             return OpResult.Success(0, sb.ToString());
         }
