@@ -5,16 +5,18 @@ using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Analyzers
 {
-    /// Counts triangles and detects mesh reuse across renderers. Flags scenes
-    /// with very high triangle counts and duplicated meshes that could benefit
-    /// from GPU instancing.
+    /// Counts triangles across MeshRenderer + SkinnedMeshRenderer and detects
+    /// mesh reuse. Flags scenes whose total triangle budget crosses a soft
+    /// warning threshold or a hard ceiling, and meshes shared by enough
+    /// renderers to be worth GPU-instancing.
     public sealed class GeometryAnalyzer : IAnalyzer
     {
         public string Id => "geometry";
         public string Category => "performance";
 
         // Heuristic thresholds — tune later or expose via settings.
-        private const int HighTriangleBudget = 500_000;
+        private const long HighTriangleBudget = 500_000;
+        private const long TriangleCeiling = 2_000_000;
         private const int DuplicateMeshThreshold = 10;
 
         public IEnumerable<Issue> Run(SceneSnapshot snapshot)
@@ -25,18 +27,19 @@ namespace Maicon.SceneAnalyzer.Editor.Analyzers
 
             foreach (var info in snapshot.All())
             {
+                if (!info.IsActive) continue;
                 var go = EditorUtility.InstanceIDToObject(info.InstanceID) as GameObject;
                 if (go == null) continue;
 
-                foreach (var mf in go.GetComponents<MeshFilter>())
+                foreach (var r in go.GetComponents<Renderer>())
                 {
-                    var mesh = mf.sharedMesh;
+                    var mesh = ResolveMesh(r);
                     if (mesh == null) continue;
+
                     rendererCount++;
-                    long tris = 0;
-                    try { tris = mesh.triangles.LongLength / 3; }
-                    catch { /* unreadable mesh */ continue; }
+                    var tris = TriangleCount(mesh);
                     totalTris += tris;
+
                     if (perMesh.TryGetValue(mesh, out var v))
                         perMesh[mesh] = (v.instances + 1, v.tris);
                     else
@@ -46,13 +49,20 @@ namespace Maicon.SceneAnalyzer.Editor.Analyzers
 
             yield return new Issue(
                 analyzer: Id, severity: IssueSeverity.Info, category: Category,
-                message: $"{totalTris:N0} triangles across {rendererCount} mesh renderers");
+                message: $"{totalTris:N0} triangles across {rendererCount} renderers (mesh + skinned)");
 
-            if (totalTris > HighTriangleBudget)
+            if (totalTris > TriangleCeiling)
+            {
+                yield return new Issue(
+                    analyzer: Id, severity: IssueSeverity.Error, category: Category,
+                    message: $"Scene has {totalTris:N0} triangles (> {TriangleCeiling:N0} ceiling). " +
+                             "Aggressive culling / streaming required.");
+            }
+            else if (totalTris > HighTriangleBudget)
             {
                 yield return new Issue(
                     analyzer: Id, severity: IssueSeverity.Warning, category: Category,
-                    message: $"Scene has {totalTris:N0} triangles (> {HighTriangleBudget:N0}). " +
+                    message: $"Scene has {totalTris:N0} triangles (> {HighTriangleBudget:N0} budget). " +
                              "Consider LOD groups, instancing, or culling.");
             }
 
@@ -64,6 +74,30 @@ namespace Maicon.SceneAnalyzer.Editor.Analyzers
                     message: $"Mesh '{kv.Key.name}' used by {kv.Value.instances} renderers " +
                              $"({kv.Value.tris:N0} tris each) — candidate for GPU instancing.");
             }
+        }
+
+        private static Mesh ResolveMesh(Renderer r)
+        {
+            switch (r)
+            {
+                case SkinnedMeshRenderer smr:
+                    return smr.sharedMesh;
+                case MeshRenderer _:
+                    var mf = r.GetComponent<MeshFilter>();
+                    return mf != null ? mf.sharedMesh : null;
+                default:
+                    return null;
+            }
+        }
+
+        private static long TriangleCount(Mesh mesh)
+        {
+            long tris = 0;
+            for (int sm = 0; sm < mesh.subMeshCount; sm++)
+            {
+                tris += mesh.GetIndexCount(sm) / 3;
+            }
+            return tris;
         }
     }
 }

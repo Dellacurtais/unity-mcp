@@ -145,9 +145,45 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                             Bootstrap.UnityProjectRoot);
                     }
                     if (GUILayout.Button("Clear", GUILayout.Width(50)))
+                    {
                         Settings.CoderProjectId = 0;
+                        Settings.CoderProjectWorkdir = "";
+                        Settings.CoderProjectName = "";
+                    }
+                }
+
+                // Status — always visible, helps the dev see exactly which
+                // dashboard project this Unity instance is pinned to.
+                if (Settings.CoderProjectId > 0)
+                {
+                    var nameDisplay = string.IsNullOrEmpty(Settings.CoderProjectName)
+                        ? "(name not cached — click Auto-detect)"
+                        : Settings.CoderProjectName;
+                    var workdirDisplay = string.IsNullOrEmpty(Settings.CoderProjectWorkdir)
+                        ? "(workdir not cached)"
+                        : Settings.CoderProjectWorkdir;
+                    EditorGUILayout.LabelField("  pinned",
+                        $"#{Settings.CoderProjectId} — {nameDisplay} @ {workdirDisplay}",
+                        EditorStyles.miniLabel);
+                }
+                else
+                {
+                    EditorGUILayout.LabelField("  pinned", "(none — Send will auto-detect from workdir)",
+                        EditorStyles.miniLabel);
                 }
                 EditorGUILayout.LabelField("Workdir", Bootstrap.UnityProjectRoot ?? "(unavailable)", EditorStyles.miniLabel);
+
+                // Mismatch warning: cached project points at a different folder
+                // than this Unity instance. Send/New auto-corrects on next call.
+                if (Settings.CoderProjectId > 0
+                    && !string.IsNullOrEmpty(Settings.CoderProjectWorkdir)
+                    && !CoderApiClient.WorkdirMatches(Settings.CoderProjectWorkdir, Bootstrap.UnityProjectRoot))
+                {
+                    EditorGUILayout.HelpBox(
+                        "Cached project points to a different folder than this Unity workdir. " +
+                        "Send (or click Auto-detect) — the plugin will switch to the correct project automatically.",
+                        MessageType.Warning);
+                }
 
                 DrawProviderModelRow();
 

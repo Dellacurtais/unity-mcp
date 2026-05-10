@@ -21,6 +21,9 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KCoderProfile = "Maicon.SceneAnalyzer.Coder.Profile";
         private const string KCoderAgent = "Maicon.SceneAnalyzer.Coder.Agent";
         private const string KCoderProjectId = "Maicon.SceneAnalyzer.Coder.ProjectId";
+        private const string KCoderProjectWorkdir = "Maicon.SceneAnalyzer.Coder.ProjectWorkdir";
+        private const string KCoderProjectName = "Maicon.SceneAnalyzer.Coder.ProjectName";
+        private const string KCoderSettingsVersion = "Maicon.SceneAnalyzer.Coder.SettingsVersion";
         private const string KCoderProvider = "Maicon.SceneAnalyzer.Coder.Provider";
         private const string KCoderModel = "Maicon.SceneAnalyzer.Coder.Model";
         private const string KCoderAutoInjectContext = "Maicon.SceneAnalyzer.Coder.AutoInjectContext";
@@ -90,8 +93,40 @@ namespace Maicon.SceneAnalyzer.Editor
 
         public static int CoderProjectId
         {
-            get => EditorPrefs.GetInt(KCoderProjectId, 1);
+            // 0 means "no project resolved yet" — Send/CreateSession will
+            // auto-detect from the Unity workdir on first use. The earlier
+            // default of 1 caused new sessions to silently attach to whatever
+            // project happened to have id 1 in the dashboard (usually a
+            // legacy/unrelated one).
+            get => EditorPrefs.GetInt(KCoderProjectId, 0);
             set => EditorPrefs.SetInt(KCoderProjectId, value);
+        }
+
+        /// Workdir that was matched when CoderProjectId was last resolved
+        /// (= `Path.GetDirectoryName(Application.dataPath)` of that Unity
+        /// project, normalised). Compared against the current Unity workdir
+        /// to detect drift — when they differ, the cached id is stale and a
+        /// re-resolve is forced.
+        public static string CoderProjectWorkdir
+        {
+            get => EditorPrefs.GetString(KCoderProjectWorkdir, "");
+            set => EditorPrefs.SetString(KCoderProjectWorkdir, value ?? "");
+        }
+
+        /// Cached project name from the last resolve, purely for UI. Lets the
+        /// chat panel show "id #5 — MyGame @ F:\..." instead of just "id 5".
+        public static string CoderProjectName
+        {
+            get => EditorPrefs.GetString(KCoderProjectName, "");
+            set => EditorPrefs.SetString(KCoderProjectName, value ?? "");
+        }
+
+        /// Bumped on each migration step so Bootstrap can run one-shot fixups
+        /// on existing installs without nagging the user.
+        public static int CoderSettingsVersion
+        {
+            get => EditorPrefs.GetInt(KCoderSettingsVersion, 0);
+            set => EditorPrefs.SetInt(KCoderSettingsVersion, value);
         }
 
         public static string CoderProvider

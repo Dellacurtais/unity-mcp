@@ -76,10 +76,11 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             var token2 = _cts.Token;
             // Capture EVERYTHING from Settings on the main thread before
             // dispatching — EditorPrefs is not guaranteed thread-safe.
+            // (CoderProjectId / CoderProjectWorkdir are read inside
+            // ResolveProjectAsync via its own MainThreadDispatcher hop.)
             var unityRoot = Bootstrap.UnityProjectRoot;
             var injectContext = Settings.CoderAutoInjectContext;
             var customPreamble = Settings.CoderCustomPreamble;
-            var snapProjectId = Settings.CoderProjectId;
             var snapProvider = Settings.CoderProvider;
             var snapModel = Settings.CoderModel;
             var snapThinking = Settings.CoderThinking;
@@ -92,28 +93,16 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
                     if (effectiveSessionId <= 0)
                     {
-                        int projectId = snapProjectId;
+                        // Always go through the resolver — it cheaply returns
+                        // the cached id when the workdir still matches, and
+                        // re-detects on drift (the bug prior to v0.8.1 was
+                        // skipping this whenever any id was cached).
+                        int projectId = await ResolveProjectAsync(serverUrl, token, unityRoot, token2);
                         if (projectId <= 0)
                         {
-                            await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
-                                $"[1/3] ensuring D:\\MCP project for workdir `{unityRoot}` (server={serverUrl})…"));
-                            projectId = await EnsureProjectAsync(serverUrl, token, unityRoot, token2);
-                            if (projectId <= 0)
-                            {
-                                await MainThreadDispatcher.RunAsync(() => _session.AddError(
-                                    "step 1 failed (no project id) — aborting before session/message"));
-                                return;
-                            }
-                            await MainThreadDispatcher.RunAsync(() =>
-                            {
-                                Settings.CoderProjectId = projectId;
-                                _session.AddSystemNote($"[1/3] project id = {projectId}");
-                            });
-                        }
-                        else
-                        {
-                            await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
-                                $"[1/3] using existing project id {projectId}"));
+                            await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                                "step 1 failed (no project id) — aborting before session/message"));
+                            return;
                         }
 
                         await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
@@ -204,6 +193,15 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "`query_scene` (combined filter: tag + layer + componentTypes (must-have-all) + nameContains + pathContains + withinRadius, sortBy name/distance/depth).\n" +
                 "- **Collider authoring**: `auto_fit_collider` (Box/Sphere/Capsule/Mesh sized to renderer bounds), " +
                 "`add_compound_colliders` (one primitive per child renderer — better fit for buildings/vehicles), `set_physics_material`.\n" +
+                "- **Audio — sources & runtime**: `create_audio_source` (basic), `create_audio_source_3d` (3D point source with rolloff/min/max distance — use for ambient point emitters like an engine box), " +
+                "`set_audio_source_props` (typed setter for every common AudioSource field), `play_audio_source` (play/stop/pause/unpause/playOneShot — only emits in Play Mode), " +
+                "`add_audio_listener` (auto-removes others), `inspect_audio_setup` (audit: listeners, sources by mixer/2D/3D/loop, reverb zones, warnings).\n" +
+                "- **Audio — mixers**: `list_audio_mixers`, `read_audio_mixer` (groups + snapshots + exposed parameters with current values), `assign_to_mixer_group` " +
+                "(route a source through e.g. 'SFX' or 'MainMixer/Music'), `set_mixer_parameter` (runtime exposed param — must already be Exposed in the editor), " +
+                "`play_mixer_snapshot` (transitions over `transitionSeconds` — swap moods).\n" +
+                "- **Audio — convenience**: `setup_background_music` (creates/reuses a `__BGM__` GameObject with 2D loop AudioSource for the given clip, optional mixer routing), " +
+                "`create_reverb_zone` (AudioReverbZone with preset Cave/Hall/Forest/etc.).\n" +
+                "Footstep pattern: write a `Footsteps.cs` MonoBehaviour with `PlayFootstep(AnimationEvent)` that calls `PlayOneShot`, then refresh_assets, add_component on the character, then `add_animation_event` at each step time on the walk/run clip.\n" +
                 "- **Render & post-fx** (URP/HDRP): `set_render_settings`, `create_volume`, `add_post_effect`, " +
                 "`remove_post_effect`, `set_post_effect_property`, `apply_color_grading`, " +
                 "`list_post_effects` (effects on a volume OR all VolumeComponent types available), " +
@@ -230,6 +228,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         /// Public entry point so the UI's "New" button can create a session
         /// without sending a message. Fire-and-forget; status is reported via
         /// the ChatSession transcript.
+        ///
+        /// The `projectId` parameter is intentionally IGNORED — `ResolveProjectAsync`
+        /// auto-detects/creates the project that matches the current Unity
+        /// workdir. Bypassing this with a hard-coded id was the v0.8.0 bug
+        /// where new sessions silently attached to whatever happened to have
+        /// id 1 in the dashboard. Kept in the signature for source-compat.
         public void CreateSession(string serverUrl, string token, int projectId, string title,
             string provider, string model, string agent)
         {
@@ -240,11 +244,20 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             }
             _cts = new CancellationTokenSource();
             var ct = _cts.Token;
+            var unityRoot = Bootstrap.UnityProjectRoot;
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    var id = await CreateSessionAsync(serverUrl, token, projectId, title, provider, model, agent, ct);
+                    var resolvedProjectId = await ResolveProjectAsync(serverUrl, token, unityRoot, ct);
+                    if (resolvedProjectId <= 0)
+                    {
+                        await MainThreadDispatcher.RunAsync(() => _session.AddError(
+                            "create session aborted — couldn't resolve a project for this Unity workdir"));
+                        return;
+                    }
+
+                    var id = await CreateSessionAsync(serverUrl, token, resolvedProjectId, title, provider, model, agent, ct);
                     if (id > 0)
                     {
                         // Mark the session as needing the preamble on its first
@@ -256,7 +269,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                         {
                             Settings.CoderSessionId = id;
                             _session.AddSystemNote(
-                                $"session #{id} created (project_id={projectId}) — preamble will be injected on first message");
+                                $"session #{id} created (project_id={resolvedProjectId}) — preamble will be injected on first message");
                         });
                     }
                 }
@@ -281,13 +294,16 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             {
                 try
                 {
-                    var id = await EnsureProjectAsync(serverUrl, token, unityRoot, ct);
-                    if (id > 0)
+                    var result = await EnsureProjectAsync(serverUrl, token, unityRoot, ct);
+                    if (result.Id > 0)
                     {
                         await MainThreadDispatcher.RunAsync(() =>
                         {
-                            Settings.CoderProjectId = id;
-                            _session.AddSystemNote($"project #{id} ready (root_path={unityRoot})");
+                            Settings.CoderProjectId = result.Id;
+                            Settings.CoderProjectWorkdir = unityRoot;
+                            Settings.CoderProjectName = result.Name;
+                            _session.AddSystemNote(
+                                $"project #{result.Id} '{result.Name}' ready (root_path={unityRoot})");
                         });
                     }
                 }
@@ -453,11 +469,24 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             });
         }
 
+        /// Result of an EnsureProjectAsync call — id + the dashboard's name +
+        /// the root_path it agreed to. Persisted in Settings so the UI can
+        /// show a meaningful status and so workdir drift can be detected.
+        public readonly struct EnsureProjectResult
+        {
+            public readonly int Id;
+            public readonly string Name;
+            public readonly string RootPath;
+            public EnsureProjectResult(int id, string name, string rootPath)
+            { Id = id; Name = name ?? ""; RootPath = rootPath ?? ""; }
+            public static EnsureProjectResult Empty => new EnsureProjectResult(0, "", "");
+        }
+
         /// Resolves the D:\MCP `project_id` for the given Unity workdir. Lists
         /// `/api/projects`, returns the id of one whose `root_path` matches the
         /// Unity workdir (case-insensitive, separator-insensitive). Creates a
         /// new one via POST if no match.
-        public async Task<int> EnsureProjectAsync(string serverUrl, string token, string unityRoot, CancellationToken ct)
+        public async Task<EnsureProjectResult> EnsureProjectAsync(string serverUrl, string token, string unityRoot, CancellationToken ct)
         {
             try
             {
@@ -465,7 +494,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 {
                     await MainThreadDispatcher.RunAsync(() =>
                         _session.AddError("Unity project root is empty — cannot auto-detect project"));
-                    return 0;
+                    return EnsureProjectResult.Empty;
                 }
 
                 // 1. List
@@ -480,7 +509,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     {
                         await MainThreadDispatcher.RunAsync(() => _session.AddError(
                             $"list projects failed — HTTP {(int)lresp.StatusCode}: {lbody}"));
-                        return 0;
+                        return EnsureProjectResult.Empty;
                     }
                     var arr = JArray.Parse(lbody);
                     var target = NormalizePath(unityRoot);
@@ -493,9 +522,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                             var existingId = (int?)p["id"] ?? 0;
                             if (existingId > 0)
                             {
+                                var existingName = (string)p["name"] ?? "";
                                 await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
-                                    $"matched existing project #{existingId} for {unityRoot}"));
-                                return existingId;
+                                    $"matched existing project #{existingId} '{existingName}' for {unityRoot}"));
+                                return new EnsureProjectResult(existingId, existingName, rp);
                             }
                         }
                     }
@@ -523,25 +553,68 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     {
                         await MainThreadDispatcher.RunAsync(() => _session.AddError(
                             $"create project failed — HTTP {(int)cresp.StatusCode}: {cbody}"));
-                        return 0;
+                        return EnsureProjectResult.Empty;
                     }
                     var created = JObject.Parse(cbody);
                     var id = (int?)created["id"] ?? 0;
+                    var createdName = (string)created["name"] ?? "";
+                    var createdRoot = (string)created["root_path"] ?? unityRoot;
                     if (id > 0)
                     {
                         await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
-                            $"created project #{id} '{(string)created["name"]}' for {unityRoot}"));
+                            $"created project #{id} '{createdName}' for {unityRoot}"));
                     }
-                    return id;
+                    return new EnsureProjectResult(id, createdName, createdRoot);
                 }
             }
-            catch (OperationCanceledException) { return 0; }
+            catch (OperationCanceledException) { return EnsureProjectResult.Empty; }
             catch (Exception e)
             {
                 Debug.LogException(e);
                 await MainThreadDispatcher.RunAsync(() => _session.AddError($"ensure project error: {e.Message}"));
-                return 0;
+                return EnsureProjectResult.Empty;
             }
+        }
+
+        /// Cache-aware project resolver shared by Send / CreateSession. Returns
+        /// the cached id when it still matches the current Unity workdir,
+        /// otherwise re-runs EnsureProjectAsync and persists the new id +
+        /// workdir + name. Returns 0 on failure (the underlying call already
+        /// surfaced the error in the chat transcript).
+        private async Task<int> ResolveProjectAsync(string serverUrl, string token, string unityRoot, CancellationToken ct)
+        {
+            int cachedId = 0;
+            string cachedRoot = "";
+            await MainThreadDispatcher.RunAsync(() =>
+            {
+                cachedId = Settings.CoderProjectId;
+                cachedRoot = Settings.CoderProjectWorkdir;
+            });
+
+            if (cachedId > 0 && WorkdirMatches(cachedRoot, unityRoot))
+                return cachedId;
+
+            var note = cachedId > 0
+                ? $"[1/3] cached project #{cachedId} points at '{cachedRoot}' but Unity is at '{unityRoot}' — re-resolving"
+                : "[1/3] no project cached — auto-detecting from Unity workdir";
+            await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(note));
+
+            var result = await EnsureProjectAsync(serverUrl, token, unityRoot, ct);
+            if (result.Id <= 0) return 0;
+
+            await MainThreadDispatcher.RunAsync(() =>
+            {
+                Settings.CoderProjectId = result.Id;
+                Settings.CoderProjectWorkdir = unityRoot;
+                Settings.CoderProjectName = result.Name;
+                _session.AddSystemNote($"[1/3] project id = {result.Id} ('{result.Name}')");
+            });
+            return result.Id;
+        }
+
+        public static bool WorkdirMatches(string a, string b)
+        {
+            return string.Equals(NormalizePath(a), NormalizePath(b), StringComparison.OrdinalIgnoreCase);
         }
 
         private static string NormalizePath(string p)

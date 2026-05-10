@@ -36,7 +36,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Analyze
             int errors = 0, warnings = 0, infos = 0;
             foreach (var i in issues)
             {
-                if (count++ >= max) break;
+                if (count >= max) break;
+                count++;
                 switch (i.Severity)
                 {
                     case IssueSeverity.Error: errors++; break;

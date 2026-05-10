@@ -5,6 +5,79 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-05-10
+
+### Fixed — Coder sessions silently attaching to the wrong dashboard project
+
+User-reported: opening a Coder Chat in Unity created sessions under a "random" dashboard project (typically id 1, an unrelated project from another context) instead of one whose `root_path` matched the Unity workdir. Files written by the agent ended up in the wrong place.
+
+**Root causes (4):**
+
+1. `Settings.CoderProjectId` defaulted to **`1`**, not `0`.
+2. The Send pipeline only auto-detected when `id <= 0`, so the default 1 always skipped detection and used the cached id.
+3. The "New" button passed `Settings.CoderProjectId` straight to `CreateSessionAsync` without ensuring it matched the workdir.
+4. There was no persisted workdir to compare against — when the user opened a different Unity project on the same machine, the cached id stayed pointing at the previous project.
+
+**Fix:**
+
+- `Settings.CoderProjectId` default changed `1 → 0`.
+- New persisted fields: `Settings.CoderProjectWorkdir` (the workdir matched at last resolve) and `Settings.CoderProjectName` (cached name for UI).
+- `EnsureProjectAsync` now returns a tuple `(int Id, string Name, string RootPath)` so callers can persist all three.
+- New `ResolveProjectAsync` private helper centralises the cache-or-resolve logic. Returns the cached id only when the new helper `WorkdirMatches(cachedRoot, currentUnityRoot)` is true; otherwise re-runs `EnsureProjectAsync` and updates Settings.
+- `Send()` uses `ResolveProjectAsync` (replacing the duplicated inline auto-detect block).
+- `CreateSession()` (called by the "New" button) now ALSO calls `ResolveProjectAsync` and ignores its `projectId` argument — the kept signature is for source-compat.
+- `EnsureProject()` (the Auto-detect button path) persists `CoderProjectWorkdir` + `CoderProjectName` on success.
+
+**Migration (one-shot):** `Bootstrap` static ctor checks `Settings.CoderSettingsVersion < 2` and, when there's no workdir cached, zeroes the stale `CoderProjectId` so the next Send re-resolves correctly. Silent — no warnings.
+
+**UI improvements (CoderChatWindow):**
+
+- Below the Project row, a status line: `pinned: #N — <name> @ <workdir>` (or `(none — Send will auto-detect from workdir)` when id=0).
+- Mismatch warning HelpBox when the cached workdir differs from the current Unity workdir, telling the dev that Send/Auto-detect will fix it automatically.
+- "Clear" button now also clears `CoderProjectWorkdir` and `CoderProjectName`.
+
+### Notes
+
+- The auto-detect note in the transcript now reads `[1/3] no project cached — auto-detecting from Unity workdir` (or `… cached project #N points at '<old>' but Unity is at '<new>' — re-resolving` on drift), so the dev can see exactly which path the resolver took.
+
+## [0.8.0] - 2026-05-10
+
+### Added — Audio (12 tools)
+
+**Tier A — core authoring (3):**
+- **`create_audio_source_3d`** — convenience for 3D point sources (engine box, generator, fountain). Defaults to spatialBlend=1, loop=true, playOnAwake=true. Exposes the crucial 3D fields directly: `minDistance`, `maxDistance`, `rolloffMode` (Logarithmic/Linear/Custom), `dopplerLevel`, `spread`. Optional `mixerGroup` for routing.
+- **`set_audio_source_props`** — typed setter for every common AudioSource field (volume, pitch, spatialBlend, min/maxDistance, rolloffMode, dopplerLevel, spread, panStereo, reverbZoneMix, priority, mute, loop, playOnAwake, bypass*, clip).
+- **`play_audio_source`** — Play/Stop/Pause/UnPause/PlayOneShot. Documented limitation: AudioSource only emits in Play Mode.
+
+**Tier B — mixers (5):**
+- **`list_audio_mixers`** — `.mixer` assets in the project.
+- **`read_audio_mixer`** — groups (via FindMatchingGroups), snapshots, exposed parameters with current values (introspected via SerializedObject on `m_Snapshots` / `m_ExposedParameters`).
+- **`assign_to_mixer_group`** — sets `AudioSource.outputAudioMixerGroup`. Accepts plain group name (e.g. 'SFX') or 'MixerName/GroupName' for disambiguation.
+- **`set_mixer_parameter`** — `mixer.SetFloat(exposedName, value)` for ducking, fade, dynamic EQ. Documented limitation: parameter must already be Exposed in the mixer.
+- **`play_mixer_snapshot`** — `snapshot.TransitionTo(seconds)` — swap moods (combat → peaceful, normal → muffled-by-water).
+
+**Tier C — convenience (4):**
+- **`setup_background_music`** — creates/reuses a singleton `__BGM__` GameObject with 2D loop AudioSource. Stops prior BGM if `replaceExisting=true` (default). Optional mixer routing. Solves "trilha sonora no fundo" in one call.
+- **`create_reverb_zone`** — AudioReverbZone with min/maxDistance + preset (Cave, Hall, Forest, Hangar, Underwater, etc.).
+- **`add_audio_listener`** — adds AudioListener to a GameObject. `removeOthers=true` (default) prevents Unity's "multiple listeners" warning.
+- **`inspect_audio_setup`** — single-shot scene audio audit: AudioListeners (warns if 0 or >1), AudioSources bucketed by clip presence / 2D vs 3D / loop+playOnAwake / mixer group, AudioReverbZones, plus issues section at the bottom.
+
+### Authoring helper
+
+- `Editor/Authoring/AudioAuthor.cs` — every audio op in one place (~480 LOC), with `ResolveMixer` / `ResolveMixerGroup` helpers (supports 'MixerName/GroupName' syntax) and a `LoadClip` helper.
+
+### Changed
+
+- `ChangesetExecutor` registers 9 new audio op kinds (3 read-side: `list_audio_mixers`, `read_audio_mixer`, `inspect_audio_setup` go through tool wrappers only; 9 write ops batchable in `apply_changeset`).
+- Default context preamble now has dedicated **Audio — sources & runtime / mixers / convenience** sections, plus a one-line **footstep pattern** pointing at the existing `add_animation_event` + custom `Footsteps.cs` recipe.
+- Tool count is now **92** with Timeline / **87** without (was 80/75 in 0.7.1; +12 this release).
+
+### Notes
+
+- `create_audio_source` (basic 2D/3D toggle, from earlier) stays as-is — `create_audio_source_3d` is a separate convenience for the more demanding 3D point-emitter case.
+- AudioMixer authoring (creating mixers/groups/snapshots programmatically) intentionally NOT included — Unity's editor APIs for that are limited and erratic. Author the mixer asset in the editor visually; the agent then routes / sets params / transitions snapshots via the new tools.
+- Footsteps don't get a dedicated tool because they're solved end-to-end with `add_animation_event` (existing) + a tiny `Footsteps.cs` script the agent writes via filesystem and adds via `add_component` (after `refresh_assets`).
+
 ## [0.7.1] - 2026-05-10
 
 ### Fixed

@@ -7,7 +7,7 @@ namespace Maicon.SceneAnalyzer.Editor.Analyzers
 {
     /// Walks every Component's SerializedObject looking for object-reference
     /// fields that are flagged as broken (instanceID != 0 but objectReferenceValue
-    /// is null). Also reports fields tagged with [RequiredField] left empty.
+    /// is null). [RequiredField] empty-field checks live in RequiredFieldAnalyzer.
     public sealed class MissingReferenceAnalyzer : IAnalyzer
     {
         public string Id => "missing-reference";

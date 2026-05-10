@@ -70,6 +70,16 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             ["auto_fit_collider"]        = PhysicsAuthor.AutoFitCollider,
             ["add_compound_colliders"]   = PhysicsAuthor.AddCompoundColliders,
             ["set_physics_material"]     = PhysicsAuthor.SetPhysicsMaterial,
+            // Audio
+            ["create_audio_source_3d"]   = AudioAuthor.Create3DSource,
+            ["set_audio_source_props"]   = AudioAuthor.SetSourceProps,
+            ["play_audio_source"]        = AudioAuthor.PlayAudio,
+            ["assign_to_mixer_group"]    = AudioAuthor.AssignToMixerGroup,
+            ["set_mixer_parameter"]      = AudioAuthor.SetMixerParameter,
+            ["play_mixer_snapshot"]      = AudioAuthor.PlayMixerSnapshot,
+            ["setup_background_music"]   = AudioAuthor.SetupBackgroundMusic,
+            ["create_reverb_zone"]       = AudioAuthor.CreateReverbZone,
+            ["add_audio_listener"]       = AudioAuthor.AddListener,
         };
 
         /// External assemblies (e.g. PostFx) call this from [InitializeOnLoad]

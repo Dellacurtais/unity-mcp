@@ -58,11 +58,31 @@ namespace Maicon.SceneAnalyzer.Editor
             {
                 UnityProjectRoot = System.IO.Path.GetDirectoryName(UnityEngine.Application.dataPath);
 
+                // Migration: v0.8.0 and earlier defaulted CoderProjectId to 1
+                // and never persisted the workdir of the matched project. Any
+                // user with a stale cached id and no workdir is silently
+                // pinned to whatever has id 1 in the dashboard. Reset the id
+                // so the next Send/CreateSession auto-resolves correctly.
+                if (Settings.CoderSettingsVersion < 2)
+                {
+                    if (string.IsNullOrEmpty(Settings.CoderProjectWorkdir))
+                        Settings.CoderProjectId = 0;
+                    Settings.CoderSettingsVersion = 2;
+                }
+
                 Snapshot = new SceneSnapshot();
                 AssetCatalog = new AssetCatalog();
                 Runner = new AnalysisRunner(Snapshot);
+                // performance — order matters for the maxIssues cap
+                // (cheap + low-volume first so chatty analyzers can't starve them).
+                Runner.Register(new HierarchyDepthAnalyzer());
                 Runner.Register(new GeometryAnalyzer());
+                Runner.Register(new LightingAnalyzer());
+                Runner.Register(new DrawCallEstimatorAnalyzer());
+                Runner.Register(new ScriptCostAnalyzer());
+                // validation
                 Runner.Register(new MissingReferenceAnalyzer());
+                Runner.Register(new RequiredFieldAnalyzer());
 
                 Watcher = new ChangeWatcher(Snapshot, () =>
                 {
@@ -92,6 +112,9 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new ReadAnimationClipTool());
                 ToolRegistry.Register(new ReadAvatarTool());
                 ToolRegistry.Register(new ReadAnimatorStateTool());
+                ToolRegistry.Register(new ListAudioMixersTool());
+                ToolRegistry.Register(new ReadAudioMixerTool());
+                ToolRegistry.Register(new InspectAudioSetupTool());
                 // Physics queries + scene classification
                 ToolRegistry.Register(new RaycastTool());
                 ToolRegistry.Register(new OverlapQueryTool());
@@ -144,6 +167,16 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new AutoFitColliderTool());
                 ToolRegistry.Register(new AddCompoundCollidersTool());
                 ToolRegistry.Register(new SetPhysicsMaterialTool());
+                // Audio
+                ToolRegistry.Register(new CreateAudioSource3DTool());
+                ToolRegistry.Register(new SetAudioSourcePropsTool());
+                ToolRegistry.Register(new PlayAudioSourceTool());
+                ToolRegistry.Register(new AssignToMixerGroupTool());
+                ToolRegistry.Register(new SetMixerParameterTool());
+                ToolRegistry.Register(new PlayMixerSnapshotTool());
+                ToolRegistry.Register(new SetupBackgroundMusicTool());
+                ToolRegistry.Register(new CreateReverbZoneTool());
+                ToolRegistry.Register(new AddAudioListenerTool());
                 // Write — render settings
                 ToolRegistry.Register(new SetRenderSettingsTool());
                 // Batch + selection
