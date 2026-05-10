@@ -224,14 +224,22 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             if (!_registry.TryGet(name, out var tool))
                 return ErrorResp(id, -32602, $"Tool not found: {name}");
 
-            if (tool.IsWrite && !Settings.AllowWrites)
-                return OkResp(id, ToolErrorBody("WRITE_DISABLED",
-                    "Writes are disabled in the Scene Analyzer panel."));
-
             ToolResult result;
             try
             {
-                result = await MainThreadDispatcher.RunAsync(() => tool.Execute(args));
+                // Run BOTH the AllowWrites guard and the actual tool on the
+                // editor main thread. EditorPrefs (used by Settings.*) and any
+                // UnityEditor / UnityEngine API will throw from the HTTP
+                // listener thread pool ("can only be called from the main
+                // thread"). Dispatching the whole block keeps the tool free to
+                // hit the editor APIs without surprise crashes.
+                result = await MainThreadDispatcher.RunAsync(() =>
+                {
+                    if (tool.IsWrite && !Settings.AllowWrites)
+                        return ToolResult.Error("WRITE_DISABLED",
+                            "Writes are disabled in the Scene Analyzer panel.");
+                    return tool.Execute(args);
+                });
             }
             catch (Exception e)
             {

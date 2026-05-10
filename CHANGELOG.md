@@ -5,6 +5,12 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.15] - 2026-05-09
+
+### Fixed
+
+- MCP server crashed every tool call with `MCP error -32603: GetBool can only be called from the main thread`. Cause: `HttpMcpServer.CallToolAsync` checked `Settings.AllowWrites` (which reads `EditorPrefs.GetBool`) **before** dispatching to the main thread, but the HTTP listener accept loop runs on the .NET thread pool. Unity throws the moment any non-main thread touches `EditorPrefs`. Moved the AllowWrites guard inside the `MainThreadDispatcher.RunAsync` block so the read happens on the editor main thread, alongside the actual tool execution.
+
 ## [0.3.14] - 2026-05-09
 
 ### Fixed
