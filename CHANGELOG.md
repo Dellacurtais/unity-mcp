@@ -5,6 +5,49 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-05-10
+
+### Fixed
+
+- `TimelineAuthor.AddClip` failed to compile (CS1503) — `TimelineClip.asset` is typed `UnityEngine.Object`, not `PlayableAsset`, so passing it directly to the reflective `AssignSource(PlayableAsset, Object)` helper was rejected by the compiler. Cast via `as PlayableAsset` so the helper still works (and gracefully no-ops when the underlying asset isn't a PlayableAsset for some reason).
+
+## [0.7.0] - 2026-05-10
+
+### Added — Physics queries (4)
+
+- **`raycast`** — Physics.Raycast / RaycastAll. Returns instanceId, name, tag, layer, point, normal, distance, collider type per hit. layerMask accepts int OR layer name OR array of names. hitTriggers: UseGlobal / true / false. multiple=true returns every hit sorted by distance.
+- **`overlap_query`** — Physics.OverlapBox / OverlapSphere / OverlapCapsule. Lists colliders inside a volume.
+- **`sweep_query`** — Physics.BoxCastAll / SphereCastAll / CapsuleCastAll. "What would I hit if I moved this volume."
+- **`check_ground`** — convenience: raycast down from a GameObject, return whether something is below within `maxDistance` and the hit's tag + layer + collider type. Answers "is the player on the sidewalk / on a slope / floating in the air?" in one call.
+
+### Added — Spatial / structural / classification (4)
+
+- **`compute_bounds`** — world AABB encapsulating a GameObject and its child renderers (center, size, min, max).
+- **`query_scene`** — combined scene filter: tag (exact), layer (int or name), componentTypes (must have ALL), nameContains, pathContains, withinRadius {center, radius}. sortBy: name / distance / depth. Replaces the need for several narrower discovery tools.
+- **`classify_scene`** — single-shot scene summary bucketed by tag distribution, layer distribution, top component types (top 30), hierarchy stats (root/leaf count, max depth), spatial bounds + near/far origin counts, prefab status (linked / broken / unlinked). Cheaper than `read_scene` for getting a feel of a large scene.
+- **`query_collision_layers`** — reads the per-layer collision matrix (Project Settings → Physics). With `layer` arg returns only the layers that DO collide with that one; without arg returns the full matrix.
+
+### Added — Collider authoring (3)
+
+- **`auto_fit_collider`** — adds one Box/Sphere/Capsule/Mesh collider sized to encapsulate the GameObject's renderer bounds (optionally including children). replaceExisting=true clears prior colliders (except CharacterController). isTrigger flags it as a trigger volume. Works in local space — respects parent transform scaling.
+- **`add_compound_colliders`** — adds one primitive collider per child renderer. Compound colliders approximate complex meshes (buildings, vehicles, multi-part models) far better than a single AABB while staying cheap (no convex hull / VHACD pass).
+- **`set_physics_material`** — assigns a PhysicsMaterial asset (friction/bounciness) to the Collider on a GameObject.
+
+### Authoring helpers
+
+- `Editor/Authoring/PhysicsAuthor.cs` — every physics query, scene classification, and collider authoring helper. ~520 LOC.
+
+### Changed
+
+- `ChangesetExecutor` registers 3 new collider op kinds: `auto_fit_collider`, `add_compound_colliders`, `set_physics_material` — all batchable.
+- Default context preamble now includes **Physics queries**, **Scene classification & spatial query**, and **Collider authoring** sections.
+- Tool count is now **80** with Timeline / **75** without (was 69 / 64 in 0.6.0; +11 this release).
+
+### Notes
+
+- Physics queries work in **edit mode** because Unity always builds a physics scene from active colliders. Runtime simulation (Rigidbody motion) only happens in Play Mode, but Physics.Raycast/Overlap/Cast are usable always.
+- The agent can now confidently answer scene-comprehension questions like "list every enemy within 50m of the player", "which buildings have no colliders", "how many objects are tagged Untagged but have a Collider" via single `query_scene` / `classify_scene` calls.
+
 ## [0.6.0] - 2026-05-10
 
 ### Added — Mecanim (Tier 1 + 2)

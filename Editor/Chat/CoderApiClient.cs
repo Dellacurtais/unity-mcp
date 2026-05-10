@@ -197,6 +197,13 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "`assign_controller_to_animator` (set Animator.runtimeAnimatorController). Runtime: `set_animator_parameter`, `play_animator_state`.\n" +
                 "- **Timeline** (when `com.unity.timeline` is installed): `create_timeline_asset`, `add_timeline_track` " +
                 "(Animation/Audio/Activation/Control/Signal/Marker), `add_timeline_clip`, `assign_timeline_to_director`, `play_timeline`.\n" +
+                "- **Physics queries**: `raycast` (single or all hits, with layerMask + trigger filter), `overlap_query` (Box/Sphere/Capsule), `sweep_query`, " +
+                "`check_ground` (raycast down from a GO and report what's below — answers \"is X on the sidewalk/floor?\" — returns hit's tag/layer), " +
+                "`compute_bounds` (world AABB), `query_collision_layers` (per-layer collision matrix).\n" +
+                "- **Scene classification & spatial query**: `classify_scene` (single-shot bucket summary by tag/layer/components/hierarchy/spatial/prefab), " +
+                "`query_scene` (combined filter: tag + layer + componentTypes (must-have-all) + nameContains + pathContains + withinRadius, sortBy name/distance/depth).\n" +
+                "- **Collider authoring**: `auto_fit_collider` (Box/Sphere/Capsule/Mesh sized to renderer bounds), " +
+                "`add_compound_colliders` (one primitive per child renderer — better fit for buildings/vehicles), `set_physics_material`.\n" +
                 "- **Render & post-fx** (URP/HDRP): `set_render_settings`, `create_volume`, `add_post_effect`, " +
                 "`remove_post_effect`, `set_post_effect_property`, `apply_color_grading`, " +
                 "`list_post_effects` (effects on a volume OR all VolumeComponent types available), " +

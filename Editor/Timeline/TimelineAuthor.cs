@@ -77,7 +77,7 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
                     // Generic: reflect for a UnityEngine.Object-typed property/field
                     // and assign the loaded asset. Works for most playable assets.
                     var asset2 = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(srcPath);
-                    if (asset2 != null) AssignSource(clip.asset, asset2);
+                    if (asset2 != null) AssignSource(clip.asset as PlayableAsset, asset2);
                 }
             }
 

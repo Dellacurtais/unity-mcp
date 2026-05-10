@@ -92,6 +92,15 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new ReadAnimationClipTool());
                 ToolRegistry.Register(new ReadAvatarTool());
                 ToolRegistry.Register(new ReadAnimatorStateTool());
+                // Physics queries + scene classification
+                ToolRegistry.Register(new RaycastTool());
+                ToolRegistry.Register(new OverlapQueryTool());
+                ToolRegistry.Register(new SweepQueryTool());
+                ToolRegistry.Register(new CheckGroundTool());
+                ToolRegistry.Register(new ComputeBoundsTool());
+                ToolRegistry.Register(new QuerySceneTool());
+                ToolRegistry.Register(new ClassifySceneTool());
+                ToolRegistry.Register(new QueryCollisionLayersTool());
                 // Write — create
                 ToolRegistry.Register(new CreatePrimitiveTool());
                 ToolRegistry.Register(new CreateEmptyTool());
@@ -131,6 +140,10 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new CreateBlendTreeTool());
                 ToolRegistry.Register(new AddBlendTreeMotionTool());
                 ToolRegistry.Register(new AddAnimationEventTool());
+                // Collider authoring
+                ToolRegistry.Register(new AutoFitColliderTool());
+                ToolRegistry.Register(new AddCompoundCollidersTool());
+                ToolRegistry.Register(new SetPhysicsMaterialTool());
                 // Write — render settings
                 ToolRegistry.Register(new SetRenderSettingsTool());
                 // Batch + selection

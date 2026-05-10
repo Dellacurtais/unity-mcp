@@ -66,6 +66,10 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             ["create_blend_tree"]        = AnimationAuthor.CreateBlendTree,
             ["add_blend_tree_motion"]    = AnimationAuthor.AddBlendTreeMotion,
             ["add_animation_event"]      = AnimationAuthor.AddAnimationEvent,
+            // Collider authoring
+            ["auto_fit_collider"]        = PhysicsAuthor.AutoFitCollider,
+            ["add_compound_colliders"]   = PhysicsAuthor.AddCompoundColliders,
+            ["set_physics_material"]     = PhysicsAuthor.SetPhysicsMaterial,
         };
 
         /// External assemblies (e.g. PostFx) call this from [InitializeOnLoad]
