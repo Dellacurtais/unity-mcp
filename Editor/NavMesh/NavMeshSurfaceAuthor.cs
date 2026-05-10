@@ -5,6 +5,10 @@ using Newtonsoft.Json.Linq;
 using Unity.AI.Navigation;
 using UnityEditor;
 using UnityEngine;
+// `NavMeshCollectGeometry` lives in UnityEngine.AI (core AIModule), not in
+// Unity.AI.Navigation (which has CollectObjects + the surface/modifier
+// components). Need both namespaces.
+using UnityEngine.AI;
 
 namespace Maicon.SceneAnalyzer.Editor.NavMesh
 {
