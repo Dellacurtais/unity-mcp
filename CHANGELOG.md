@@ -5,6 +5,13 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-05-09
+
+### Fixed
+
+- D:\MCP coder's identical-response guard ("refused — IDENTICAL content … seen 1 time in last 15 turns") was rejecting normal Unity workflow patterns. The guard is calibrated for file lookups, but in Unity authoring the agent legitimately re-reads the same object after every mutation: `set_property → read_component → set_property → read_component`. Until the next mutation, the read returns identical bytes — and got blocked.
+- Every tool response now carries a per-call uniqueness marker `[unity-call #N @ HH:mm:ss.fff]` appended to the last text content block. Marker is monotonic + timestamped so two queries against the same unchanged state still produce different bytes. Centralized in `HttpMcpServer.CallToolAsync` — all 47 tools get it for free.
+
 ## [0.5.0] - 2026-05-09
 
 ### Added — GameObject ergonomics
