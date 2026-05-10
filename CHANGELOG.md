@@ -5,6 +5,12 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-05-09
+
+### Fixed
+
+- The auto-injected preamble said "Invoke them by name via the skill-runner tool" — but the D:\MCP coder doesn't have a tool literally called `skill-runner`. The actual native skill API is three tools defined in `src/core/coder/skills/skill-tool-builder.ts`: **`get_skills_list`** (discovery), **`get_skill_content`** (inspect a skill body), and **`invoke_skill`** (run it with `{skill_id, input?}` → returns the interpolated body). Updated the preamble to name all three correctly, document their args, and guide the agent on the right invocation pattern (`invoke_skill` with the matching `skill_id` and the user's intent as `input`).
+
 ## [0.5.1] - 2026-05-09
 
 ### Fixed

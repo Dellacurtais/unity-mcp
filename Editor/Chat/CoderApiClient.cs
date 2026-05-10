@@ -197,11 +197,16 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "with `label`+`{ref:…}` chaining for parent references), `select_object`.\n\n" +
                 "When asked to add or tweak a component you don't know yet, the typical loop is: " +
                 "`list_component_types` → `describe_component_type` → `add_component` → `set_property` per field.\n\n" +
-                "Two skills live under `.claude/skills/` of this project. Invoke them **by name** via the skill-runner tool when the user's intent matches:\n" +
-                "- `unity-scene-audit` — read-only diagnostic flow (performance + validation). Use when the user asks to audit, diagnose, " +
+                "Two project skills live under `.claude/skills/` and you have native skill tools to use them:\n" +
+                "- `get_skills_list` — discover all installed skills (returns id/name/description/slashCommand).\n" +
+                "- `get_skill_content` — read a skill's full body before invoking, when you want to inspect its instructions.\n" +
+                "- `invoke_skill` — actually run a skill. Args: `{ skill_id: string, input?: string }`. Returns `[Skill: <name>]\\n\\n<interpolated body>`. Logged as `invoked_by: model`.\n\n" +
+                "Skill IDs to call when intent matches:\n" +
+                "- **`unity-scene-audit`** — read-only diagnostic flow (performance + validation). Use when the user asks to audit, diagnose, " +
                 "find broken refs, or understand the scene.\n" +
-                "- `unity-scene-author` — authoring flow with `apply_changeset` (create/modify/post-fx/render-settings) preserving Unity Undo. " +
+                "- **`unity-scene-author`** — authoring flow with `apply_changeset` (create/modify/post-fx/render-settings) preserving Unity Undo. " +
                 "Use when the user asks to create, modify, decorate, or stylize the scene.\n\n" +
+                "Typical pattern: when the user's request matches one of those skills, call `invoke_skill` with the matching `skill_id` and the user's intent as `input` — then follow the skill's instructions, which include calling `ext_unity_editor__*` tools. If unsure which skill applies (or you need details), `get_skill_content` first.\n\n" +
                 "Subsequent messages in this session don't need this preamble — the agent should remember. Now respond to the user message that follows.";
         }
 
