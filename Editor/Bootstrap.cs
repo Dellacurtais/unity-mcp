@@ -240,6 +240,11 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new DescribeStaticMethodTool());
                 ToolRegistry.Register(new ExecuteMenuItemTool());
                 ToolRegistry.Register(new InvokeStaticMethodTool());
+                // Mesh analytics (inspect_submeshes, detect_sharp_edges, detect_planes,
+                // sample_points_on_region, render_object_views, render_region_highlight)
+                // live in com.maicon.scene-analyzer.Editor.MeshAnalytics and are
+                // registered there via MeshAnalyticsBootstrap.
+
                 // Post-processing tools (create_volume, add_post_effect, set_post_effect_property,
                 // apply_color_grading) live in com.maicon.scene-analyzer.Editor.PostFx and are
                 // registered there via PostFxBootstrap when SRP Core is present.

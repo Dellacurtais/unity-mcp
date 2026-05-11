@@ -21,6 +21,9 @@ Inside the Unity Editor:
 - **Authors** scene content (primitives, prefab instances, lights, cameras, particle systems, audio sources, post-processing volumes) — with full Undo support
 - **Tunes** rendering (camera fov/clip planes, ambient + fog + skybox, color grading, bloom, vignette, tonemapping, etc.)
 - **Drives editor menus and static APIs** — `execute_menu_item` invokes any `[MenuItem]` (built-in, your own, or third-party like Probuilder/Odin); `invoke_static_method` calls public/non-public static methods reflectively. Powerful — gated by the same `Allow writes` kill switch.
+- **Controls play mode** — enter/exit/pause/step the editor, set `Time.timeScale`. Combined with the runtime command bridge below, this lets the agent close its own iteration loop: enter paused on frame 0 → script a few gameplay actions → screenshot → read log delta → exit.
+- **Captures the Game view** — `screenshot_game_view` (active main / overlay camera) and `screenshot_from_pov` (spawn a temporary camera at any position+rotation, render, destroy — no scene mutation). Includes URP/HDRP post-fx when in play mode.
+- **Runs scripted gameplay via the McpCommandBridge** — install a small MonoBehaviour, register handlers in your own scripts (`McpCommandBridge.Register("jump", ...)`), then the agent sends timeline scripts (`send_runtime_commands`) with per-step screenshots + log deltas in one round-trip. See [`Runtime/Bridge/README.md`](Runtime/Bridge/README.md).
 
 Reactive: the plugin keeps a live snapshot driven by `ObjectChangeEvents`, with a 250 ms debounce.
 
@@ -107,6 +110,34 @@ The plugin runs an MCP server (`streamable_http`) on `127.0.0.1:8765`. The agent
 | `invoke_static_method` | Reflectively calls any public/non-public static method. Coerces JSON args to .NET types (Vector3/Quaternion/Color, `UnityEngine.Object` via `instanceId`, enums by name). |
 
 > ⚠️ **Powerful tools.** `execute_menu_item` and `invoke_static_method` can run arbitrary editor code — they're how you reach tools that don't have a dedicated MCP wrapper. Both honour the same `Allow writes` kill switch as the rest of the write surface; turn it off when not authoring. Menu items that open MODAL dialogs (Build Settings, File/Save..., Player Settings) BLOCK the editor — avoid them. Generic and ref/out methods are explicitly unsupported.
+
+### Play mode — lifecycle, capture, monitoring
+
+| Tool | Purpose |
+| --- | --- |
+| `get_play_state` | `isPlaying / isPaused / isCompiling / frameCount / time / timeScale` snapshot — precheck before any play-mode action. |
+| `enter_play_mode` | Enters play mode and (default) waits for the first frame. Supports `paused: true` for frame-0 inspection. Refuses if compiling. Cooperative wait via `playModeStateChanged`. |
+| `exit_play_mode` | Exits play mode; waits for `EnteredEditMode`. |
+| `set_play_paused` | Toggles `EditorApplication.isPaused` — freeze the frame before a screenshot or sequence of steps. |
+| `step_frame` | Advances N frames while paused (auto-pauses if needed). Deterministic frame-by-frame inspection. |
+| `set_time_scale` | Sets `Time.timeScale`. Auto-resets to 1.0 on `ExitingPlayMode` so the editor isn't left stuck at slow speed. |
+| `screenshot_game_view` | Renders the active game-view camera into a PNG/JPG. In play mode, waits for end-of-frame so URP/HDRP post-fx is included. Edit-mode fallback reflects over `UnityEditor.GameView.m_TargetTexture`. |
+| `screenshot_from_pov` | Spawns a hidden temporary camera at `{ position, lookAt | rotationEuler, fov, ... }`, renders it, destroys it. No GameObject persists. Best way to inspect from a custom angle without moving the player. |
+| `get_active_cameras` | Lists every enabled `Camera` with instanceId, name, depth, tag, position, forward, URP renderType (when present). |
+| `mark_log_anchor` | Returns `ConsoleCapture.CurrentSeq`. Pair with `read_runtime_log_delta` to isolate the logs produced by one action. |
+| `read_runtime_log_delta` | Returns console entries since a `sinceSeq` anchor (severity-filtered). Use to correlate a screenshot with the errors/warnings emitted around it. |
+
+### Runtime bridge — scripted gameplay
+
+Requires you to call `McpCommandBridge.Register("name", handler)` in your own scripts to wire commands to your game. See [`Runtime/Bridge/README.md`](Runtime/Bridge/README.md) for the quick-start.
+
+| Tool | Purpose |
+| --- | --- |
+| `bridge_status` | Whether the bridge GameObject is in the active scene, what handlers the game has registered, queue depth, last dispatch. |
+| `bridge_install` | Adds `McpCommandBridge` to the active scene (idempotent). With Undo + scene-dirty. Sets `DontDestroyOnLoad` by default. |
+| `list_bridge_handlers` | Names of currently registered handlers. |
+| `send_runtime_command` | Invokes one handler. Singleton form — use for ad-hoc debug pokes. |
+| `send_runtime_commands` | **Primary.** Sends a timeline of `{ name, payload?, delayFrames?, captureScreenshotAfter?, markLogAnchorBefore? }` steps. The runtime executes them sequentially, captures per-step screenshots and log deltas as requested, and returns everything in one round-trip — including image content blocks the LLM can see inline. Use to script a whole gameplay sequence (load level → move → wait → shoot → screenshot) without N round-trips. |
 
 ## Embedded chat panel (Model B)
 
@@ -196,10 +227,12 @@ The plugin ships a tiny diagnostics asmdef (`com.maicon.scene-analyzer.Editor.Di
 
 ## Render pipelines
 
-The plugin ships in two assemblies:
+The plugin ships in several assemblies. All secondary asmdefs register their tools via `delayCall` against `Bootstrap.ToolRegistry`, so deleting a folder cleanly disables only its tools.
 
 - **`com.maicon.scene-analyzer.Editor`** — main editor functionality. Compiles on every Unity 6.1 project regardless of pipeline.
 - **`com.maicon.scene-analyzer.Editor.PostFx`** — Volume / post-effect tools. Gated by `defineConstraints: ["SCENE_ANALYZER_HAS_SRP_CORE"]` (defined when `com.unity.render-pipelines.core` 10.0.0+ is installed). On a Built-in-only project this asmdef simply doesn't compile — the plugin still works, just without `create_volume` / `add_post_effect` / `set_post_effect_property` / `apply_color_grading`. Install URP or HDRP to unlock them.
+- **`com.maicon.scene-analyzer.Editor.Play`** — play-mode lifecycle + Game-view capture (11 tools). No gating; works on every Unity 6.1+ install regardless of pipeline. Edit-mode Game-view capture uses reflection (`UnityEditor.GameView.m_TargetTexture`) and degrades gracefully on Unity-version drift.
+- **`com.maicon.scene-analyzer.Bridge`** (runtime) + **`com.maicon.scene-analyzer.Editor.Bridge`** — the `McpCommandBridge` MonoBehaviour and its 5 editor-side tools. Runtime asmdef ships cross-platform so the bridge can also live in player builds if you want.
 
 Other notes:
 

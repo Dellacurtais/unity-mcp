@@ -62,9 +62,14 @@ namespace Maicon.SceneAnalyzer.Editor.Core
 
         private void OnPlayModeChanged(PlayModeStateChange change)
         {
-            // Refresh on entering/exiting edit mode so the snapshot reflects whatever
-            // edit-time state was preserved across the play session.
-            if (change == PlayModeStateChange.EnteredEditMode) Trigger();
+            // Refresh on both play-mode transitions:
+            //   EnteredPlayMode → reflects runtime-instantiated objects (spawners,
+            //     pooled enemies, anything created by Awake/Start) so read tools
+            //     called during play see the live hierarchy, not the asset state.
+            //   EnteredEditMode → reflects whatever edit-time state was preserved
+            //     across the play session.
+            if (change == PlayModeStateChange.EnteredPlayMode ||
+                change == PlayModeStateChange.EnteredEditMode) Trigger();
         }
 
         private void Trigger()

@@ -5,6 +5,42 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-05-11
+
+### Added — Play mode, Game-view capture, and runtime command bridge (16 tools)
+
+This release lets the agent close its own iteration loop. Authoring → run → screenshot → log delta → re-author can now happen end-to-end without the human in the middle.
+
+**Play-mode lifecycle (6 tools, `Editor/Play/` asmdef):**
+- **`get_play_state`** — snapshot of `isPlaying / isPaused / isCompiling / willChangePlaymode / frameCount / time / timeScale`. Cheap precheck for every other play-mode tool.
+- **`enter_play_mode`** — async; cooperatively awaits `EnteredPlayMode`, optionally `waitForFirstFrame` so `Time.frameCount` ≥ 1 on return. Supports `paused: true` so the editor lands on frame 0 already paused (for deterministic inspection). Refuses if `isCompiling` (the imminent domain reload would 503 the call). Documents the same 503-retry pattern as `wait_for_compile_clean` for projects with "Reload Domain on Play" enabled.
+- **`exit_play_mode`** — async; awaits `EnteredEditMode`.
+- **`set_play_paused`** — toggles `EditorApplication.isPaused`.
+- **`step_frame`** — advances N frames via `EditorApplication.Step()` while paused (auto-pauses if needed); one editor pump between calls so the player loop ticks before the next Step.
+- **`set_time_scale`** — sets `Time.timeScale`; installs a one-shot `ExitingPlayMode` subscriber to reset to 1.0 so the editor isn't left stuck at slow speed.
+
+**Game-view capture & runtime monitoring (5 tools, same asmdef):**
+- **`screenshot_game_view`** — renders the active game-view camera into a PNG/JPG. In play mode, spawns a hidden `EndOfFrameAwaiter` MonoBehaviour with a coroutine `yield return new WaitForEndOfFrame()` so URP/HDRP post-fx lands in the captured back buffer (sync `Camera.Render()` from editor code typically skips post-process in SRPs). Edit-mode fallback reflects over `UnityEditor.GameView.m_TargetTexture` and surfaces `UNAVAILABLE` on Unity-version drift. Camera selection: explicit `cameraInstanceId` / `cameraTag` > `Camera.main` > highest-depth enabled camera.
+- **`screenshot_from_pov`** — spawns a hidden temporary `Camera` (`HideFlags.HideAndDontSave`, `enabled=false`) at `{ position, lookAt | rotationEuler, fov, isOrthographic, … }`, renders it via `Camera.Render()`, destroys it in a `try/finally`. No GameObject persists. If `includePostFx` and `Camera.main` exists, copies `cullingMask` and (best-effort, via URP reflection) `renderPostProcessing` / `volumeLayerMask` / `antialiasing` / `renderType=Base` so Volume blending applies. Replaces the "move the player to inspect from another angle" anti-pattern.
+- **`get_active_cameras`** — lists every enabled `Camera` with instanceId, name, depth, tag, projection, position, forward, and URP `renderType` when present (via reflection — no SRP-Core asmdef dependency).
+- **`mark_log_anchor`** — returns `ConsoleCapture.CurrentSeq`. Cheap. Pair with `read_runtime_log_delta` to isolate the console entries an action produced.
+- **`read_runtime_log_delta`** — same `ConsoleCapture.Snapshot` plumbing as `read_console`, framed for play-mode use: severity filter (`all` / `warnings_and_errors` / `errors_only`), limit, and a `currentSeq` echo so the agent can chain anchors across steps.
+
+**Runtime command bridge (1 MonoBehaviour + 5 tools, `Runtime/Bridge/` + `Editor/Bridge/`):**
+- **`McpCommandBridge`** (runtime MonoBehaviour) — installs into the active scene; exposes `Register(string name, CommandHandler handler)` so the game's own scripts wire named commands to gameplay actions. Game-agnostic by design: the bridge knows nothing about your game; you decide what `"jump"` / `"load_level"` / `"shoot"` mean. Payload travels as a JSON string so the runtime asmdef doesn't depend on Newtonsoft (editor-only in many setups). Coroutine-driven script execution preserves `delayFrames` between steps, captures end-of-frame screenshots on demand, and reads `ConsoleCapture.CurrentSeq` via reflection when log anchors are requested. See [`Runtime/Bridge/README.md`](Runtime/Bridge/README.md) for the dev quick-start.
+- **`bridge_status`** / **`bridge_install`** / **`list_bridge_handlers`** — discovery + setup. `bridge_install` is idempotent (returns the existing component on re-call), registers Undo + marks the scene dirty (same pattern as `CreateEmpty`), and sets `DontDestroyOnLoad` via a serialized `[Tooltip]` field on the bridge itself (no extra helper component needed, so no missing-script ghosts in player builds that don't include the editor asmdef).
+- **`send_runtime_command`** (singleton) — invokes one handler; for debug pokes only.
+- **`send_runtime_commands`** (**primary**) — runs a timeline of `{ name, payload?, delayFrames?, captureScreenshotAfter?, markLogAnchorBefore? }` steps in one round-trip. Per-step screenshots are returned as inline MCP `image` content blocks so the LLM can see them; per-step results (ok/error/durationMs/frameAt*) are returned as a structured JSON summary. Replaces the tool-per-action anti-pattern: an entire gameplay scenario goes out as one message and comes back as one message with all the visual + textual evidence attached.
+
+### Changed
+- **`ChangeWatcher.OnPlayModeChanged`** now also refreshes the scene snapshot on `EnteredPlayMode` (was only `EnteredEditMode`). Read tools called during play see runtime-instantiated objects (spawners, pooled enemies) instead of the stale edit-time hierarchy.
+- **`package.json`** — version bumped to 0.13.0; description updated to reflect the play-mode surface; tool-count line updated from ~80 → ~95.
+
+### Architecture notes
+- Four new asmdefs follow the same `delayCall` + `Bootstrap.ToolRegistry.Register` pattern as `PostFxBootstrap`, so deleting any of `Editor/Play/`, `Editor/Bridge/`, `Runtime/Bridge/` cleanly removes only that tool surface — no main-asmdef edits needed.
+- All async play-mode transitions follow the cooperative-wait pattern already established by `WaitForCompileCleanTool`: subscribe to `EditorApplication.update` from inside a dispatched closure, complete a `TaskCompletionSource`, race against `Task.Delay(timeout)`. No blocking calls on the dispatcher pump.
+- Reflection access to internal Unity APIs (`UnityEditor.GameView`, `UniversalAdditionalCameraData`) is wrapped in try/catch with structured `UNAVAILABLE` errors when types or fields drift across versions.
+
 ## [0.12.0] - 2026-05-10
 
 ### Added — ScriptableObject + NavMesh discovery / authoring (6 tools)

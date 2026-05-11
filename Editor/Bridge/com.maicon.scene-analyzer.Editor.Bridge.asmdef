@@ -1,0 +1,21 @@
+{
+    "name": "com.maicon.scene-analyzer.Editor.Bridge",
+    "rootNamespace": "Maicon.SceneAnalyzer.Editor.Bridge",
+    "references": [
+        "com.maicon.scene-analyzer",
+        "com.maicon.scene-analyzer.Editor",
+        "com.maicon.scene-analyzer.Bridge",
+        "Unity.Newtonsoft.Json"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

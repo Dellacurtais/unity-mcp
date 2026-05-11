@@ -1,0 +1,20 @@
+{
+    "name": "com.maicon.scene-analyzer.Editor.Play",
+    "rootNamespace": "Maicon.SceneAnalyzer.Editor.Play",
+    "references": [
+        "com.maicon.scene-analyzer",
+        "com.maicon.scene-analyzer.Editor",
+        "Unity.Newtonsoft.Json"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
