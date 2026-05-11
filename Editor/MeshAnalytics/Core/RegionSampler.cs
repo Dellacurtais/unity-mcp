@@ -34,15 +34,15 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             public int MaxSamples = 5000;     // safety cap
         }
 
-        public sealed class Sample
+        public sealed class Point
         {
             public Vector3 Position;
             public Vector3 Normal;
         }
 
-        public static List<Sample> Sample(MeshRegion region, Mesh mesh, Matrix4x4 localToWorld, Params p)
+        public static List<Point> Sample(MeshRegion region, Mesh mesh, Matrix4x4 localToWorld, Params p)
         {
-            var result = new List<Sample>();
+            var result = new List<Point>();
             if (region == null || mesh == null || region.FaceIndices == null || region.FaceIndices.Length == 0)
                 return result;
 
@@ -144,7 +144,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             return true;
         }
 
-        private static void UniformRandom(MeshRegion region, TriW[] tris, int n, Params p, List<Sample> outList)
+        private static void UniformRandom(MeshRegion region, TriW[] tris, int n, Params p, List<Point> outList)
         {
             var rng = new System.Random(p.Seed);
             float totalArea = tris[tris.Length - 1].CumArea;
@@ -156,7 +156,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                 int ti = PickTriByArea(tris, totalArea, rng);
                 var pt = SamplePointOnTri(tris[ti], rng);
                 if (!PassesInset(region, pt, p.Inset)) continue;
-                outList.Add(new Sample { Position = pt, Normal = tris[ti].Normal });
+                outList.Add(new Point { Position = pt, Normal = tris[ti].Normal });
             }
         }
 
@@ -165,7 +165,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         /// from Params.Spacing when set; otherwise derived from area/count
         /// (sqrt(area/count) is roughly the spacing that produces `count`
         /// uniform points). Adequate for the typical scene-author scale.
-        private static void PoissonDisk(MeshRegion region, TriW[] tris, int target, Params p, List<Sample> outList)
+        private static void PoissonDisk(MeshRegion region, TriW[] tris, int target, Params p, List<Point> outList)
         {
             var rng = new System.Random(p.Seed);
             float totalArea = tris[tris.Length - 1].CumArea;
@@ -186,7 +186,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                 {
                     if ((outList[k].Position - pt).sqrMagnitude < minDistSq) { ok = false; break; }
                 }
-                if (ok) outList.Add(new Sample { Position = pt, Normal = tris[ti].Normal });
+                if (ok) outList.Add(new Point { Position = pt, Normal = tris[ti].Normal });
             }
         }
 
@@ -195,7 +195,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         /// at `spacing` metres, accepts a cell if its centre's downward
         /// raycast against the region's triangles hits the geometry. Hits
         /// inherit the triangle normal.
-        private static void GridOnDominantPlane(MeshRegion region, TriW[] tris, Params p, List<Sample> outList)
+        private static void GridOnDominantPlane(MeshRegion region, TriW[] tris, Params p, List<Point> outList)
         {
             var b = region.WorldBounds;
             float spacing = p.Spacing ?? Mathf.Max(0.1f, Mathf.Sqrt(b.size.x * b.size.z / 64f));
@@ -208,7 +208,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                     if (RaycastDown(tris, probeOrigin, out var hitPt, out var hitN))
                     {
                         if (!PassesInset(region, hitPt, p.Inset)) continue;
-                        outList.Add(new Sample { Position = hitPt, Normal = hitN });
+                        outList.Add(new Point { Position = hitPt, Normal = hitN });
                         if (outList.Count >= p.MaxSamples) return;
                     }
                 }
