@@ -86,6 +86,12 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
     {
         public string MeshGuid;            // empty if mesh is not an asset (built-in)
         public int OwnerInstanceId;
+        /// localToWorld of the GameObject at the moment the regions were
+        /// computed. World-space data inside the regions is only valid as
+        /// long as the runtime instance's transform matches this. The cache
+        /// uses this to decide whether a disk-loaded result can be reused
+        /// or must be recomputed.
+        public Matrix4x4 OwnerLocalToWorld = Matrix4x4.identity;
         public List<SubmeshRegion> Submeshes = new();
         public List<EdgeChainRegion> EdgeChains = new();
         public List<PlaneRegion> Planes = new();

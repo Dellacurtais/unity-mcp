@@ -50,11 +50,14 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             List<EdgeChainRegion> chains;
             int ownerInstance;
             Mesh ownerMesh;
+            Matrix4x4 ownerLtw;
             string sourceTag;
             if (idsArr != null && idsArr.Count > 0)
             {
                 chains = ResolveChainsFromIds(idsArr, out ownerInstance, out ownerMesh, out var err);
                 if (chains == null) return ToolResult.Error("BAD_ARGS", err);
+                var ownerGo = MeshResolver.ResolveGameObject(ownerInstance);
+                ownerLtw = ownerGo != null ? ownerGo.transform.localToWorldMatrix : Matrix4x4.identity;
                 sourceTag = $"explicit:{idsArr.Count}";
             }
             else if (instanceId != 0)
@@ -70,15 +73,20 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 var sep = new SharpEdgeDetector.Params { DihedralAngleMinDeg = dihedral };
                 string meshKeyEdges = MeshResolver.MakeMeshKey(ownerMesh);
                 string edgesHash = $"edge:{sep.DihedralAngleMinDeg:F2}:{sep.MinChainLength:F3}:{sep.MaxChains}";
-                string edgesCacheKey = MeshAnalysisCache.MakeKey(meshKeyEdges, edgesHash);
-                if (!MeshAnalysisCache.TryGet(edgesCacheKey, out var edgesBundle))
+                if (!MeshAnalysisCache.TryGetWithFallback(meshKeyEdges, edgesHash, ltw, out var edgesBundle))
                 {
-                    edgesBundle = new AnalysisResult { MeshGuid = meshKeyEdges, OwnerInstanceId = instanceId };
+                    edgesBundle = new AnalysisResult
+                    {
+                        MeshGuid = meshKeyEdges,
+                        OwnerInstanceId = instanceId,
+                        OwnerLocalToWorld = ltw,
+                    };
                     edgesBundle.EdgeChains.AddRange(SharpEdgeDetector.Detect(ownerMesh, ltw, meshKeyEdges, edgesHash, instanceId, sep));
-                    MeshAnalysisCache.Store(edgesCacheKey, edgesBundle);
+                    MeshAnalysisCache.StoreAndPersist(meshKeyEdges, edgesHash, edgesBundle);
                 }
                 chains = edgesBundle.EdgeChains;
                 ownerInstance = instanceId;
+                ownerLtw = ltw;
                 sourceTag = $"auto:{chains.Count}";
             }
             else
@@ -97,13 +105,17 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 
             string meshKey = MeshResolver.MakeMeshKey(ownerMesh);
             string paramsHash = $"parallel:{sourceTag}:{p.DirectionAngleToleranceDeg:F2}:{p.SpacingTolerance:F3}:{p.MinSpacing:F3}:{p.MinMembers}:{p.MaxGroups}";
-            string cacheKey = MeshAnalysisCache.MakeKey(meshKey, paramsHash);
 
-            if (!MeshAnalysisCache.TryGet(cacheKey, out var bundle))
+            if (!MeshAnalysisCache.TryGetWithFallback(meshKey, paramsHash, ownerLtw, out var bundle))
             {
-                bundle = new AnalysisResult { MeshGuid = meshKey, OwnerInstanceId = ownerInstance };
+                bundle = new AnalysisResult
+                {
+                    MeshGuid = meshKey,
+                    OwnerInstanceId = ownerInstance,
+                    OwnerLocalToWorld = ownerLtw,
+                };
                 bundle.ParallelGroups.AddRange(ParallelChainDetector.Detect(chains, meshKey, paramsHash, ownerInstance, p));
-                MeshAnalysisCache.Store(cacheKey, bundle);
+                MeshAnalysisCache.StoreAndPersist(meshKey, paramsHash, bundle);
             }
 
             var arr = new JArray();

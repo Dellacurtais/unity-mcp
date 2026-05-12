@@ -53,13 +53,17 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 
             string meshKey = MeshResolver.MakeMeshKey(mesh);
             string paramsHash = $"smooth:{p.FrontierAngleToleranceDeg:F2}:{p.MinFacesPerRegion}:{p.MaxRegions}";
-            string cacheKey = MeshAnalysisCache.MakeKey(meshKey, paramsHash);
 
-            if (!MeshAnalysisCache.TryGet(cacheKey, out var bundle))
+            if (!MeshAnalysisCache.TryGetWithFallback(meshKey, paramsHash, ltw, out var bundle))
             {
-                bundle = new AnalysisResult { MeshGuid = meshKey, OwnerInstanceId = instanceId };
+                bundle = new AnalysisResult
+                {
+                    MeshGuid = meshKey,
+                    OwnerInstanceId = instanceId,
+                    OwnerLocalToWorld = ltw,
+                };
                 bundle.SmoothPatches.AddRange(SmoothRegionDetector.Detect(mesh, ltw, meshKey, paramsHash, instanceId, p));
-                MeshAnalysisCache.Store(cacheKey, bundle);
+                MeshAnalysisCache.StoreAndPersist(meshKey, paramsHash, bundle);
             }
 
             var arr = new JArray();

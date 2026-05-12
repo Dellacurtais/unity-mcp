@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEditor;
+using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
 {
@@ -30,6 +31,40 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         public static bool TryGet(string key, out AnalysisResult result)
             => _byKey.TryGetValue(key, out result);
 
+        /// Memory-then-disk lookup. On memory miss, attempts to load the
+        /// disk sidecar at (meshKey, paramsHash). The cached entry is only
+        /// reused if its OwnerLocalToWorld matches the runtime instance's
+        /// transform (otherwise world-space data would be wrong).
+        public static bool TryGetWithFallback(string meshKey, string paramsHash,
+            Matrix4x4 expectedXf, out AnalysisResult result)
+        {
+            string key = MakeKey(meshKey, paramsHash);
+            if (_byKey.TryGetValue(key, out result))
+            {
+                // In-memory entry may also be stale if the same mesh was
+                // re-cached under a different instance; honour the same
+                // transform check for safety.
+                const float eps = 1e-4f;
+                bool match = true;
+                for (int i = 0; i < 16 && match; i++)
+                    if (Mathf.Abs(result.OwnerLocalToWorld[i] - expectedXf[i]) > eps) match = false;
+                if (match) return true;
+                result = null;
+            }
+            if (MeshAnalysisDiskCache.TryLoad(meshKey, paramsHash, expectedXf, out result))
+            {
+                // Promote disk hit into memory for the rest of the session.
+                Store(key, result);
+                return true;
+            }
+            return false;
+        }
+
+        /// Enumerates every materialised bundle in the cache. Used by
+        /// `MeshPicker` to find which regions (from any prior detector call)
+        /// contain a given triangle index.
+        public static IEnumerable<AnalysisResult> AllResults() => _byKey.Values;
+
         public static void Store(string key, AnalysisResult result)
         {
             _byKey[key] = result;
@@ -38,6 +73,15 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             foreach (var r in result.Planes) _byRegionId[r.RegionId] = result;
             foreach (var r in result.SmoothPatches) _byRegionId[r.RegionId] = result;
             foreach (var r in result.ParallelGroups) _byRegionId[r.RegionId] = result;
+        }
+
+        /// Convenience: in-memory Store + write to the disk sidecar so the
+        /// next session / next domain reload starts warm. Tools call this
+        /// instead of Store when they want the result to survive.
+        public static void StoreAndPersist(string meshKey, string paramsHash, AnalysisResult result)
+        {
+            Store(MakeKey(meshKey, paramsHash), result);
+            MeshAnalysisDiskCache.Save(meshKey, paramsHash, result);
         }
 
         /// Look up the bundle that owns a given regionId. Returns null if the

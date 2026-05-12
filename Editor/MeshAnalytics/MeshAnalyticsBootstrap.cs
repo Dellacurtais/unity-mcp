@@ -32,8 +32,11 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics
                 Bootstrap.ToolRegistry.Register(new SamplePointsOnRegionTool());
                 Bootstrap.ToolRegistry.Register(new RenderObjectViewsTool());
                 Bootstrap.ToolRegistry.Register(new RenderRegionHighlightTool());
+                Bootstrap.ToolRegistry.Register(new MeshPickFromScreenTool());
+                Bootstrap.ToolRegistry.Register(new SegmentViaSidecarTool());
+                Bootstrap.ToolRegistry.Register(new SidecarHealthTool());
 
-                Bootstrap.RecordEntry("[mesh-analytics] registered 8 mesh inspection / render tools");
+                Bootstrap.RecordEntry("[mesh-analytics] registered 11 mesh tools (8 in-process + 3 picking/sidecar)");
             }
             catch (System.Exception e)
             {
