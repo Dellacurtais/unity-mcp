@@ -14,7 +14,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
     /// then strip it — so authoring is non-destructive.
     public static class MeshPicker
     {
-        public sealed class Pick
+        public sealed class PickResult
         {
             public Vector3 WorldPoint;
             public Vector3 WorldNormal;
@@ -58,7 +58,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         /// Raycast against a single GameObject's mesh, transparently
         /// attaching a temporary MeshCollider when necessary. The ray must
         /// be in world space.
-        public static bool Pick(GameObject target, Ray ray, float maxDistance, out Pick result)
+        public static bool Pick(GameObject target, Ray ray, float maxDistance, out PickResult result)
         {
             result = null;
             if (target == null) return false;
@@ -93,7 +93,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                 int submeshIdx = ResolveSubmesh(mesh, triIdx);
                 var regions = FindRegionsContainingTriangle(mesh, triIdx);
 
-                result = new Pick
+                result = new PickResult
                 {
                     WorldPoint = hit.point,
                     WorldNormal = hit.normal,
