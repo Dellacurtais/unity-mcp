@@ -48,13 +48,15 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 return ToolResult.Error("NOT_FOUND",
                     $"regionId '{regionId}' not in cache. Re-run the detector that produced it (mesh_inspect_submeshes / mesh_detect_planes / mesh_detect_sharp_edges).");
 
-            if (region is EdgeChainRegion)
+            if (region is EdgeChainRegion || region is ParallelGroupRegion)
                 return ToolResult.Error("BAD_REGION_KIND",
-                    "sample_points_on_region works on submesh/plane regions (surface). Edge chains have no area; use their vertexPositionsWorld directly.");
+                    "sample_points_on_region works on surface regions (submesh / plane / smooth). Edge chains and parallel groups have no usable area; use their vertex / child-chain data directly.");
 
             if (!MeshResolver.TryGetMeshAndTransforms(region.OwnerInstanceId, out _, out var mesh, out var ltw))
                 return ToolResult.Error("NOT_FOUND",
                     $"GameObject for regionId '{regionId}' is no longer in the scene (instanceId={region.OwnerInstanceId}).");
+            if (!MeshResolver.IsReadable(mesh, out var notReadable))
+                return ToolResult.Error("MESH_NOT_READABLE", notReadable);
 
             var p = new RegionSampler.Params
             {

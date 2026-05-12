@@ -89,11 +89,18 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                 rt = RenderTexture.GetTemporary(width, height, 24, RenderTextureFormat.ARGB32);
                 tex = new Texture2D(width, height, TextureFormat.RGB24, false);
 
-                if (overlay != Overlay.LitDefault)
+                // Submesh-color override needs per-submesh material swaps;
+                // wireframe is much simpler — toggle the GL.wireframe global
+                // state around camera.Render() so the regular shaders draw
+                // their geometry as edges instead. Keeps lighting / textures
+                // visible as faint hints, which reads better than a flat tint.
+                if (overlay == Overlay.SubmeshColor)
                     swapper = new OverlaySwapper(target, overlay);
 
                 if (highlightRegion != null)
                     painter = new HighlightPainter(target, highlightRegion);
+
+                bool wireframe = overlay == Overlay.Wireframe;
 
                 foreach (var v in views)
                 {
@@ -105,7 +112,9 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                     var prevActive = RenderTexture.active;
                     RenderTexture.active = rt;
 
-                    camera.Render();
+                    if (wireframe) GL.wireframe = true;
+                    try { camera.Render(); }
+                    finally { if (wireframe) GL.wireframe = false; }
 
                     if (painter != null) painter.DrawAfterScene(camera);
 
@@ -182,13 +191,14 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
 
         // ---- overlay implementation ----
 
-        /// Swaps every Renderer's sharedMaterials to a uniform overlay material
-        /// for the duration of the render, restores on Dispose. We use shared
-        /// materials so we never trigger GC churn from instance materials.
+        /// Swaps every Renderer's sharedMaterials to a per-submesh tinted
+        /// material for the duration of the render, restores on Restore().
+        /// Used only for the SubmeshColor overlay — wireframe now toggles
+        /// `GL.wireframe` around camera.Render() instead, keeping the
+        /// original shaders/textures visible behind the wires.
         private sealed class OverlaySwapper
         {
             private readonly List<(Renderer r, Material[] orig)> _saved = new();
-            private static Material _wireMat;
             private static readonly Dictionary<int, Material> _submeshColors = new();
 
             public OverlaySwapper(GameObject root, Overlay mode)
@@ -200,14 +210,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                     var n = r.sharedMaterials?.Length ?? 1;
                     var swap = new Material[n];
                     for (int i = 0; i < n; i++)
-                    {
-                        swap[i] = mode switch
-                        {
-                            Overlay.Wireframe => GetWireMat(),
-                            Overlay.SubmeshColor => GetSubmeshMat(i),
-                            _ => null,
-                        };
-                    }
+                        swap[i] = GetSubmeshMat(i);
                     r.sharedMaterials = swap;
                 }
             }
@@ -219,21 +222,6 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                     if (r != null) r.sharedMaterials = orig;
                 }
                 _saved.Clear();
-            }
-
-            private static Material GetWireMat()
-            {
-                if (_wireMat != null) return _wireMat;
-                // GL-style wireframe shader doesn't exist OOB. We approximate
-                // by using an unlit colour with low alpha + GL.wireframe
-                // would need a CommandBuffer. For V1 we settle for a
-                // flat-shaded look that emphasises silhouettes through a
-                // lighter colour.
-                var shader = Shader.Find("Hidden/Internal-Colored");
-                _wireMat = new Material(shader ?? Shader.Find("Sprites/Default"));
-                _wireMat.hideFlags = HideFlags.HideAndDontSave;
-                _wireMat.SetColor("_Color", new Color(0.85f, 0.85f, 0.9f, 1f));
-                return _wireMat;
             }
 
             private static Material GetSubmeshMat(int submeshIndex)
@@ -291,6 +279,22 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                         break;
                     case SubmeshRegion sm:
                         DrawTriangleSet(sm, orange);
+                        break;
+                    case SmoothRegion sr:
+                        DrawTriangleSet(sr, orange);
+                        break;
+                    case ParallelGroupRegion pg:
+                        // Render each constituent chain — draws the group as
+                        // multiple parallel polylines (trilhos, grade bars).
+                        if (pg.ChildChainRegionIds != null)
+                        {
+                            foreach (var childId in pg.ChildChainRegionIds)
+                            {
+                                var child = MeshAnalysisCache.FindRegion(childId, out _);
+                                if (child is EdgeChainRegion childEc)
+                                    DrawEdgeChain(childEc, orange);
+                            }
+                        }
                         break;
                 }
                 GL.PopMatrix();

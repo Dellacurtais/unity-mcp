@@ -96,6 +96,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             EdgeChainRegion ec => $"edge chain (len={ec.TotalLength:F2}m, loop={ec.IsLoop})",
             PlaneRegion pl => $"plane ({pl.OrientationLabel}, {pl.Classification}, area≈{pl.AreaApprox:F2}m²)",
             SubmeshRegion sm => $"submesh {sm.SubmeshIndex} ({sm.MaterialName}, {sm.TriangleCount} tris)",
+            SmoothRegion sr => $"smooth patch ({sr.OrientationLabel}, area≈{sr.AreaApprox:F2}m², roughness={sr.RoughnessMetric:F3})",
+            ParallelGroupRegion pg => $"parallel group ({pg.InstanceCount} chains, spacing≈{pg.MeanSpacing:F2}m±{pg.SpacingStdDev:F2}m)",
             _ => $"region {r?.Kind}",
         };
     }

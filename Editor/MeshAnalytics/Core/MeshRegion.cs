@@ -11,6 +11,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         Submesh,
         EdgeChain,
         Plane,
+        Smooth,         // contiguous smooth-shaded patch (region growing by normal continuity)
+        ParallelGroup,  // group of edge chains aligned in parallel (trilhos, grades, escadas)
     }
 
     /// Common fields for any region produced by a detector or inspector. Subtypes
@@ -52,6 +54,30 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         public string Classification;          // "ground_candidate" / "platform_candidate" / etc.
     }
 
+    /// Contiguous patch of similarly-oriented faces grown from a seed via
+    /// normal-continuity propagation. Captures organic surfaces that aren't
+    /// strictly planar — terrain bumps, sculpted props, rounded rails.
+    public sealed class SmoothRegion : MeshRegion
+    {
+        public Vector3 AvgNormalWorld;
+        public float AreaApprox;
+        public int FaceCount;
+        public float RoughnessMetric;          // mean |1 - dot(faceN, avgN)| over inliers; 0 = perfectly flat
+        public string OrientationLabel;        // shared scheme with PlaneRegion
+    }
+
+    /// Cluster of EdgeChain regions that run approximately parallel with
+    /// roughly equal spacing — trilhos, grades, escadas, janelas em fileira.
+    /// Doesn't own FaceIndices directly; references its constituent chains.
+    public sealed class ParallelGroupRegion : MeshRegion
+    {
+        public string[] ChildChainRegionIds;
+        public Vector3 DirectionWorld;
+        public float MeanSpacing;
+        public float SpacingStdDev;
+        public int InstanceCount;
+    }
+
     /// Bundle of regions for a single (mesh, params) tuple. Lives in
     /// MeshAnalysisCache. RegionIds inside are stable for the lifetime of the
     /// cache entry; an invalidation (mesh edit, domain reload) wipes the bundle
@@ -63,12 +89,16 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         public List<SubmeshRegion> Submeshes = new();
         public List<EdgeChainRegion> EdgeChains = new();
         public List<PlaneRegion> Planes = new();
+        public List<SmoothRegion> SmoothPatches = new();
+        public List<ParallelGroupRegion> ParallelGroups = new();
 
         public MeshRegion FindById(string regionId)
         {
             foreach (var r in Submeshes) if (r.RegionId == regionId) return r;
             foreach (var r in EdgeChains) if (r.RegionId == regionId) return r;
             foreach (var r in Planes) if (r.RegionId == regionId) return r;
+            foreach (var r in SmoothPatches) if (r.RegionId == regionId) return r;
+            foreach (var r in ParallelGroups) if (r.RegionId == regionId) return r;
             return null;
         }
     }

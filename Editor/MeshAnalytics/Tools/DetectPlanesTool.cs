@@ -44,6 +44,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             if (!MeshResolver.TryGetMeshAndTransforms(instanceId, out var go, out var mesh, out var ltw))
                 return ToolResult.Error("NOT_FOUND",
                     $"no MeshFilter/SkinnedMeshRenderer mesh on GameObject {instanceId}");
+            if (!MeshResolver.IsReadable(mesh, out var notReadable))
+                return ToolResult.Error("MESH_NOT_READABLE", notReadable);
 
             var p = new PlaneDetector.Params
             {

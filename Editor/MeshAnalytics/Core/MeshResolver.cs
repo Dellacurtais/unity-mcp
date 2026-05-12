@@ -38,6 +38,24 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             return mesh != null;
         }
 
+        /// True when the mesh's CPU-side data (vertices / triangles) is
+        /// reachable. Imported FBX/glTF with "Read/Write Enabled" off can
+        /// strip CPU data for builds; the Editor *usually* keeps it but not
+        /// always (notably, meshes uploaded via `Mesh.UploadMeshData(true)`).
+        /// Detectors call this and return a clean error instead of letting
+        /// Unity throw the cryptic "Not allowed to access vertices…".
+        public static bool IsReadable(Mesh mesh, out string reason)
+        {
+            if (mesh == null) { reason = "mesh is null"; return false; }
+            if (!mesh.isReadable)
+            {
+                reason = $"mesh '{mesh.name}' has Read/Write disabled at import — re-import with 'Read/Write Enabled' to allow analysis";
+                return false;
+            }
+            reason = null;
+            return true;
+        }
+
         /// Stable key for cache buckets. Prefers the asset GUID; falls back to
         /// the runtime instance id when the mesh isn't an imported asset (e.g.
         /// procedural). The runtime fallback is fine within a session since

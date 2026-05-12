@@ -27,11 +27,13 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics
                 Bootstrap.ToolRegistry.Register(new InspectSubmeshesTool());
                 Bootstrap.ToolRegistry.Register(new DetectSharpEdgesTool());
                 Bootstrap.ToolRegistry.Register(new DetectPlanesTool());
+                Bootstrap.ToolRegistry.Register(new DetectSmoothRegionsTool());
+                Bootstrap.ToolRegistry.Register(new DetectParallelChainsTool());
                 Bootstrap.ToolRegistry.Register(new SamplePointsOnRegionTool());
                 Bootstrap.ToolRegistry.Register(new RenderObjectViewsTool());
                 Bootstrap.ToolRegistry.Register(new RenderRegionHighlightTool());
 
-                Bootstrap.RecordEntry("[mesh-analytics] registered 6 mesh inspection / render tools");
+                Bootstrap.RecordEntry("[mesh-analytics] registered 8 mesh inspection / render tools");
             }
             catch (System.Exception e)
             {

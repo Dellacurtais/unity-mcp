@@ -36,6 +36,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             foreach (var r in result.Submeshes) _byRegionId[r.RegionId] = result;
             foreach (var r in result.EdgeChains) _byRegionId[r.RegionId] = result;
             foreach (var r in result.Planes) _byRegionId[r.RegionId] = result;
+            foreach (var r in result.SmoothPatches) _byRegionId[r.RegionId] = result;
+            foreach (var r in result.ParallelGroups) _byRegionId[r.RegionId] = result;
         }
 
         /// Look up the bundle that owns a given regionId. Returns null if the
@@ -71,6 +73,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             RegionKind.Submesh => "submesh",
             RegionKind.EdgeChain => "edge",
             RegionKind.Plane => "plane",
+            RegionKind.Smooth => "smooth",
+            RegionKind.ParallelGroup => "parallel",
             _ => "region",
         };
     }
