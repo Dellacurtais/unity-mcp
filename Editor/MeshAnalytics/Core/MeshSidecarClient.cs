@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -223,17 +224,23 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         /// (`localToWorld` applied) + face indices. Triangle indices are
         /// preserved 1:1, so `face_indices` round-tripped from the sidecar
         /// map back to `mesh.triangles[3*i .. 3*i+2]` on this side.
+        ///
+        /// All floats are formatted with `InvariantCulture` — under
+        /// non-period decimal locales (pt-BR, de-DE, fr-FR, ...) the
+        /// default `float.ToString("R")` emits commas, which the OBJ
+        /// spec doesn't allow and trimesh rejects with a 400.
         public static string MeshToObj(Mesh mesh, Matrix4x4 localToWorld)
         {
+            var inv = CultureInfo.InvariantCulture;
             var sb = new StringBuilder();
             sb.Append("# scene-analyzer mesh-analytics sidecar payload\n");
             var verts = mesh.vertices;
             for (int i = 0; i < verts.Length; i++)
             {
                 var v = localToWorld.MultiplyPoint3x4(verts[i]);
-                sb.Append("v ").Append(v.x.ToString("R")).Append(' ')
-                  .Append(v.y.ToString("R")).Append(' ')
-                  .Append(v.z.ToString("R")).Append('\n');
+                sb.Append("v ").Append(v.x.ToString("R", inv)).Append(' ')
+                  .Append(v.y.ToString("R", inv)).Append(' ')
+                  .Append(v.z.ToString("R", inv)).Append('\n');
             }
             var tris = mesh.triangles;
             int triCount = tris.Length / 3;
