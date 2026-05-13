@@ -35,8 +35,9 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics
                 Bootstrap.ToolRegistry.Register(new MeshPickFromScreenTool());
                 Bootstrap.ToolRegistry.Register(new SegmentViaSidecarTool());
                 Bootstrap.ToolRegistry.Register(new SidecarHealthTool());
+                Bootstrap.ToolRegistry.Register(new EnableMeshReadWriteTool());
 
-                Bootstrap.RecordEntry("[mesh-analytics] registered 11 mesh tools (8 in-process + 3 picking/sidecar)");
+                Bootstrap.RecordEntry("[mesh-analytics] registered 12 mesh tools (8 in-process + 3 picking/sidecar + 1 enable_read_write)");
             }
             catch (System.Exception e)
             {

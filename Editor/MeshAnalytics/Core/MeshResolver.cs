@@ -49,7 +49,9 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             if (mesh == null) { reason = "mesh is null"; return false; }
             if (!mesh.isReadable)
             {
-                reason = $"mesh '{mesh.name}' has Read/Write disabled at import — re-import with 'Read/Write Enabled' to allow analysis";
+                reason = $"mesh '{mesh.name}' has Read/Write disabled at import. " +
+                         $"Call `mesh_enable_read_write` (passing the same instanceId or the asset path) then retry — " +
+                         $"or manually flip 'Read/Write Enabled' in the model importer's Inspector.";
                 return false;
             }
             reason = null;
