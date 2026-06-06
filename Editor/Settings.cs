@@ -89,7 +89,7 @@ namespace Maicon.SceneAnalyzer.Editor
 
         public static string CoderUrl
         {
-            get => EditorPrefs.GetString(KCoderUrl, "http://localhost:3333");
+            get => EditorPrefs.GetString(KCoderUrl, "http://localhost:7333");
             set => EditorPrefs.SetString(KCoderUrl, value ?? "");
         }
 

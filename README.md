@@ -170,7 +170,7 @@ The dev's message goes to the coder, which streams text + tool calls back. When 
 1. Open **Window → Scene Analyzer** → Generate token → Start MCP server.
 2. In your D:\MCP dashboard, register the Unity MCP server: transport `streamable_http`, URL `http://127.0.0.1:8765/mcp`, bearer token from step 1.
 3. Open **Window → Coder Chat (Scene Analyzer)**.
-4. Configure the coder URL (defaults to `http://localhost:3333`) and, if `MCP_AUTH_ENABLED=true`, paste a bearer token issued by `/api/admin/tokens`.
+4. Configure the coder URL (defaults to `http://localhost:7333`) and, if `MCP_AUTH_ENABLED=true`, paste a bearer token issued by `/api/admin/tokens`.
 5. Pick agent (`build`, `explore`, `plan`, `admin`) and tool tier (`auto`, `bootstrap`, `navigate`, `full`).
 6. Type and Send. Replies stream back; tool calls appear inline. Cancel via the button. New session via the **New** button (clears the local transcript and forces a fresh server-side session on the next message).
 
@@ -222,7 +222,7 @@ The plugin ships a tiny diagnostics asmdef (`com.maicon.scene-analyzer.Editor.Di
 | `CS0122 'JObject' is inaccessible due to its protection level` (lots of files) | `com.unity.nuget.newtonsoft-json` not installed; compiler picks up the internal copy from `com.unity.visualscripting` instead. | Install the official Newtonsoft package (see Install above). The `NewtonsoftCheck` diagnostic logs this automatically. |
 | `Mono.Cecil.AssemblyResolutionException: Failed to resolve assembly 'com.maicon.scene-analyzer.Editor.PostFx'` (from Burst) | Side-effect of the JObject error: PostFx asmdef can't compile, so its DLL is missing, so Burst's reference walk fails. | Fix Newtonsoft first; both errors clear together. If they persist, delete `Library/ScriptAssemblies/` and reimport. |
 | `create_volume` / `add_post_effect` not visible in tool list | Project doesn't have URP or HDRP installed (no SRP Core), so the gated PostFx asmdef is skipped. | Install URP via Package Manager, or use the Built-in-only subset (28 tools). |
-| Window → Coder Chat opens but Send fails | D:\MCP coder runtime not running, or wrong URL/token. | Start the runtime (`pnpm dev` etc. depending on your D:\MCP setup), confirm `http://localhost:3333/api/health` (or your configured port). If `MCP_AUTH_ENABLED=true`, paste a token issued by `/api/admin/tokens`. |
+| Window → Coder Chat opens but Send fails | D:\MCP coder runtime not running, or wrong URL/token. | Start the runtime (`pnpm dev` etc. depending on your D:\MCP setup), confirm `http://localhost:7333/api/health` (or your configured port). If `MCP_AUTH_ENABLED=true`, paste a token issued by `/api/admin/tokens`. |
 | Plugin asmdef compiles but nothing happens on Unity reload | `Allow writes` toggle off, server not started, or token mismatch with the dashboard's MCP server entry. | Open Window → Scene Analyzer, verify Start is green and the token matches what's saved in Admin → MCP Servers. |
 
 ## Render pipelines
