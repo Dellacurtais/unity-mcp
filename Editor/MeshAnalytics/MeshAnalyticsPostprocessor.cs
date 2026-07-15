@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics;
 using Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core;
 using UnityEditor;
 using UnityEngine;
@@ -18,8 +19,17 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics
     /// blocking the import for seconds.
     public sealed class MeshAnalyticsPostprocessor : AssetPostprocessor
     {
-        public static bool EnablePreWarm = true;
-        public const long TriangleCeiling = 200_000;     // skip heavier meshes
+        private const string PreWarmEditorPref = "Maicon.SceneAnalyzer.MeshAnalytics.EnablePreWarm";
+        public static bool EnablePreWarm
+        {
+            get => EditorPrefs.GetBool(PreWarmEditorPref, false);
+            set => EditorPrefs.SetBool(PreWarmEditorPref, value);
+        }
+        public const long TriangleCeiling = 200_000;
+        private const double BudgetMs = 8.0;
+        private static readonly Queue<Mesh> Pending = new Queue<Mesh>();
+        private static readonly HashSet<int> PendingIds = new HashSet<int>();
+        private static bool _scheduled;
 
         /// Unity calls this once per imported model after the prefab tree
         /// is constructed. The `g` GameObject is the import root — we walk
@@ -38,12 +48,43 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics
 
             foreach (var mesh in seen)
             {
-                if (mesh == null) continue;
-                if (!mesh.isReadable) continue;
-                long tris = TriangleCount(mesh);
-                if (tris > TriangleCeiling) continue;
-                PrewarmOne(mesh);
+                if (mesh == null || !mesh.isReadable || TriangleCount(mesh) > TriangleCeiling) continue;
+                int id = mesh.GetInstanceID();
+                if (PendingIds.Add(id)) Pending.Enqueue(mesh);
             }
+            ScheduleDrain();
+        }
+
+        private static void ScheduleDrain()
+        {
+            if (_scheduled || Pending.Count == 0) return;
+            _scheduled = true;
+            EditorApplication.delayCall += DrainBudgeted;
+        }
+
+        private static void DrainBudgeted()
+        {
+            _scheduled = false;
+            if (!EnablePreWarm)
+            {
+                Pending.Clear();
+                PendingIds.Clear();
+                return;
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            while (Pending.Count > 0 && stopwatch.Elapsed.TotalMilliseconds < BudgetMs)
+            {
+                var mesh = Pending.Dequeue();
+                if (mesh == null) continue;
+                PendingIds.Remove(mesh.GetInstanceID());
+                try { PrewarmOne(mesh); }
+                catch (System.Exception exception)
+                {
+                    UnityEngine.Debug.LogWarning($"[scene-analyzer] mesh prewarm failed for '{mesh.name}': {exception.Message}");
+                }
+            }
+            ScheduleDrain();
         }
 
         private static void PrewarmOne(Mesh mesh)

@@ -154,9 +154,6 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             }
 
             EditorUtility.SetDirty(so);
-            // SaveAssetIfDirty is surgical — SaveAssets() would persist every other
-            // dirty asset in the project as a side-effect of this single create.
-            AssetDatabase.SaveAssetIfDirty(so);
             return OpResult.Success(so.GetInstanceID(),
                 $"created {type.Name} at {path}" + (applied > 0 ? $" (set {applied} initial field(s))" : ""));
         }
@@ -238,7 +235,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var clone = AssetDatabase.LoadAssetAtPath<ScriptableObject>(newPath);
             if (clone == null) return OpResult.Fail($"copy succeeded but clone not loadable at {newPath}");
             Undo.RegisterCreatedObjectUndo(clone, $"Duplicate {src.GetType().Name}");
-            AssetDatabase.SaveAssetIfDirty(clone);
+            EditorUtility.SetDirty(clone);
             return OpResult.Success(clone.GetInstanceID(),
                 $"duplicated {src.GetType().Name} '{src.name}' → {newPath}");
         }

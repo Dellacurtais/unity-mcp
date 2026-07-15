@@ -36,7 +36,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 profile = ScriptableObject.CreateInstance<VolumeProfile>();
                 EnsureFolder(Path.GetDirectoryName(profilePath));
                 AssetDatabase.CreateAsset(profile, profilePath);
-                AssetDatabase.SaveAssets();
+                EditorUtility.SetDirty(profile);
                 profileWasCreated = true;
             }
             volume.sharedProfile = profile;

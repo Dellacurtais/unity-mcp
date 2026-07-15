@@ -1,58 +1,85 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
 using Debug = UnityEngine.Debug;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp
 {
-    /// Marshals work from background threads (the HTTP listener) onto the Unity
-    /// editor main thread. Tools call EditorApplication / UnityEngine APIs which
-    /// must run on the main thread; the listener thread enqueues tasks here and
-    /// awaits completion via TaskCompletionSource.
     [InitializeOnLoad]
     public static class MainThreadDispatcher
     {
-        private static readonly Queue<Action> Queue = new();
-        private static readonly object Lock = new();
+        private sealed class WorkItem
+        {
+            public Action Execute;
+            public Action Cancel;
+        }
 
-        /// Time budget per editor frame for draining the queue. ~5ms ≈ a third
-        /// of a 60fps frame — drains as much as possible without taxing the
-        /// editor. Replaces the older fixed-count budget which couldn't keep up
-        /// when bursts of analyzer/changeset work hit the queue.
+        private static readonly Queue<WorkItem> Queue = new Queue<WorkItem>();
+        private static readonly object Lock = new object();
+        private static readonly int MainThreadId;
         private const double MaxPumpMs = 5.0;
-
-        /// If a single dispatched closure exceeds this, we log a warning so
-        /// it's obvious which tool is hogging the main thread. The tool ran
-        /// to completion either way — this is purely diagnostic. 200ms is the
-        /// threshold a frame stutter becomes visible to the user; below that
-        /// the heavier analyzers / GetComponentsInChildren calls are common
-        /// and noisy to warn about.
         private const double SlowClosureWarnMs = 200.0;
 
         static MainThreadDispatcher()
         {
+            MainThreadId = Thread.CurrentThread.ManagedThreadId;
+            EditorApplication.update -= Pump;
             EditorApplication.update += Pump;
+            AssemblyReloadEvents.beforeAssemblyReload -= CancelPending;
+            AssemblyReloadEvents.beforeAssemblyReload += CancelPending;
+            EditorApplication.quitting -= CancelPending;
+            EditorApplication.quitting += CancelPending;
         }
 
-        public static Task<T> RunAsync<T>(Func<T> fn)
+        public static int PendingCount { get { lock (Lock) return Queue.Count; } }
+
+        public static Task<T> RunAsync<T>(Func<T> fn, CancellationToken cancellationToken = default)
         {
-            var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-            lock (Lock)
+            if (fn == null) throw new ArgumentNullException(nameof(fn));
+            if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<T>(cancellationToken);
+            if (Thread.CurrentThread.ManagedThreadId == MainThreadId)
             {
-                Queue.Enqueue(() =>
-                {
-                    try { tcs.SetResult(fn()); }
-                    catch (Exception e) { tcs.SetException(e); }
-                });
+                try { return Task.FromResult(fn()); }
+                catch (Exception e) { return Task.FromException<T>(e); }
             }
+
+            var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+            CancellationTokenRegistration registration = default;
+            var item = new WorkItem();
+            item.Cancel = () => tcs.TrySetCanceled(cancellationToken.IsCancellationRequested ? cancellationToken : new CancellationToken(true));
+            item.Execute = () =>
+            {
+                registration.Dispose();
+                if (cancellationToken.IsCancellationRequested) { tcs.TrySetCanceled(cancellationToken); return; }
+                try { tcs.TrySetResult(fn()); }
+                catch (Exception e) { tcs.TrySetException(e); }
+            };
+            if (cancellationToken.CanBeCanceled) registration = cancellationToken.Register(item.Cancel);
+            lock (Lock) Queue.Enqueue(item);
             return tcs.Task;
         }
 
-        public static Task RunAsync(Action action)
+        public static Task RunAsync(Action action, CancellationToken cancellationToken = default)
         {
-            return RunAsync<bool>(() => { action(); return true; });
+            return RunAsync(() => { action(); return true; }, cancellationToken);
+        }
+
+        public static void CancelPending()
+        {
+            WorkItem[] pending;
+            lock (Lock)
+            {
+                pending = Queue.ToArray();
+                Queue.Clear();
+            }
+            foreach (var item in pending)
+            {
+                try { item.Cancel?.Invoke(); }
+                catch (Exception e) { Debug.LogException(e); }
+            }
         }
 
         private static void Pump()
@@ -60,19 +87,18 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed.TotalMilliseconds < MaxPumpMs)
             {
-                Action a;
+                WorkItem item;
                 lock (Lock)
                 {
                     if (Queue.Count == 0) return;
-                    a = Queue.Dequeue();
+                    item = Queue.Dequeue();
                 }
-                var closureStart = sw.Elapsed.TotalMilliseconds;
-                try { a(); }
+                var start = sw.Elapsed.TotalMilliseconds;
+                try { item.Execute(); }
                 catch (Exception e) { Debug.LogException(e); }
-                var closureMs = sw.Elapsed.TotalMilliseconds - closureStart;
-                if (closureMs > SlowClosureWarnMs)
-                    Debug.LogWarning($"[scene-analyzer] dispatcher closure took {closureMs:F1}ms — " +
-                                     "tool is doing heavy work on the main thread; consider async.");
+                var elapsed = sw.Elapsed.TotalMilliseconds - start;
+                if (elapsed > SlowClosureWarnMs)
+                    Debug.LogWarning($"[scene-analyzer] dispatcher closure took {elapsed:F1}ms; move long work to a cooperative async tool.");
             }
         }
     }

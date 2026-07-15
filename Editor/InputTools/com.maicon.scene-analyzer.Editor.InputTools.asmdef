@@ -1,0 +1,25 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.InputTools",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.InputTools",
+  "references": [
+    "com.maicon.scene-analyzer",
+    "com.maicon.scene-analyzer.Editor",
+    "Unity.Newtonsoft.Json",
+    "Unity.InputSystem"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_INPUT_SYSTEM"],
+  "versionDefines": [
+    {
+      "name": "com.unity.inputsystem",
+      "expression": "1.7.0",
+      "define": "SCENE_ANALYZER_HAS_INPUT_SYSTEM"
+    }
+  ],
+  "noEngineReferences": false
+}

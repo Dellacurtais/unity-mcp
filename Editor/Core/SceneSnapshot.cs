@@ -79,20 +79,42 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             {
                 var scene = SceneManager.GetSceneAt(s);
                 if (!scene.IsValid() || !scene.isLoaded) continue;
+                var sceneGuid = string.IsNullOrEmpty(scene.path) ? null : AssetDatabase.AssetPathToGUID(scene.path);
                 _loadedScenes.Add(new LoadedScene
                 {
                     Name = scene.name,
                     Path = scene.path,
+                    Guid = sceneGuid,
+                    Handle = scene.handle,
                     IsActive = scene == active,
+                    IsPrefabStage = false,
                 });
                 foreach (var root in scene.GetRootGameObjects())
                 {
-                    Capture(root, parentId: 0, sceneName: scene.name, includeRenderers: includeRenderers);
+                    Capture(root, parentId: 0, scene: scene, isPrefabStage: false, includeRenderers: includeRenderers);
                 }
+            }
+
+            var prefabStage = PrefabStageUtility.GetCurrentPrefabStage();
+            if (prefabStage != null && prefabStage.scene.IsValid()
+                && !_loadedScenes.Exists(x => x.Handle == prefabStage.scene.handle))
+            {
+                var stageScene = prefabStage.scene;
+                _loadedScenes.Add(new LoadedScene
+                {
+                    Name = stageScene.name,
+                    Path = prefabStage.assetPath,
+                    Guid = string.IsNullOrEmpty(prefabStage.assetPath) ? null : AssetDatabase.AssetPathToGUID(prefabStage.assetPath),
+                    Handle = stageScene.handle,
+                    IsActive = false,
+                    IsPrefabStage = true,
+                });
+                foreach (var root in stageScene.GetRootGameObjects())
+                    Capture(root, parentId: 0, scene: stageScene, isPrefabStage: true, includeRenderers: includeRenderers);
             }
         }
 
-        private void Capture(GameObject go, int parentId, string sceneName, bool includeRenderers)
+        private void Capture(GameObject go, int parentId, Scene scene, bool isPrefabStage, bool includeRenderers)
         {
             var staticFlags = GameObjectUtility.GetStaticEditorFlags(go);
             var info = new GameObjectInfo
@@ -100,7 +122,13 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                 InstanceID = go.GetInstanceID(),
                 Name = go.name,
                 ParentId = parentId,
-                SceneName = sceneName,
+                SceneName = scene.name,
+                ScenePath = scene.path,
+                SceneGuid = string.IsNullOrEmpty(scene.path) ? null : AssetDatabase.AssetPathToGUID(scene.path),
+                SceneHandle = scene.handle,
+                HierarchyPath = ToolTargetRef.BuildHierarchyPath(go.transform),
+                GlobalObjectId = ToolTargetRef.Capture(go)?.GlobalObjectId,
+                IsPrefabStage = isPrefabStage,
                 LocalPosition = go.transform.localPosition,
                 LocalRotation = go.transform.localRotation,
                 LocalScale = go.transform.localScale,
@@ -147,9 +175,12 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                     continue;
                 }
 
+                var componentTarget = ToolTargetRef.Capture(c);
                 info.Components.Add(new ComponentInfo
                 {
                     InstanceID = c.GetInstanceID(),
+                    GlobalObjectId = componentTarget?.GlobalObjectId,
+                    ComponentOrdinal = componentTarget?.ComponentOrdinal ?? -1,
                     TypeName = c.GetType().FullName,
                     Enabled = c is Behaviour b ? b.enabled : true,
                     IsMissing = false,
@@ -185,7 +216,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             {
                 var child = go.transform.GetChild(i).gameObject;
                 info.ChildIds.Add(child.GetInstanceID());
-                Capture(child, info.InstanceID, sceneName, includeRenderers);
+                Capture(child, info.InstanceID, scene, isPrefabStage, includeRenderers);
             }
         }
 
@@ -211,6 +242,12 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         public string Name;
         public int ParentId;
         public string SceneName;
+        public string ScenePath;
+        public string SceneGuid;
+        public int SceneHandle;
+        public string HierarchyPath;
+        public string GlobalObjectId;
+        public bool IsPrefabStage;
         public Vector3 LocalPosition;
         public Quaternion LocalRotation;
         public Vector3 LocalScale;
@@ -230,6 +267,8 @@ namespace Maicon.SceneAnalyzer.Editor.Core
     public sealed class ComponentInfo
     {
         public int InstanceID;
+        public string GlobalObjectId;
+        public int ComponentOrdinal;
         public string TypeName;
         public bool Enabled;
         /// True when the component slot exists but the script type couldn't be
@@ -242,7 +281,10 @@ namespace Maicon.SceneAnalyzer.Editor.Core
     {
         public string Name;
         public string Path;
+        public string Guid;
+        public int Handle;
         public bool IsActive;
+        public bool IsPrefabStage;
     }
 
     public enum PrefabInstanceStatus

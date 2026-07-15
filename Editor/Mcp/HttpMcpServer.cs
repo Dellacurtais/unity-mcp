@@ -1,325 +1,521 @@
 using System;
 using System.Collections.Concurrent;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Maicon.SceneAnalyzer.Editor.Authoring;
+using Maicon.SceneAnalyzer.Editor.Core;
+using Maicon.SceneAnalyzer.Editor.Mcp.Tools;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp
 {
-    /// MCP streamable_http transport implemented over System.Net.HttpListener.
-    /// Binds to 127.0.0.1 only; bearer-token auth on every request. The accept
-    /// loop runs on a background thread; tool execution is marshalled to the
-    /// editor main thread via MainThreadDispatcher.
     public sealed class HttpMcpServer : IDisposable
     {
-        private const string ProtocolVersion = "2024-11-05";
         private const string ServerName = "scene-analyzer";
-        private const string ServerVersion = "0.1.0";
+        public static string ServerVersion => SceneAnalyzerVersion.Current;
+        private const string ConfirmationArgument = "_confirmationToken";
+
+        private sealed class HttpOutcome
+        {
+            public int StatusCode = 200;
+            public string Body;
+        }
 
         private readonly McpToolRegistry _registry;
+        private readonly ConcurrentDictionary<HttpListenerContext, byte> _activeContexts =
+            new ConcurrentDictionary<HttpListenerContext, byte>();
+        private readonly ConfirmationTokenService _confirmations = new ConfirmationTokenService();
+
         private HttpListener _listener;
         private CancellationTokenSource _cts;
+        private McpRequestCoordinator _coordinator;
         private string _token;
         private int _port;
-
-        // Active in-flight contexts. On Stop() (typically because Unity is
-        // about to do an assembly reload) we walk these and write a 503 to
-        // each so the MCP client fails fast instead of sitting on a stalled
-        // socket until its 60s request timeout fires.
-        private readonly ConcurrentDictionary<HttpListenerContext, byte> _activeContexts = new();
-
-        // Monotonically incremented per tools/call. Appended to every response
-        // so two queries against an unchanged scene still produce different
-        // bytes. The D:\MCP coder has a "refused — identical content already
-        // received" guard meant for read-only file lookups; it would otherwise
-        // block legitimate Unity workflow patterns like "modify → re-validate
-        // → modify again", since revalidation happens against the SAME object
-        // until the next mutation.
         private static int _callSeq;
 
         public bool IsRunning => _listener != null && _listener.IsListening;
         public int Port => _port;
+        public int InFlightCount => _coordinator != null ? _coordinator.InFlightCount : 0;
         public event Action<string> OnLog;
 
-        public HttpMcpServer(McpToolRegistry registry) { _registry = registry; }
+        public HttpMcpServer(McpToolRegistry registry)
+        {
+            _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        }
 
         public void Start(int port, string token)
         {
             Stop();
-            if (string.IsNullOrEmpty(token))
-                throw new InvalidOperationException("Bearer token is required.");
+            if (string.IsNullOrEmpty(token)) throw new InvalidOperationException("Bearer token is required.");
+            if (port < 1 || port > 65535) throw new ArgumentOutOfRangeException(nameof(port));
+
             _port = port;
             _token = token;
-
+            _coordinator = new McpRequestCoordinator(Settings.MaxConcurrentRequests);
+            _cts = new CancellationTokenSource();
             _listener = new HttpListener();
             _listener.Prefixes.Add($"http://127.0.0.1:{port}/mcp/");
             _listener.Start();
-            _cts = new CancellationTokenSource();
             _ = Task.Run(() => AcceptLoop(_cts.Token));
-            Log($"listening on http://127.0.0.1:{port}/mcp/");
+            Log($"listening on http://127.0.0.1:{port}/mcp/ (MCP {McpProtocolNegotiator.Preferred}, tools={_registry.Count})");
         }
 
-        public void Stop() => Stop(reason: null);
+        public void Stop() => Stop(null);
 
         public void Stop(string reason)
         {
-            if (_listener == null) return;
+            if (_listener == null && _coordinator == null) return;
+            try { _cts?.Cancel(); } catch { }
+            try { _coordinator?.CancelAll(); } catch { }
+            MainThreadDispatcher.CancelPending();
 
-            // Notify in-flight requests so the client (D:\MCP coder) fails
-            // fast with a clear status instead of waiting for its request
-            // timeout. Crucial for the assembly-reload path where this Stop()
-            // happens microseconds before the AppDomain is torn down.
-            foreach (var ctx in _activeContexts.Keys)
+            foreach (var context in _activeContexts.Keys)
             {
                 try
                 {
-                    var resp = ctx.Response;
-                    resp.StatusCode = 503;
-                    resp.AddHeader("Connection", "close");
+                    var response = context.Response;
+                    response.StatusCode = 503;
+                    response.AddHeader("Connection", "close");
                     if (!string.IsNullOrEmpty(reason))
                     {
-                        var body = Encoding.UTF8.GetBytes(reason);
-                        resp.ContentLength64 = body.Length;
-                        resp.OutputStream.Write(body, 0, body.Length);
+                        var bytes = Encoding.UTF8.GetBytes(reason);
+                        response.ContentType = "text/plain; charset=utf-8";
+                        response.ContentLength64 = bytes.Length;
+                        response.OutputStream.Write(bytes, 0, bytes.Length);
                     }
-                    resp.Close();
+                    response.Close();
                 }
-                catch { /* response may already be closed/disposed */ }
+                catch { }
             }
             _activeContexts.Clear();
 
-            try { _cts?.Cancel(); } catch { }
-            try { _listener.Stop(); } catch { }
-            try { _listener.Close(); } catch { }
+            try { _listener?.Stop(); } catch { }
+            try { _listener?.Close(); } catch { }
+            try { _coordinator?.Dispose(); } catch { }
+            try { _cts?.Dispose(); } catch { }
             _listener = null;
+            _coordinator = null;
+            _cts = null;
             Log(string.IsNullOrEmpty(reason) ? "stopped" : $"stopped ({reason})");
         }
 
         public void Dispose() => Stop();
 
-        private async Task AcceptLoop(CancellationToken ct)
+        private async Task AcceptLoop(CancellationToken cancellationToken)
         {
-            while (!ct.IsCancellationRequested && _listener != null && _listener.IsListening)
+            while (!cancellationToken.IsCancellationRequested && _listener != null && _listener.IsListening)
             {
-                HttpListenerContext ctx;
-                try { ctx = await _listener.GetContextAsync(); }
+                HttpListenerContext context;
+                try { context = await _listener.GetContextAsync(); }
                 catch { break; }
-                _ = HandleAsync(ctx, ct);
+                _ = HandleAsync(context, cancellationToken);
             }
         }
 
-        private async Task HandleAsync(HttpListenerContext ctx, CancellationToken ct)
+        private async Task HandleAsync(HttpListenerContext context, CancellationToken serverToken)
         {
-            _activeContexts.TryAdd(ctx, 0);
+            _activeContexts.TryAdd(context, 0);
             try
             {
-                if (ctx.Request.HttpMethod == "OPTIONS")
+                var request = context.Request;
+                var response = context.Response;
+                if (!IsAllowedOrigin(request))
                 {
-                    AddCors(ctx.Response);
-                    ctx.Response.StatusCode = 204;
-                    ctx.Response.Close();
+                    await WriteHttpError(response, 403, "Origin is not an allowed loopback origin.", serverToken);
+                    return;
+                }
+                AddCors(request, response);
+
+                if (request.HttpMethod == "OPTIONS")
+                {
+                    response.StatusCode = 204;
+                    response.Close();
+                    return;
+                }
+                if (!IsAuthorized(request))
+                {
+                    response.StatusCode = 401;
+                    response.AddHeader("WWW-Authenticate", "Bearer realm=\"mcp\"");
+                    response.Close();
+                    return;
+                }
+                if (request.HttpMethod != "POST")
+                {
+                    response.StatusCode = 405;
+                    response.AddHeader("Allow", "POST, OPTIONS");
+                    response.Close();
+                    return;
+                }
+                if (!IsJsonContentType(request.ContentType))
+                {
+                    await WriteHttpError(response, 415, "Content-Type must be application/json.", serverToken);
+                    return;
+                }
+                if (!AcceptsJson(request.Headers["Accept"]))
+                {
+                    await WriteHttpError(response, 406, "Accept must include application/json or */*.", serverToken);
                     return;
                 }
 
-                if (!IsAuthorized(ctx.Request))
+                var protocolHeader = request.Headers["MCP-Protocol-Version"];
+                if (!string.IsNullOrEmpty(protocolHeader) && !McpProtocolNegotiator.IsSupported(protocolHeader))
                 {
-                    ctx.Response.StatusCode = 401;
-                    ctx.Response.AddHeader("WWW-Authenticate", "Bearer realm=\"mcp\"");
-                    AddCors(ctx.Response);
-                    ctx.Response.Close();
+                    await WriteHttpError(response, 400, $"Unsupported MCP-Protocol-Version '{protocolHeader}'.", serverToken);
                     return;
                 }
-
-                if (ctx.Request.HttpMethod != "POST")
+                if (request.ContentLength64 > Settings.MaxRequestBodyBytes)
                 {
-                    ctx.Response.StatusCode = 405;
-                    AddCors(ctx.Response);
-                    ctx.Response.Close();
+                    await WriteHttpError(response, 413, "MCP request body exceeds the configured limit.", serverToken);
                     return;
                 }
 
                 string body;
-                using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
+                try { body = await ReadBodyBoundedAsync(request, Settings.MaxRequestBodyBytes, serverToken); }
+                catch (InvalidDataException e)
                 {
-                    body = await reader.ReadToEndAsync();
+                    await WriteHttpError(response, 413, e.Message, serverToken);
+                    return;
                 }
 
-                var responseBody = await ProcessAsync(body);
-                var bytes = Encoding.UTF8.GetBytes(responseBody);
+                var negotiated = string.IsNullOrEmpty(protocolHeader)
+                    ? McpProtocolNegotiator.V2025March
+                    : protocolHeader;
+                var outcome = await ProcessAsync(body, negotiated, request.Headers["Origin"], serverToken);
+                response.StatusCode = outcome.StatusCode;
+                if (string.IsNullOrEmpty(outcome.Body))
+                {
+                    response.ContentLength64 = 0;
+                    response.Close();
+                    return;
+                }
 
-                ctx.Response.StatusCode = 200;
-                ctx.Response.ContentType = "application/json";
-                ctx.Response.ContentLength64 = bytes.Length;
-                AddCors(ctx.Response);
-                await ctx.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length, ct);
-                ctx.Response.Close();
+                var responseBytes = Encoding.UTF8.GetBytes(outcome.Body);
+                response.ContentType = "application/json; charset=utf-8";
+                response.ContentLength64 = responseBytes.Length;
+                await response.OutputStream.WriteAsync(responseBytes, 0, responseBytes.Length, serverToken);
+                response.Close();
+            }
+            catch (OperationCanceledException)
+            {
+                try { context.Response.StatusCode = 499; context.Response.Close(); } catch { }
             }
             catch (Exception e)
             {
                 Debug.LogException(e);
-                try { ctx.Response.StatusCode = 500; ctx.Response.Close(); } catch { }
+                try { context.Response.StatusCode = 500; context.Response.Close(); } catch { }
             }
             finally
             {
-                _activeContexts.TryRemove(ctx, out _);
+                _activeContexts.TryRemove(context, out _);
             }
         }
 
-        private bool IsAuthorized(HttpListenerRequest req)
-        {
-            var auth = req.Headers["Authorization"];
-            if (string.IsNullOrEmpty(auth)) return false;
-            const string prefix = "Bearer ";
-            if (!auth.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
-            var token = auth.Substring(prefix.Length).Trim();
-            return string.Equals(token, _token, StringComparison.Ordinal);
-        }
-
-        private static void AddCors(HttpListenerResponse resp)
-        {
-            resp.AddHeader("Access-Control-Allow-Origin", "*");
-            resp.AddHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-            resp.AddHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-        }
-
-        private async Task<string> ProcessAsync(string body)
+        private async Task<HttpOutcome> ProcessAsync(
+            string body, string protocolVersion, string origin, CancellationToken serverToken)
         {
             JToken request;
             try { request = JToken.Parse(body); }
-            catch { return ErrorResp(null, -32700, "Parse error"); }
+            catch { return JsonOutcome(ErrorResp(null, -32700, "Parse error")); }
 
-            if (request.Type == JTokenType.Array)
+            if (request is JArray batch)
             {
+                if (batch.Count == 0) return JsonOutcome(ErrorResp(null, -32600, "Invalid Request: empty batch"));
                 var results = new JArray();
-                foreach (var item in (JArray)request)
+                foreach (var item in batch)
                 {
-                    var s = await ProcessOne(item);
-                    if (string.IsNullOrEmpty(s)) continue; // notification — no response per JSON-RPC 2.0 spec
-                    results.Add(JToken.Parse(s));
+                    var response = await ProcessOne(item, protocolVersion, origin, serverToken);
+                    if (response != null) results.Add(response);
                 }
-                return results.Count == 0 ? "" : results.ToString(Formatting.None);
+                return results.Count == 0
+                    ? new HttpOutcome { StatusCode = 202 }
+                    : JsonOutcome(results.ToString(Formatting.None));
             }
-            return await ProcessOne(request);
+
+            var single = await ProcessOne(request, protocolVersion, origin, serverToken);
+            return single == null
+                ? new HttpOutcome { StatusCode = 202 }
+                : JsonOutcome(single.ToString(Formatting.None));
         }
 
-        private async Task<string> ProcessOne(JToken t)
+        private async Task<JObject> ProcessOne(
+            JToken token, string protocolVersion, string origin, CancellationToken serverToken)
         {
-            var id = t["id"];
-            var method = (string)t["method"];
-            var prms = t["params"] as JObject ?? new JObject();
+            if (!(token is JObject request) || (string)request["jsonrpc"] != "2.0")
+                return ParseObject(ErrorResp(null, -32600, "Invalid Request"));
 
-            // Notifications (id absent) — no response body required, but we
-            // return "{}" so batched responses keep their shape.
+            var id = request["id"];
+            var method = (string)request["method"];
+            var parameters = request["params"] as JObject ?? new JObject();
+            var notification = id == null;
+            if (string.IsNullOrEmpty(method)) return ParseObject(ErrorResp(id, -32600, "Invalid Request: method is required"));
+
             try
             {
                 switch (method)
                 {
                     case "initialize":
-                        return OkResp(id, new JObject
+                    {
+                        var requested = (string)parameters["protocolVersion"];
+                        var selected = McpProtocolNegotiator.Negotiate(requested);
+                        return ParseObject(OkResp(id, new JObject
                         {
-                            ["protocolVersion"] = ProtocolVersion,
-                            ["capabilities"] = new JObject { ["tools"] = new JObject { ["listChanged"] = false } },
+                            ["protocolVersion"] = selected,
+                            ["capabilities"] = new JObject
+                            {
+                                ["tools"] = new JObject { ["listChanged"] = false },
+                            },
                             ["serverInfo"] = new JObject { ["name"] = ServerName, ["version"] = ServerVersion },
-                        });
+                            ["instructions"] = "High-risk tools return CONFIRMATION_REQUIRED with a single-use token; retry the same arguments with _confirmationToken.",
+                        }));
+                    }
                     case "notifications/initialized":
-                        // Spec-compliant: notifications carry no id and expect
-                        // no response body. Returning empty makes the HTTP
-                        // listener still flush a 200 with no JSON-RPC envelope.
-                        return id == null ? "" : OkResp(id, new JObject());
+                        return notification ? null : ParseObject(OkResp(id, new JObject()));
+                    case "notifications/cancelled":
+                    {
+                        var requestId = parameters["requestId"]?.ToString();
+                        _coordinator?.Cancel(requestId);
+                        return notification ? null : ParseObject(OkResp(id, new JObject { ["cancelled"] = requestId }));
+                    }
                     case "ping":
-                        return OkResp(id, new JObject());
+                        return notification ? null : ParseObject(OkResp(id, new JObject()));
                     case "tools/list":
-                        return OkResp(id, ListTools());
+                        return notification ? null : ParseObject(OkResp(id, ListTools()));
                     case "tools/call":
-                        return await CallToolAsync(id, prms);
+                        if (notification)
+                        {
+                            _ = CallToolAsync(id, parameters, protocolVersion, origin, serverToken);
+                            return null;
+                        }
+                        return ParseObject(await CallToolAsync(id, parameters, protocolVersion, origin, serverToken));
                     default:
-                        return ErrorResp(id, -32601, $"Method not found: {method}");
+                        return notification ? null : ParseObject(ErrorResp(id, -32601, $"Method not found: {method}"));
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                return notification ? null : ParseObject(OkResp(id, ToolErrorBody("CANCELLED", "The MCP request was cancelled.")));
             }
             catch (Exception e)
             {
                 Debug.LogException(e);
-                return ErrorResp(id, -32603, e.Message);
+                return notification ? null : ParseObject(ErrorResp(id, -32603, e.Message));
             }
         }
 
         private JObject ListTools()
         {
-            var arr = new JArray();
+            var tools = new JArray();
             foreach (var tool in _registry.All)
             {
-                arr.Add(new JObject
+                var descriptor = _registry.GetDescriptor(tool.Name) ?? ToolDescriptor.Infer(tool);
+                var inputSchema = BuildAdvertisedInputSchema(tool, descriptor);
+                if (ToolAuthorization.RequiresConfirmation(descriptor))
+                {
+                    var properties = inputSchema["properties"] as JObject;
+                    if (properties == null) inputSchema["properties"] = properties = new JObject();
+                    properties[ConfirmationArgument] = new JObject
+                    {
+                        ["type"] = "string",
+                        ["description"] = "Single-use token returned by a prior CONFIRMATION_REQUIRED response for these exact arguments.",
+                    };
+                }
+
+                var item = new JObject
                 {
                     ["name"] = tool.Name,
+                    ["title"] = tool.Name.Replace('_', ' '),
                     ["description"] = tool.Description,
-                    ["inputSchema"] = tool.InputSchema ?? new JObject { ["type"] = "object" },
-                });
+                    ["inputSchema"] = inputSchema,
+                    ["annotations"] = new JObject
+                    {
+                        ["readOnlyHint"] = !descriptor.IsWrite,
+                        ["destructiveHint"] = (descriptor.Capabilities & McpCapability.Destructive) != 0,
+                        ["idempotentHint"] = descriptor.IsIdempotent,
+                        ["openWorldHint"] = (descriptor.Capabilities & (McpCapability.PackageManager | McpCapability.Build)) != 0,
+                    },
+                    ["_meta"] = new JObject
+                    {
+                        ["category"] = descriptor.Category,
+                        ["capabilities"] = descriptor.Capabilities.ToString(),
+                        ["risk"] = descriptor.Risk.ToString(),
+                        ["confirmationRequired"] = ToolAuthorization.RequiresConfirmation(descriptor),
+                        ["editorMode"] = descriptor.EditorMode.ToString(),
+                    },
+                };
+                if (tool.OutputSchema != null) item["outputSchema"] = tool.OutputSchema;
+                tools.Add(item);
             }
-            return new JObject { ["tools"] = arr };
+            return new JObject
+            {
+                ["tools"] = tools,
+                ["_meta"] = new JObject
+                {
+                    ["registryCount"] = _registry.Count,
+                    ["registryHash"] = _registry.VersionHash,
+                },
+            };
         }
 
-        private async Task<string> CallToolAsync(JToken id, JObject prms)
+        private static JObject BuildAdvertisedInputSchema(IMcpTool tool, ToolDescriptor descriptor)
         {
-            var name = (string)prms["name"];
-            var args = prms["arguments"] as JObject ?? new JObject();
+            var schema = (JObject)(tool.InputSchema ?? new JObject { ["type"] = "object" }).DeepClone();
+            var properties = schema["properties"] as JObject;
+            if (properties == null || properties["instanceId"] == null) return schema;
 
-            if (!_registry.TryGet(name, out var tool))
-                return ErrorResp(id, -32602, $"Tool not found: {name}");
-
-            ToolResult result;
-            try
+            properties["target"] = SchemaHelpers.TargetRefSchema;
+            if (schema["required"] is JArray required
+                && required.Any(token => string.Equals((string)token, "instanceId", StringComparison.Ordinal)))
             {
-                // The AllowWrites guard reads EditorPrefs which is main-thread-
-                // only. Dispatch a tiny check first (returns null when allowed)
-                // and then delegate the actual work to tool.ExecuteAsync —
-                // which lets cooperative-async tools (e.g. RefreshAssetsTool)
-                // wait on EditorApplication.update WITHOUT blocking the
-                // dispatcher pump. Sync tools fall through to the default
-                // ExecuteAsync that wraps Execute via the dispatcher.
-                var guard = await MainThreadDispatcher.RunAsync<ToolResult>(() =>
+                for (int i = required.Count - 1; i >= 0; i--)
+                    if (string.Equals((string)required[i], "instanceId", StringComparison.Ordinal)) required.RemoveAt(i);
+                if (required.Count == 0) schema.Remove("required");
+                schema["anyOf"] = new JArray
                 {
-                    if (tool.IsWrite && !Settings.AllowWrites)
-                        return ToolResult.Error("WRITE_DISABLED",
-                            "Writes are disabled in the Scene Analyzer panel.");
-                    return null;
-                });
-                if (guard != null)
-                    result = guard;
-                else
+                    new JObject { ["required"] = new JArray { "instanceId" } },
+                    new JObject { ["required"] = new JArray { "target" } },
+                };
+            }
+            return schema;
+        }
+
+        private async Task<string> CallToolAsync(
+            JToken id, JObject parameters, string protocolVersion, string origin, CancellationToken serverToken)
+        {
+            var name = (string)parameters["name"];
+            if (string.IsNullOrEmpty(name)) return ErrorResp(id, -32602, "Tool name is required.");
+            if (!_registry.TryGet(name, out var tool)) return ErrorResp(id, -32602, $"Tool not found: {name}");
+
+            var arguments = parameters["arguments"] as JObject ?? new JObject();
+            var executionArguments = (JObject)arguments.DeepClone();
+            var confirmationToken = (string)executionArguments[ConfirmationArgument];
+            executionArguments.Remove(ConfirmationArgument);
+            if (executionArguments["target"] != null && tool.InputSchema?["properties"]?["instanceId"] != null)
+            {
+                var target = ToolTargetResolver.Resolve(ToolTargetRef.FromJson(executionArguments["target"]), out var targetError);
+                if (target == null) return OkResp(id, ToolErrorBody("TARGET_NOT_FOUND", targetError));
+                var gameObject = target as GameObject ?? (target as Component)?.gameObject;
+                executionArguments["instanceId"] = gameObject != null ? gameObject.GetInstanceID() : target.GetInstanceID();
+                executionArguments.Remove("target");
+            }
+            if (!ToolSchemaValidator.ValidateArguments(executionArguments, tool.InputSchema, out var argumentError))
+                return OkResp(id, ToolErrorBody("BAD_ARGS", argumentError));
+
+            var descriptor = _registry.GetDescriptor(name) ?? ToolDescriptor.Infer(tool);
+            string authCode = null;
+            string authMessage = null;
+            var authorized = await MainThreadDispatcher.RunAsync(() =>
+                ToolAuthorization.TryAuthorize(tool, descriptor, out authCode, out authMessage), serverToken);
+            if (!authorized) return OkResp(id, ToolErrorBody(authCode, authMessage));
+
+            if (ToolAuthorization.RequiresConfirmation(descriptor))
+            {
+                var projectKey = Bootstrap.UnityProjectRoot ?? string.Empty;
+                if (!_confirmations.TryConsume(confirmationToken, name, executionArguments, projectKey))
                 {
-                    result = await tool.ExecuteAsync(args);
-                    // Centralized post-write invalidation: every successful write
-                    // tool marks the snapshot stale + invalidates the analyzer
-                    // cache, so an immediately-following read sees fresh state
-                    // instead of waiting for ChangeWatcher's 250ms debounce.
-                    // Bootstrap.NotifyWriteCompleted touches Snapshot/Runner/
-                    // events — main-thread only, so dispatch.
-                    if (tool.IsWrite && result != null && !result.IsError)
-                    {
-                        await MainThreadDispatcher.RunAsync<object>(() =>
+                    var issued = _confirmations.Issue(name, executionArguments, projectKey, TimeSpan.FromMinutes(2));
+                    return OkResp(id, ToolErrorBody("CONFIRMATION_REQUIRED",
+                        "Review the requested operation, then retry the same arguments with _confirmationToken.",
+                        new JObject
                         {
-                            Bootstrap.NotifyWriteCompleted();
-                            return null;
-                        });
-                    }
+                            ["confirmationToken"] = issued,
+                            ["expiresInSeconds"] = 120,
+                            ["tool"] = name,
+                            ["risk"] = descriptor.Risk.ToString(),
+                            ["capabilities"] = descriptor.Capabilities.ToString(),
+                            ["arguments"] = executionArguments.DeepClone(),
+                        }));
                 }
             }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-                return OkResp(id, ToolErrorBody("INTERNAL_ERROR", e.Message));
-            }
 
+            var requestId = id != null ? id.ToString(Formatting.None) : Guid.NewGuid().ToString("N");
+            var timeout = TimeSpan.FromSeconds(Settings.ToolTimeoutSeconds);
+            using (var lease = await _coordinator.BeginAsync(requestId, descriptor.IsWrite, serverToken, timeout))
+            using (ToolExecutionContext.Push(new ToolExecutionContext
+            {
+                ToolName = name,
+                RequestId = requestId,
+                ProtocolVersion = protocolVersion,
+                Origin = origin,
+                RequestPath = "/mcp/",
+                CancellationToken = lease.CancellationToken,
+                DeadlineUtc = DateTimeOffset.UtcNow.Add(timeout),
+                IsNotification = id == null,
+                RequestMeta = parameters["_meta"] as JObject,
+            }))
+            {
+                ToolResult result;
+                var preMutationScenes = (descriptor.Capabilities & McpCapability.SceneWrite) != 0
+                    ? await MainThreadDispatcher.RunAsync(
+                        () => MutationScope.CaptureLegacySceneHandles(executionArguments), lease.CancellationToken)
+                    : null;
+                try
+                {
+                    result = await tool.ExecuteAsync(executionArguments);
+                    if (result == null) result = ToolResult.Error("NULL_RESULT", $"Tool '{name}' returned no result.");
+                    if (!result.IsError && result.Json != null)
+                        await MainThreadDispatcher.RunAsync(
+                            () => EnrichStableTargets(result.Json, 0), lease.CancellationToken);
+                    if (descriptor.IsWrite && !result.IsError)
+                    {
+                        var resultInstanceId = result.Json is JObject resultObject
+                            ? (int?)resultObject["instanceId"] ?? 0
+                            : 0;
+                        var mutationMeta = await MainThreadDispatcher.RunAsync(
+                            () => MutationScope.FinalizeLegacyMutation(
+                                executionArguments, resultInstanceId, preMutationScenes),
+                            lease.CancellationToken);
+                        if (result.Metadata == null) result.Metadata = new JObject();
+                        result.Metadata["mutation"] = mutationMeta;
+                        await MainThreadDispatcher.RunAsync(Bootstrap.NotifyWriteCompleted, lease.CancellationToken);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    result = ToolResult.Error("CANCELLED", $"Tool '{name}' was cancelled or exceeded its deadline.");
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                    result = ToolResult.Error("INTERNAL_ERROR", e.Message,
+                        new JObject { ["exceptionType"] = e.GetType().FullName });
+                }
+
+                return OkResp(id, BuildToolResult(result, name));
+            }
+        }
+
+        private static void EnrichStableTargets(JToken token, int depth)
+        {
+            if (token == null || depth > 6) return;
+            if (token is JObject obj)
+            {
+                if (obj["target"] == null && obj["instanceId"]?.Type == JTokenType.Integer)
+                {
+                    var unityObject = UnityEditor.EditorUtility.InstanceIDToObject((int)obj["instanceId"]);
+                    var target = ToolTargetRef.Capture(unityObject);
+                    if (target != null) obj["target"] = target.ToJson();
+                }
+                foreach (var property in obj.Properties())
+                    if (property.Name != "target") EnrichStableTargets(property.Value, depth + 1);
+            }
+            else if (token is JArray array)
+            {
+                var count = Math.Min(array.Count, 1000);
+                for (int i = 0; i < count; i++) EnrichStableTargets(array[i], depth + 1);
+            }
+        }
+
+        private JObject BuildToolResult(ToolResult result, string toolName)
+        {
             JArray content;
             if (result.ContentBlocks != null && result.ContentBlocks.Count > 0)
-            {
-                content = result.ContentBlocks;
-            }
+                content = (JArray)result.ContentBlocks.DeepClone();
             else
             {
                 content = new JArray();
@@ -327,71 +523,144 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     content.Add(new JObject { ["type"] = "text", ["text"] = result.Text });
                 if (result.Json != null)
                     content.Add(new JObject { ["type"] = "text", ["text"] = result.Json.ToString(Formatting.None) });
-                if (content.Count == 0)
-                    content.Add(new JObject { ["type"] = "text", ["text"] = "" });
+                if (content.Count == 0) content.Add(new JObject { ["type"] = "text", ["text"] = string.Empty });
             }
 
-            AppendUniquenessMarker(content);
-
-            return OkResp(id, new JObject
+            var callSequence = Interlocked.Increment(ref _callSeq);
+            var meta = result.Metadata != null ? (JObject)result.Metadata.DeepClone() : new JObject();
+            meta["unityCallSequence"] = callSequence;
+            meta["tool"] = toolName;
+            meta["registryHash"] = _registry.VersionHash;
+            var payload = new JObject
             {
                 ["content"] = content,
                 ["isError"] = result.IsError,
-            });
-        }
-
-        /// Appends `[unity-call #N @ HH:mm:ss.fff]` to the last text block.
-        /// Makes byte-content of every tool response unique so the coder's
-        /// identical-response guard doesn't reject legitimate revalidation
-        /// against an unchanged scene state. The marker is intentionally
-        /// short, parseable, and clearly meta — the agent ignores it as
-        /// instrumentation.
-        private static void AppendUniquenessMarker(JArray content)
-        {
-            int seq = System.Threading.Interlocked.Increment(ref _callSeq);
-            string marker = $"\n[unity-call #{seq} @ {DateTime.UtcNow:HH:mm:ss.fff}]";
-
-            for (int i = content.Count - 1; i >= 0; i--)
-            {
-                if (content[i] is JObject block && (string)block["type"] == "text")
-                {
-                    block["text"] = ((string)block["text"] ?? "") + marker;
-                    return;
-                }
-            }
-            content.Add(new JObject { ["type"] = "text", ["text"] = marker.TrimStart() });
-        }
-
-        private static JObject ToolErrorBody(string code, string message)
-        {
-            var content = new JArray
-            {
-                new JObject { ["type"] = "text", ["text"] = $"[{code}] {message}" }
+                ["_meta"] = meta,
             };
-            return new JObject { ["content"] = content, ["isError"] = true };
+            if (result.Json != null) payload["structuredContent"] = result.Json.DeepClone();
+            if (result.Warnings != null && result.Warnings.Count > 0) payload["warnings"] = result.Warnings.DeepClone();
+            return payload;
         }
+
+        private static JObject ToolErrorBody(string code, string message, JToken data = null)
+        {
+            var structured = new JObject { ["code"] = code, ["message"] = message };
+            if (data != null) structured["data"] = data;
+            return new JObject
+            {
+                ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = $"[{code}] {message}" } },
+                ["structuredContent"] = structured,
+                ["isError"] = true,
+            };
+        }
+
+        private bool IsAuthorized(HttpListenerRequest request)
+        {
+            var authorization = request.Headers["Authorization"];
+            const string prefix = "Bearer ";
+            if (string.IsNullOrEmpty(authorization) || !authorization.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
+            return FixedTimeEquals(authorization.Substring(prefix.Length).Trim(), _token);
+        }
+
+        private static bool FixedTimeEquals(string a, string b)
+        {
+            if (a == null || b == null) return false;
+            var aBytes = Encoding.UTF8.GetBytes(a);
+            var bBytes = Encoding.UTF8.GetBytes(b);
+            int diff = aBytes.Length ^ bBytes.Length;
+            int max = Math.Max(aBytes.Length, bBytes.Length);
+            for (int i = 0; i < max; i++)
+            {
+                byte av = i < aBytes.Length ? aBytes[i] : (byte)0;
+                byte bv = i < bBytes.Length ? bBytes[i] : (byte)0;
+                diff |= av ^ bv;
+            }
+            return diff == 0;
+        }
+
+        private static bool IsAllowedOrigin(HttpListenerRequest request)
+        {
+            var origin = request.Headers["Origin"];
+            if (string.IsNullOrEmpty(origin)) return true;
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+            return uri.IsLoopback && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+        }
+
+        private static void AddCors(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            var origin = request.Headers["Origin"];
+            if (!string.IsNullOrEmpty(origin))
+            {
+                response.AddHeader("Access-Control-Allow-Origin", origin);
+                response.AddHeader("Vary", "Origin");
+            }
+            response.AddHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Protocol-Version, Mcp-Session-Id");
+            response.AddHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+        }
+
+        private static bool IsJsonContentType(string contentType)
+        {
+            if (string.IsNullOrEmpty(contentType)) return false;
+            return contentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool AcceptsJson(string accept)
+        {
+            return string.IsNullOrEmpty(accept) || accept.Contains("application/json") || accept.Contains("*/*");
+        }
+
+        private static async Task<string> ReadBodyBoundedAsync(
+            HttpListenerRequest request, int maxBytes, CancellationToken cancellationToken)
+        {
+            using (var memory = new MemoryStream())
+            {
+                var buffer = new byte[16 * 1024];
+                while (true)
+                {
+                    var read = await request.InputStream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
+                    if (read <= 0) break;
+                    if (memory.Length + read > maxBytes) throw new InvalidDataException("MCP request body exceeds the configured limit.");
+                    memory.Write(buffer, 0, read);
+                }
+                return Encoding.UTF8.GetString(memory.ToArray());
+            }
+        }
+
+        private static async Task WriteHttpError(
+            HttpListenerResponse response, int statusCode, string message, CancellationToken cancellationToken)
+        {
+            var bytes = Encoding.UTF8.GetBytes(new JObject { ["error"] = message }.ToString(Formatting.None));
+            response.StatusCode = statusCode;
+            response.ContentType = "application/json; charset=utf-8";
+            response.ContentLength64 = bytes.Length;
+            await response.OutputStream.WriteAsync(bytes, 0, bytes.Length, cancellationToken);
+            response.Close();
+        }
+
+        private static HttpOutcome JsonOutcome(string body) => new HttpOutcome { StatusCode = 200, Body = body };
+        private static JObject ParseObject(string json) => JObject.Parse(json);
 
         private static string OkResp(JToken id, JToken result)
         {
-            var o = new JObject { ["jsonrpc"] = "2.0", ["result"] = result };
-            if (id != null) o["id"] = id;
-            return o.ToString(Formatting.None);
+            var response = new JObject { ["jsonrpc"] = "2.0", ["result"] = result };
+            if (id != null) response["id"] = id.DeepClone();
+            return response.ToString(Formatting.None);
         }
 
         private static string ErrorResp(JToken id, int code, string message)
         {
-            var o = new JObject
+            var response = new JObject
             {
                 ["jsonrpc"] = "2.0",
                 ["error"] = new JObject { ["code"] = code, ["message"] = message },
             };
-            if (id != null) o["id"] = id;
-            return o.ToString(Formatting.None);
+            if (id != null) response["id"] = id.DeepClone();
+            return response.ToString(Formatting.None);
         }
 
-        private void Log(string msg)
+        private void Log(string message)
         {
-            try { OnLog?.Invoke(msg); }
+            try { OnLog?.Invoke(message); }
             catch (Exception e) { Debug.LogException(e); }
         }
     }

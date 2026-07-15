@@ -22,20 +22,23 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics
         {
             try
             {
-                if (Bootstrap.ToolRegistry == null) return;
+                if (Bootstrap.ToolRegistry == null || Bootstrap.ToolRegistry.TryGet("inspect_submeshes", out _)) return;
 
-                Bootstrap.ToolRegistry.Register(new InspectSubmeshesTool());
-                Bootstrap.ToolRegistry.Register(new DetectSharpEdgesTool());
-                Bootstrap.ToolRegistry.Register(new DetectPlanesTool());
-                Bootstrap.ToolRegistry.Register(new DetectSmoothRegionsTool());
-                Bootstrap.ToolRegistry.Register(new DetectParallelChainsTool());
-                Bootstrap.ToolRegistry.Register(new SamplePointsOnRegionTool());
-                Bootstrap.ToolRegistry.Register(new RenderObjectViewsTool());
-                Bootstrap.ToolRegistry.Register(new RenderRegionHighlightTool());
-                Bootstrap.ToolRegistry.Register(new MeshPickFromScreenTool());
-                Bootstrap.ToolRegistry.Register(new SegmentViaSidecarTool());
-                Bootstrap.ToolRegistry.Register(new SidecarHealthTool());
-                Bootstrap.ToolRegistry.Register(new EnableMeshReadWriteTool());
+                Bootstrap.ToolRegistry.RegisterRange(new Maicon.SceneAnalyzer.Editor.Mcp.IMcpTool[]
+                {
+                    new InspectSubmeshesTool(),
+                    new DetectSharpEdgesTool(),
+                    new DetectPlanesTool(),
+                    new DetectSmoothRegionsTool(),
+                    new DetectParallelChainsTool(),
+                    new SamplePointsOnRegionTool(),
+                    new RenderObjectViewsTool(),
+                    new RenderRegionHighlightTool(),
+                    new MeshPickFromScreenTool(),
+                    new SegmentViaSidecarTool(),
+                    new SidecarHealthTool(),
+                    new EnableMeshReadWriteTool(),
+                });
 
                 Bootstrap.RecordEntry("[mesh-analytics] registered 12 mesh tools (8 in-process + 3 picking/sidecar + 1 enable_read_write)");
             }

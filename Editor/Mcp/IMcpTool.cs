@@ -3,12 +3,6 @@ using Newtonsoft.Json.Linq;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp
 {
-    /// Contract for an MCP tool exposed by the plugin. Implementations describe
-    /// themselves via Name/Description/InputSchema. Tools normally implement
-    /// the synchronous Execute (the framework dispatches it onto the editor
-    /// main thread). Tools that need cooperative async — wait for a Unity
-    /// callback without blocking the main thread — override ExecuteAsync
-    /// directly so the dispatcher pump stays responsive while they wait.
     public interface IMcpTool
     {
         string Name { get; }
@@ -16,14 +10,18 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         JObject InputSchema { get; }
         bool IsWrite { get; }
 
+        ToolDescriptor Descriptor => ToolDescriptor.Infer(this);
+        JObject OutputSchema => null;
+
         ToolResult Execute(JObject arguments);
 
-        /// Default: run the sync `Execute` on the editor main thread via the
-        /// dispatcher. Override when the tool needs to await something that
-        /// would otherwise block the main thread (e.g. polling
-        /// `EditorApplication.isCompiling` after `AssetDatabase.Refresh`).
         Task<ToolResult> ExecuteAsync(JObject arguments)
-            => MainThreadDispatcher.RunAsync(() => Execute(arguments));
+        {
+            var context = ToolExecutionContext.Current;
+            return MainThreadDispatcher.RunAsync(
+                () => Execute(arguments),
+                context != null ? context.CancellationToken : default);
+        }
     }
 
     public sealed class ToolResult
@@ -31,11 +29,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         public bool IsError;
         public string Text;
         public JToken Json;
-
-        /// When set, overrides the default content layout and is sent verbatim
-        /// as the tool call's `content` array. Use for non-text outputs (image,
-        /// resource) that need explicit MCP content-block typing.
         public JArray ContentBlocks;
+        public JObject Metadata;
+        public JArray Warnings;
 
         public static ToolResult Ok(string text, JToken json = null)
             => new ToolResult { Text = text, Json = json };

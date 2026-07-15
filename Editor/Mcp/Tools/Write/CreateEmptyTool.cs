@@ -37,7 +37,6 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             if (parent != null) Undo.SetTransformParent(go.transform, parent.transform, "Parent");
             go.transform.localPosition = JsonHelpers.ParseVector3(args["position"]);
             go.transform.localRotation = JsonHelpers.ParseRotation(args["rotation"]);
-            EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
             return ToolResult.Ok($"created empty '{name}'", new JObject { ["instanceId"] = go.GetInstanceID() });
         }
     }

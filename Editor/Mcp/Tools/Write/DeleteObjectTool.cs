@@ -40,7 +40,6 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
 
             var name = go.name;
             Undo.DestroyObjectImmediate(go);
-            EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
             return ToolResult.Ok($"deleted '{name}' (id={id})");
         }
     }

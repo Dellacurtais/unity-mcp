@@ -1,0 +1,25 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.UGUI",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.UGUI",
+  "references": [
+    "com.maicon.scene-analyzer",
+    "com.maicon.scene-analyzer.Editor",
+    "Unity.Newtonsoft.Json",
+    "Unity.ugui"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_UGUI"],
+  "versionDefines": [
+    {
+      "name": "com.unity.ugui",
+      "expression": "1.0.0",
+      "define": "SCENE_ANALYZER_HAS_UGUI"
+    }
+  ],
+  "noEngineReferences": false
+}

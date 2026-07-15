@@ -1,5 +1,7 @@
 using System;
 using Maicon.SceneAnalyzer.Editor.Authoring;
+using Maicon.SceneAnalyzer.Editor.Mcp;
+using Maicon.SceneAnalyzer.Editor.Optional;
 using Maicon.SceneAnalyzer.Editor.Timeline.Tools;
 using UnityEditor;
 using UnityEngine;
@@ -24,21 +26,20 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
         {
             try
             {
-                if (Bootstrap.ToolRegistry == null) return;
+                if (Bootstrap.ToolRegistry == null || OptionalModuleRegistry.Contains("timeline")) return;
+
+                OptionalToolSupport.RegisterModule("timeline", "com.unity.timeline",
+                    new CreateTimelineAssetTool(),
+                    new AddTimelineTrackTool(),
+                    new AddTimelineClipTool(),
+                    new AssignTimelineToDirectorTool(),
+                    new PlayTimelineTool());
 
                 ChangesetExecutor.RegisterHandler("create_timeline_asset", TimelineAuthor.CreateTimeline);
                 ChangesetExecutor.RegisterHandler("add_timeline_track", TimelineAuthor.AddTrack);
                 ChangesetExecutor.RegisterHandler("add_timeline_clip", TimelineAuthor.AddClip);
                 ChangesetExecutor.RegisterHandler("assign_timeline_to_director", TimelineAuthor.AssignToDirector);
                 ChangesetExecutor.RegisterHandler("play_timeline", TimelineAuthor.Play);
-
-                Bootstrap.ToolRegistry.Register(new CreateTimelineAssetTool());
-                Bootstrap.ToolRegistry.Register(new AddTimelineTrackTool());
-                Bootstrap.ToolRegistry.Register(new AddTimelineClipTool());
-                Bootstrap.ToolRegistry.Register(new AssignTimelineToDirectorTool());
-                Bootstrap.ToolRegistry.Register(new PlayTimelineTool());
-
-                Bootstrap.RecordEntry("[timeline] registered 5 timeline tools (com.unity.timeline present)");
             }
             catch (Exception e) { Debug.LogException(e); }
         }

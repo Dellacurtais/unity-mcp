@@ -1,20 +1,17 @@
+using System;
+using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core;
 using Newtonsoft.Json.Linq;
 
 namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 {
-    /// Quick connectivity check for the Python mesh-analytics sidecar.
-    /// Returns the service status, version, and list of supported
-    /// segmentation methods. Call this before `mesh_segment_via_sidecar`
-    /// when the user isn't sure the service is up — the error from
-    /// segment-on-missing-service includes start-up instructions, but a
-    /// proactive ping is cheaper than a failed segment call.
     public sealed class SidecarHealthTool : IMcpTool
     {
         public string Name => "mesh_sidecar_health";
         public string Description =>
-            "Pings the Python mesh-analytics sidecar at the configured URL (default 127.0.0.1:8766) and returns its status, version, and supported methods. Use to verify the sidecar is running before calling mesh_segment_via_sidecar — if it isn't, the response includes the command to start it.";
+            "Pings the local Python mesh-analytics sidecar and returns its version and supported methods. " +
+            "Only loopback HTTP URLs are accepted; requests are cooperatively cancellable.";
 
         public JObject InputSchema => new JObject
         {
@@ -29,45 +26,57 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 
         public bool IsWrite => false;
 
-        public ToolResult Execute(JObject args)
+        public ToolResult Execute(JObject args) => ToolResult.Error(
+            "ASYNC_REQUIRED", "mesh_sidecar_health must run through ExecuteAsync.");
+
+        public async Task<ToolResult> ExecuteAsync(JObject args)
         {
-            string url = (string)args["sidecarUrl"] ?? MeshSidecarClient.DefaultUrl;
-            int timeout = (int?)args["timeoutSeconds"] ?? 5;
+            var url = (string)args["sidecarUrl"] ?? MeshSidecarClient.DefaultUrl;
+            var timeout = (int?)args["timeoutSeconds"] ?? 5;
+            var context = ToolExecutionContext.Current;
+            var cancellationToken = context != null ? context.CancellationToken : default;
 
-            var health = MeshSidecarClient.Health(url, timeout);
-            if (!health.Ok)
+            try
             {
-                return ToolResult.Error("SIDECAR_UNREACHABLE",
-                    $"sidecar at {url} did not respond: {health.Error}. " +
-                    $"Start it with `uvicorn main:app --host 127.0.0.1 --port 8766` from " +
-                    $"`extensions/unity-scene-analyzer/Sidecar~/` (see README.md there for full setup).");
-            }
+                var health = await MeshSidecarClient.HealthAsync(url, timeout, cancellationToken);
+                if (!health.Ok)
+                {
+                    return ToolResult.Error(health.ErrorCode ?? "SIDECAR_UNREACHABLE",
+                        $"sidecar at {url} did not respond: {health.Error}. " +
+                        "Start it with `uvicorn main:app --host 127.0.0.1 --port 8766` from Sidecar~/.");
+                }
 
-            var methods = MeshSidecarClient.ListMethods(url, timeout);
-            var methodsJson = new JArray();
-            if (methods != null)
-            {
-                foreach (var m in methods)
+                var methods = await MeshSidecarClient.ListMethodsAsync(url, timeout, cancellationToken);
+                var methodsJson = new JArray();
+                foreach (var method in methods)
                 {
                     methodsJson.Add(new JObject
                     {
-                        ["name"] = m.Name,
-                        ["description"] = m.Description,
-                        ["producesLabels"] = m.ProducesLabels,
+                        ["name"] = method.Name,
+                        ["description"] = method.Description,
+                        ["producesLabels"] = method.ProducesLabels,
                     });
                 }
+
+                var payload = new JObject
+                {
+                    ["url"] = url,
+                    ["service"] = health.Service,
+                    ["version"] = health.Version,
+                    ["methods"] = methodsJson,
+                };
+                return ToolResult.Ok(
+                    $"sidecar '{health.Service}' v{health.Version} reachable at {url}; {methods.Count} method(s) available",
+                    payload);
             }
-            var payload = new JObject
+            catch (OperationCanceledException)
             {
-                ["url"] = url,
-                ["service"] = health.Service,
-                ["version"] = health.Version,
-                ["methods"] = methodsJson,
-            };
-            return ToolResult.Ok(
-                $"sidecar '{health.Service}' v{health.Version} reachable at {url}; " +
-                $"{(methods?.Count ?? 0)} method(s) available",
-                payload);
+                return ToolResult.Error("CANCELLED", "mesh sidecar health request was cancelled.");
+            }
+            catch (Exception exception)
+            {
+                return ToolResult.Error("SIDECAR_ERROR", exception.Message);
+            }
         }
     }
 }

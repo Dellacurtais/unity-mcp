@@ -1,8 +1,8 @@
 {
   "name": "com.maicon.scene-analyzer",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "displayName": "Scene Analyzer (MCP)",
-  "description": "Real-time Unity scene analysis, validation, authoring AND play-mode testing exposed to AI agents over MCP. Includes an embedded chat panel (Coder Chat) that talks to a D:\\MCP coder runtime via SSE so the dev never leaves Unity. ~95 tools across read, analyze, discover, create, modify, animation, audio, physics, post-fx, render settings, screenshots, play-mode lifecycle, Game-view capture (incl. POV cameras), and a runtime command bridge for scripted gameplay testing — plus apply_changeset for atomic batch authoring (single Undo group + asset Undo + delete-on-revert).",
+  "description": "Production-grade Unity 6.1-6.3 MCP server for scene and asset authoring, project/build/test workflows, runtime gameplay validation, package-gated ecosystem integrations, structured health reporting, and registry-generated tool inventory. Includes stable Unity targets, Undo-safe mutations, explicit save operations, capability gates, and two-step confirmation for high-risk tools.",
   "unity": "6000.1",
   "author": {
     "name": "Maicon Gonçalez",

@@ -18,6 +18,29 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools
             },
         };
 
+        public static JObject TargetRefSchema => new JObject
+        {
+            ["type"] = "object",
+            ["description"] = "Stable Unity target reference. Prefer globalObjectId; instanceId remains a session-local fallback.",
+            ["properties"] = new JObject
+            {
+                ["kind"] = new JObject { ["type"] = "string" },
+                ["instanceId"] = new JObject { ["type"] = "integer" },
+                ["globalObjectId"] = new JObject { ["type"] = "string" },
+                ["assetGuid"] = new JObject { ["type"] = "string" },
+                ["localFileId"] = new JObject { ["type"] = "integer" },
+                ["assetPath"] = new JObject { ["type"] = "string" },
+                ["sceneGuid"] = new JObject { ["type"] = "string" },
+                ["scenePath"] = new JObject { ["type"] = "string" },
+                ["sceneHandle"] = new JObject { ["type"] = "integer" },
+                ["hierarchyPath"] = new JObject { ["type"] = "string" },
+                ["componentType"] = new JObject { ["type"] = "string" },
+                ["componentOrdinal"] = new JObject { ["type"] = "integer" },
+                ["isPrefabStage"] = new JObject { ["type"] = "boolean" },
+            },
+            ["additionalProperties"] = false,
+        };
+
         public static JObject RotSchema => new JObject
         {
             ["description"] = "Euler degrees [x,y,z] or quaternion [x,y,z,w] / {x,y,z,w}.",

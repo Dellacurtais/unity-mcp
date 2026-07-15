@@ -1,22 +1,24 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Net;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.Networking;
 
 namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
 {
-    /// HTTP client for the Python mesh-analytics sidecar
-    /// (`Sidecar~/main.py`). Speaks /health, /methods, /segment.
-    /// Serialises a Mesh to a Wavefront OBJ string and parses the returned
-    /// regions into structures the C# tool layer can echo to the LLM.
     public static class MeshSidecarClient
     {
         public const string DefaultUrl = "http://127.0.0.1:8766";
-
-        // ---- request / response shapes ----
+        public const int MaxVertices = 500_000;
+        public const int MaxFaces = 1_000_000;
+        public const int MaxRequestBytes = 64 * 1024 * 1024;
+        public const int MaxResponseBytes = 64 * 1024 * 1024;
 
         public sealed class SegmentParams
         {
@@ -47,7 +49,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             public JObject Info;
             public float ElapsedMs;
             public string Error;
-            public string ErrorCode;       // "SIDECAR_UNREACHABLE" / "SIDECAR_HTTP_<status>" / "PARSE_FAILED" / null on success
+            public string ErrorCode;
         }
 
         public sealed class HealthResult
@@ -56,6 +58,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             public string Service;
             public string Version;
             public string Error;
+            public string ErrorCode;
         }
 
         public sealed class MethodInfo
@@ -65,204 +68,293 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             public bool ProducesLabels;
         }
 
-        // ---- /health ----
-
-        public static HealthResult Health(string sidecarUrl, int timeoutSeconds = 5)
+        private sealed class HttpTextResult
         {
-            if (string.IsNullOrEmpty(sidecarUrl)) sidecarUrl = DefaultUrl;
-            using var req = UnityWebRequest.Get(sidecarUrl.TrimEnd('/') + "/health");
-            req.timeout = Mathf.Clamp(timeoutSeconds, 1, 60);
-            var op = req.SendWebRequest();
-            while (!op.isDone) { /* spin — Editor main thread */ }
-            if (req.result != UnityWebRequest.Result.Success)
-                return new HealthResult { Ok = false, Error = $"{req.responseCode}: {req.error}" };
-            try
-            {
-                var j = JObject.Parse(req.downloadHandler.text);
+            public long StatusCode;
+            public string Text;
+            public string Error;
+            public UnityWebRequest.Result Result;
+        }
+
+        public static async Task<HealthResult> HealthAsync(
+            string sidecarUrl, int timeoutSeconds = 5, CancellationToken cancellationToken = default)
+        {
+            if (!TryNormalizeUrl(sidecarUrl, out var baseUrl, out var urlError))
+                return new HealthResult { ErrorCode = "SIDECAR_URL_REJECTED", Error = urlError };
+            var response = await SendTextAsync(
+                () => UnityWebRequest.Get(baseUrl + "/health"), timeoutSeconds, cancellationToken);
+            if (response.Result != UnityWebRequest.Result.Success)
                 return new HealthResult
                 {
-                    Ok = (string)j["status"] == "ok",
-                    Service = (string)j["service"],
-                    Version = (string)j["version"],
+                    ErrorCode = response.Result == UnityWebRequest.Result.ConnectionError
+                        ? "SIDECAR_UNREACHABLE"
+                        : $"SIDECAR_HTTP_{response.StatusCode}",
+                    Error = $"{response.StatusCode}: {response.Error}. Body: {Truncate(response.Text, 300)}",
                 };
-            }
-            catch (Exception e)
-            {
-                return new HealthResult { Ok = false, Error = $"parse failed: {e.Message}" };
-            }
-        }
-
-        // ---- /methods ----
-
-        public static List<MethodInfo> ListMethods(string sidecarUrl, int timeoutSeconds = 5)
-        {
-            if (string.IsNullOrEmpty(sidecarUrl)) sidecarUrl = DefaultUrl;
-            using var req = UnityWebRequest.Get(sidecarUrl.TrimEnd('/') + "/methods");
-            req.timeout = Mathf.Clamp(timeoutSeconds, 1, 60);
-            var op = req.SendWebRequest();
-            while (!op.isDone) { /* spin */ }
-            if (req.result != UnityWebRequest.Result.Success) return null;
             try
             {
-                var arr = JArray.Parse(req.downloadHandler.text);
-                var list = new List<MethodInfo>();
-                foreach (var item in arr)
+                var json = JObject.Parse(response.Text);
+                return new HealthResult
                 {
-                    list.Add(new MethodInfo
-                    {
-                        Name = (string)item["name"],
-                        Description = (string)item["description"],
-                        ProducesLabels = (bool?)item["produces_labels"] ?? false,
-                    });
-                }
-                return list;
+                    Ok = string.Equals((string)json["status"], "ok", StringComparison.Ordinal),
+                    Service = (string)json["service"],
+                    Version = (string)json["version"],
+                };
             }
-            catch { return null; }
+            catch (Exception exception)
+            {
+                return new HealthResult { ErrorCode = "PARSE_FAILED", Error = exception.Message };
+            }
         }
 
-        // ---- /segment ----
-
-        public static SegmentResult Segment(Mesh mesh, Matrix4x4 localToWorld,
-            string sidecarUrl, SegmentParams p, int timeoutSeconds)
+        public static async Task<List<MethodInfo>> ListMethodsAsync(
+            string sidecarUrl, int timeoutSeconds = 5, CancellationToken cancellationToken = default)
         {
-            if (mesh == null) return Fail("BAD_ARGS", "mesh is null");
-            if (p == null) p = new SegmentParams();
-            if (string.IsNullOrEmpty(sidecarUrl)) sidecarUrl = DefaultUrl;
+            if (!TryNormalizeUrl(sidecarUrl, out var baseUrl, out var urlError))
+                throw new InvalidOperationException(urlError);
+            var response = await SendTextAsync(
+                () => UnityWebRequest.Get(baseUrl + "/methods"), timeoutSeconds, cancellationToken);
+            if (response.Result != UnityWebRequest.Result.Success)
+                throw new InvalidOperationException(
+                    $"sidecar methods request failed ({response.StatusCode}): {response.Error}");
 
-            string obj;
-            try { obj = MeshToObj(mesh, localToWorld); }
-            catch (Exception e) { return Fail("OBJ_SERIALISE_FAILED", e.Message); }
+            var array = JArray.Parse(response.Text);
+            var methods = new List<MethodInfo>(array.Count);
+            foreach (var item in array)
+            {
+                methods.Add(new MethodInfo
+                {
+                    Name = (string)item["name"],
+                    Description = (string)item["description"],
+                    ProducesLabels = (bool?)item["produces_labels"] ?? false,
+                });
+            }
+            return methods;
+        }
+
+        public static async Task<SegmentResult> SegmentAsync(
+            string meshObj, string sidecarUrl, SegmentParams parameters, int timeoutSeconds,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrEmpty(meshObj)) return Fail("BAD_ARGS", "mesh OBJ payload is empty");
+            if (!TryNormalizeUrl(sidecarUrl, out var baseUrl, out var urlError))
+                return Fail("SIDECAR_URL_REJECTED", urlError);
+            parameters = parameters ?? new SegmentParams();
 
             var body = new JObject
             {
-                ["mesh_obj"] = obj,
-                ["method"] = p.Method,
-                ["min_face_count"] = p.MinFaceCount,
-                ["normal_buckets"] = p.NormalBuckets,
-                ["ransac_angle_tolerance_deg"] = p.RansacAngleToleranceDeg,
-                ["ransac_distance_tolerance"] = p.RansacDistanceTolerance,
-                ["ransac_max_planes"] = p.RansacMaxPlanes,
-                ["region_growing_frontier_deg"] = p.RegionGrowingFrontierDeg,
+                ["mesh_obj"] = meshObj,
+                ["method"] = parameters.Method,
+                ["min_face_count"] = parameters.MinFaceCount,
+                ["normal_buckets"] = parameters.NormalBuckets,
+                ["ransac_angle_tolerance_deg"] = parameters.RansacAngleToleranceDeg,
+                ["ransac_distance_tolerance"] = parameters.RansacDistanceTolerance,
+                ["ransac_max_planes"] = parameters.RansacMaxPlanes,
+                ["region_growing_frontier_deg"] = parameters.RegionGrowingFrontierDeg,
             };
             var bodyBytes = Encoding.UTF8.GetBytes(body.ToString(Newtonsoft.Json.Formatting.None));
+            if (bodyBytes.Length > MaxRequestBytes)
+                return Fail("SIDECAR_REQUEST_TOO_LARGE",
+                    $"sidecar request is {bodyBytes.Length} bytes; limit is {MaxRequestBytes}");
 
-            using var req = new UnityWebRequest(sidecarUrl.TrimEnd('/') + "/segment", "POST");
-            req.uploadHandler = new UploadHandlerRaw(bodyBytes) { contentType = "application/json" };
-            req.downloadHandler = new DownloadHandlerBuffer();
-            req.timeout = Mathf.Clamp(timeoutSeconds, 1, 600);
-
-            var op = req.SendWebRequest();
-            while (!op.isDone) { /* spin */ }
-
-            if (req.result == UnityWebRequest.Result.ConnectionError)
+            var response = await SendTextAsync(() =>
             {
-                return Fail("SIDECAR_UNREACHABLE",
-                    $"connection failed to {sidecarUrl}: {req.error}. " +
-                    $"Start the sidecar with `uvicorn main:app --port 8766` from " +
-                    $"extensions/unity-scene-analyzer/Sidecar~/. See README.md there.");
-            }
-            if (req.result != UnityWebRequest.Result.Success)
-            {
-                string snippet = Truncate(req.downloadHandler?.text, 300);
-                return Fail($"SIDECAR_HTTP_{req.responseCode}",
-                    $"{req.error}. Body: {snippet}");
-            }
-
-            try
-            {
-                var json = JObject.Parse(req.downloadHandler.text);
-                var regions = new List<SegmentRegion>();
-                foreach (var r in (JArray)json["regions"])
+                var request = new UnityWebRequest(baseUrl + "/segment", "POST")
                 {
-                    var faceArr = (JArray)r["face_indices"];
-                    var faces = new int[faceArr.Count];
-                    for (int i = 0; i < faceArr.Count; i++) faces[i] = (int)faceArr[i];
-                    var n = (JArray)r["avg_normal"];
-                    Bounds? bounds = null;
-                    if (r["world_bounds"] is JObject wb)
-                    {
-                        var mn = (JArray)wb["min"];
-                        var mx = (JArray)wb["max"];
-                        var center = new Vector3(
-                            ((float)mn[0] + (float)mx[0]) * 0.5f,
-                            ((float)mn[1] + (float)mx[1]) * 0.5f,
-                            ((float)mn[2] + (float)mx[2]) * 0.5f);
-                        var size = new Vector3(
-                            (float)mx[0] - (float)mn[0],
-                            (float)mx[1] - (float)mn[1],
-                            (float)mx[2] - (float)mn[2]);
-                        bounds = new Bounds(center, size);
-                    }
-                    regions.Add(new SegmentRegion
-                    {
-                        RegionId = (string)r["region_id"],
-                        FaceIndices = faces,
-                        FaceCount = (int)r["face_count"],
-                        AvgNormal = new Vector3((float)n[0], (float)n[1], (float)n[2]),
-                        Classification = (string)r["classification"] ?? "unknown",
-                        Confidence = (float?)r["confidence"] ?? 1f,
-                        WorldBounds = bounds,
-                    });
-                }
-                return new SegmentResult
-                {
-                    Method = (string)json["method"],
-                    Regions = regions,
-                    Info = (JObject)json["info"],
-                    ElapsedMs = (float?)json["elapsed_ms"] ?? 0f,
+                    uploadHandler = new UploadHandlerRaw(bodyBytes) { contentType = "application/json" },
+                    downloadHandler = new DownloadHandlerBuffer(),
                 };
-            }
-            catch (Exception e)
+                request.SetRequestHeader("Accept", "application/json");
+                return request;
+            }, timeoutSeconds, cancellationToken);
+
+            if (response.Result == UnityWebRequest.Result.ConnectionError)
+                return Fail("SIDECAR_UNREACHABLE",
+                    $"connection failed to {baseUrl}: {response.Error}. Start `uvicorn main:app --host 127.0.0.1 --port 8766` from Sidecar~/.");
+            if (response.Result != UnityWebRequest.Result.Success)
+                return Fail($"SIDECAR_HTTP_{response.StatusCode}",
+                    $"{response.Error}. Body: {Truncate(response.Text, 300)}");
+
+            try { return ParseSegment(response.Text); }
+            catch (Exception exception)
             {
-                return Fail("PARSE_FAILED", $"{e.Message}. Body: {Truncate(req.downloadHandler.text, 300)}");
+                return Fail("PARSE_FAILED", $"{exception.Message}. Body: {Truncate(response.Text, 300)}");
             }
         }
 
-        // ---- serialisation ----
-
-        /// Minimal Wavefront OBJ writer. Vertex positions in world space
-        /// (`localToWorld` applied) + face indices. Triangle indices are
-        /// preserved 1:1, so `face_indices` round-tripped from the sidecar
-        /// map back to `mesh.triangles[3*i .. 3*i+2]` on this side.
-        ///
-        /// All floats are formatted with `InvariantCulture` — under
-        /// non-period decimal locales (pt-BR, de-DE, fr-FR, ...) the
-        /// default `float.ToString("R")` emits commas, which the OBJ
-        /// spec doesn't allow and trimesh rejects with a 400.
         public static string MeshToObj(Mesh mesh, Matrix4x4 localToWorld)
         {
-            var inv = CultureInfo.InvariantCulture;
-            var sb = new StringBuilder();
-            sb.Append("# scene-analyzer mesh-analytics sidecar payload\n");
-            var verts = mesh.vertices;
-            for (int i = 0; i < verts.Length; i++)
+            if (mesh == null) throw new ArgumentNullException(nameof(mesh));
+            var vertices = mesh.vertices;
+            var triangles = mesh.triangles;
+            if (vertices.Length > MaxVertices)
+                throw new InvalidOperationException($"mesh has {vertices.Length} vertices; sidecar limit is {MaxVertices}");
+            if (triangles.Length / 3 > MaxFaces)
+                throw new InvalidOperationException($"mesh has {triangles.Length / 3} faces; sidecar limit is {MaxFaces}");
+
+            var invariant = CultureInfo.InvariantCulture;
+            var builder = new StringBuilder(Math.Min(MaxRequestBytes, vertices.Length * 40 + triangles.Length * 8));
+            builder.Append("# scene-analyzer mesh sidecar payload\n");
+            for (int i = 0; i < vertices.Length; i++)
             {
-                var v = localToWorld.MultiplyPoint3x4(verts[i]);
-                sb.Append("v ").Append(v.x.ToString("R", inv)).Append(' ')
-                  .Append(v.y.ToString("R", inv)).Append(' ')
-                  .Append(v.z.ToString("R", inv)).Append('\n');
+                var vertex = localToWorld.MultiplyPoint3x4(vertices[i]);
+                builder.Append("v ").Append(vertex.x.ToString("R", invariant)).Append(' ')
+                    .Append(vertex.y.ToString("R", invariant)).Append(' ')
+                    .Append(vertex.z.ToString("R", invariant)).Append('\n');
+                if (builder.Length > MaxRequestBytes)
+                    throw new InvalidOperationException($"OBJ payload exceeds {MaxRequestBytes} characters");
             }
-            var tris = mesh.triangles;
-            int triCount = tris.Length / 3;
-            for (int t = 0; t < triCount; t++)
+            for (int face = 0; face < triangles.Length / 3; face++)
             {
-                int a = tris[3 * t + 0] + 1;
-                int b = tris[3 * t + 1] + 1;
-                int c = tris[3 * t + 2] + 1;
-                sb.Append("f ").Append(a).Append(' ').Append(b).Append(' ').Append(c).Append('\n');
+                builder.Append("f ").Append(triangles[face * 3] + 1).Append(' ')
+                    .Append(triangles[face * 3 + 1] + 1).Append(' ')
+                    .Append(triangles[face * 3 + 2] + 1).Append('\n');
+                if (builder.Length > MaxRequestBytes)
+                    throw new InvalidOperationException($"OBJ payload exceeds {MaxRequestBytes} characters");
             }
-            return sb.ToString();
+            return builder.ToString();
         }
 
-        // ---- internals ----
+        public static bool TryNormalizeUrl(string sidecarUrl, out string baseUrl, out string error)
+        {
+            baseUrl = null;
+            error = null;
+            if (string.IsNullOrWhiteSpace(sidecarUrl)) sidecarUrl = DefaultUrl;
+            if (!Uri.TryCreate(sidecarUrl, UriKind.Absolute, out var uri))
+            {
+                error = "sidecarUrl must be an absolute URL";
+                return false;
+            }
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "sidecarUrl must use http on a loopback address";
+                return false;
+            }
+            if (!uri.IsLoopback && !string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+                && !IPAddress.TryParse(uri.Host, out var address))
+            {
+                error = "sidecarUrl must target localhost/loopback";
+                return false;
+            }
+            if (IPAddress.TryParse(uri.Host, out var parsed) && !IPAddress.IsLoopback(parsed))
+            {
+                error = "sidecarUrl must target localhost/loopback";
+                return false;
+            }
+            if (!string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+            {
+                error = "sidecarUrl must not contain credentials, query, or fragment";
+                return false;
+            }
+            baseUrl = uri.GetLeftPart(UriPartial.Authority).TrimEnd('/');
+            return true;
+        }
+
+        private static async Task<HttpTextResult> SendTextAsync(
+            Func<UnityWebRequest> requestFactory, int timeoutSeconds, CancellationToken cancellationToken)
+        {
+            UnityWebRequest request = null;
+            try
+            {
+                request = await MainThreadDispatcher.RunAsync(() =>
+                {
+                    var created = requestFactory();
+                    created.timeout = Mathf.Clamp(timeoutSeconds, 1, 600);
+                    return created;
+                }, cancellationToken);
+
+                var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                UnityWebRequestAsyncOperation operation = null;
+                await MainThreadDispatcher.RunAsync(() =>
+                {
+                    operation = request.SendWebRequest();
+                    operation.completed += _ => completion.TrySetResult(true);
+                    if (operation.isDone) completion.TrySetResult(true);
+                }, cancellationToken);
+
+                using (cancellationToken.Register(() =>
+                {
+                    completion.TrySetCanceled(cancellationToken);
+                    _ = MainThreadDispatcher.RunAsync(() => request?.Abort());
+                }))
+                {
+                    await completion.Task;
+                }
+
+                return await MainThreadDispatcher.RunAsync(() =>
+                {
+                    var bytes = request.downloadHandler?.data;
+                    if (bytes != null && bytes.Length > MaxResponseBytes)
+                        throw new InvalidOperationException(
+                            $"sidecar response is {bytes.Length} bytes; limit is {MaxResponseBytes}");
+                    return new HttpTextResult
+                    {
+                        StatusCode = request.responseCode,
+                        Text = request.downloadHandler?.text ?? string.Empty,
+                        Error = request.error,
+                        Result = request.result,
+                    };
+                }, cancellationToken);
+            }
+            finally
+            {
+                if (request != null)
+                {
+                    try { await MainThreadDispatcher.RunAsync(request.Dispose); }
+                    catch { request.Dispose(); }
+                }
+            }
+        }
+
+        private static SegmentResult ParseSegment(string text)
+        {
+            var json = JObject.Parse(text);
+            var regions = new List<SegmentRegion>();
+            foreach (var token in json["regions"] as JArray ?? new JArray())
+            {
+                var facesJson = token["face_indices"] as JArray ?? new JArray();
+                var faces = new int[facesJson.Count];
+                for (int i = 0; i < faces.Length; i++) faces[i] = (int)facesJson[i];
+                var normal = token["avg_normal"] as JArray ?? throw new InvalidOperationException("region avg_normal is missing");
+                Bounds? bounds = null;
+                if (token["world_bounds"] is JObject boundsJson)
+                {
+                    var min = boundsJson["min"] as JArray;
+                    var max = boundsJson["max"] as JArray;
+                    if (min != null && max != null && min.Count >= 3 && max.Count >= 3)
+                    {
+                        var minimum = new Vector3((float)min[0], (float)min[1], (float)min[2]);
+                        var maximum = new Vector3((float)max[0], (float)max[1], (float)max[2]);
+                        bounds = new Bounds((minimum + maximum) * 0.5f, maximum - minimum);
+                    }
+                }
+                regions.Add(new SegmentRegion
+                {
+                    RegionId = (string)token["region_id"],
+                    FaceIndices = faces,
+                    FaceCount = (int?)token["face_count"] ?? faces.Length,
+                    AvgNormal = new Vector3((float)normal[0], (float)normal[1], (float)normal[2]),
+                    Classification = (string)token["classification"] ?? "unknown",
+                    Confidence = (float?)token["confidence"] ?? 1f,
+                    WorldBounds = bounds,
+                });
+            }
+            return new SegmentResult
+            {
+                Method = (string)json["method"],
+                Regions = regions,
+                Info = json["info"] as JObject ?? new JObject(),
+                ElapsedMs = (float?)json["elapsed_ms"] ?? 0f,
+            };
+        }
 
         private static SegmentResult Fail(string code, string message)
-            => new SegmentResult { Error = message, ErrorCode = code };
+            => new SegmentResult { Error = message, ErrorCode = code, Regions = new List<SegmentRegion>() };
 
-        private static string Truncate(string s, int n)
+        private static string Truncate(string value, int length)
         {
-            if (string.IsNullOrEmpty(s)) return "";
-            return s.Length <= n ? s : s.Substring(0, n) + "...";
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            return value.Length <= length ? value : value.Substring(0, length) + "...";
         }
     }
 }

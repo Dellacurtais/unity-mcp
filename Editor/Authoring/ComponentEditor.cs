@@ -1,4 +1,5 @@
 using System;
+using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -145,6 +146,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             => ComponentTypeInspector.ResolveType(name);
 
         public static void ApplyValue(SerializedProperty prop, JToken value)
+        {
+            SerializedValueCodec.Apply(prop, value);
+        }
+
+        private static void ApplyValueLegacy(SerializedProperty prop, JToken value)
         {
             if (value == null || value.Type == JTokenType.Null) return;
 

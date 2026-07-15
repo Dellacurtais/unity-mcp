@@ -1,0 +1,24 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.Optional.Cinemachine",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.Optional.Cinemachine",
+  "references": [
+    "com.maicon.scene-analyzer",
+    "com.maicon.scene-analyzer.Editor",
+    "Unity.Newtonsoft.Json"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_CINEMACHINE"],
+  "versionDefines": [
+    {
+      "name": "com.unity.cinemachine",
+      "expression": "3.0.0",
+      "define": "SCENE_ANALYZER_HAS_CINEMACHINE"
+    }
+  ],
+  "noEngineReferences": false
+}

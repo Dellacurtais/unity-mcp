@@ -8,288 +8,364 @@ using Debug = UnityEngine.Debug;
 
 namespace Maicon.SceneAnalyzer.Bridge
 {
-    /// In-scene MonoBehaviour that lets editor-side AI tools dispatch named
-    /// commands into a running game. The editor enqueues a BridgeScript; this
-    /// component drains the queue in Update, invokes registered handlers in
-    /// order, captures screenshots / log anchors when requested, and marks
-    /// each script complete so the editor channel can return the results to
-    /// the calling MCP tool.
-    ///
-    /// Game-agnostic: this component does not know about your game. You wire
-    /// it up by calling `McpCommandBridge.Register("jump", (json, complete) => { ... });`
-    /// from your own MonoBehaviour's Start(). See Runtime/Bridge/README.md.
-    ///
-    /// Threading: Register/UnregisterHandler are thread-safe. Submit (called
-    /// from the editor) and Update (Unity main thread) coordinate through a
-    /// ConcurrentQueue. Handler invocation is always on the Unity main thread.
     public sealed class McpCommandBridge : MonoBehaviour
     {
         public delegate void CommandHandler(string payloadJson, Action<bool, string> complete);
 
-        [Tooltip("When true, the bridge GameObject survives runtime scene loads " +
-                 "(DontDestroyOnLoad). Set by bridge_install; you can flip this in " +
-                 "the inspector if you'd rather the bridge be scene-scoped.")]
+        [Tooltip("Keep the bridge alive across runtime scene loads.")]
         public bool dontDestroyOnLoad = true;
+        [Min(1)] public int maxQueuedScripts = 32;
+        [Min(1)] public int defaultHandlerTimeoutFrames = 600;
+        [Min(0.1f)] public float defaultHandlerTimeoutSeconds = 10f;
 
-        // Static accessors so the editor side can talk to "the" bridge without
-        // a scene lookup. Awake binds; OnDestroy clears.
         public static McpCommandBridge Instance { get; private set; }
         public static bool Exists => Instance != null;
 
-        private readonly ConcurrentQueue<BridgeScript> _inbox = new();
-        private readonly Dictionary<string, CommandHandler> _handlers = new();
-        private readonly object _handlersLock = new();
+        private readonly ConcurrentQueue<BridgeScript> _inbox = new ConcurrentQueue<BridgeScript>();
+        private readonly ConcurrentDictionary<int, BridgeScript> _scripts = new ConcurrentDictionary<int, BridgeScript>();
+        private readonly Dictionary<string, CommandHandler> _handlers = new Dictionary<string, CommandHandler>(StringComparer.Ordinal);
+        private readonly object _handlersLock = new object();
+        private Coroutine _running;
+        private BridgeScript _runningScript;
+        private bool _shuttingDown;
 
-        // For introspection from the editor.
         public sealed class DispatchInfo
         {
             public string LastStepName;
             public int LastFrameCount;
             public bool LastOk;
             public string LastError;
+            public int LastScriptId;
+            public BridgeScriptStatus LastScriptStatus;
         }
-        public DispatchInfo Last { get; } = new DispatchInfo();
 
+        public DispatchInfo Last { get; } = new DispatchInfo();
         public int QueuedScripts => _inbox.Count;
+        public int ActiveScripts => _scripts.Count;
+        public int RunningScriptId => _runningScript != null ? _runningScript.Id : 0;
         public IReadOnlyCollection<string> RegisteredHandlerNames
         {
-            get
-            {
-                lock (_handlersLock) return new List<string>(_handlers.Keys);
-            }
+            get { lock (_handlersLock) return new List<string>(_handlers.Keys); }
         }
 
-        // ---- Handler registration ---------------------------------------------------
         public static void Register(string name, CommandHandler handler)
         {
-            if (string.IsNullOrEmpty(name)) throw new ArgumentException("name required");
+            if (string.IsNullOrEmpty(name)) throw new ArgumentException("name required", nameof(name));
             if (handler == null) throw new ArgumentNullException(nameof(handler));
             if (Instance == null)
             {
-                Debug.LogWarning($"[scene-analyzer] McpCommandBridge.Register('{name}') called before the bridge exists in the scene. " +
-                                 "Either register from a script attached to the same GameObject, or call bridge_install from the AI before registering.");
+                Debug.LogWarning($"[scene-analyzer] McpCommandBridge.Register('{name}') called before the bridge exists.");
                 return;
             }
-            lock (Instance._handlersLock)
-            {
-                Instance._handlers[name] = handler;
-            }
+            lock (Instance._handlersLock) Instance._handlers[name] = handler;
         }
 
         public static bool Unregister(string name)
         {
             if (Instance == null) return false;
-            lock (Instance._handlersLock)
-            {
-                return Instance._handlers.Remove(name);
-            }
+            lock (Instance._handlersLock) return Instance._handlers.Remove(name);
         }
 
-        // ---- Editor → runtime submission --------------------------------------------
         public void Submit(BridgeScript script)
         {
-            if (script == null) throw new ArgumentNullException(nameof(script));
-            _inbox.Enqueue(script);
+            if (!TrySubmit(script, out var error)) throw new InvalidOperationException(error);
         }
 
-        // ---- Lifecycle --------------------------------------------------------------
+        public bool TrySubmit(BridgeScript script, out string error)
+        {
+            error = null;
+            if (script == null) { error = "SCRIPT_REQUIRED"; return false; }
+            if (script.CancelRequested || script.IsComplete) { error = "SCRIPT_CANCELLED"; return false; }
+            if (_shuttingDown || !isActiveAndEnabled) { error = "BRIDGE_UNAVAILABLE"; return false; }
+            if (script.Steps == null || script.Steps.Count == 0) { error = "SCRIPT_EMPTY"; return false; }
+            if (_scripts.Count >= Mathf.Max(1, maxQueuedScripts)) { error = "BRIDGE_QUEUE_FULL"; return false; }
+            if (!_scripts.TryAdd(script.Id, script)) { error = "DUPLICATE_SCRIPT_ID"; return false; }
+            script.SubmittedUtcTicks = DateTime.UtcNow.Ticks;
+            _inbox.Enqueue(script);
+            return true;
+        }
+
+        public bool Cancel(int scriptId, string reason = "CANCELLED_BY_CALLER")
+        {
+            if (!_scripts.TryGetValue(scriptId, out var script)) return false;
+            script.RequestCancel(reason);
+            if (script.Status == BridgeScriptStatus.Queued) Finish(script, BridgeScriptStatus.Cancelled, reason);
+            return true;
+        }
+
+        public int CancelAll(string reason = "BRIDGE_STOPPED")
+        {
+            int count = 0;
+            foreach (var pair in _scripts)
+            {
+                if (!pair.Value.IsComplete)
+                {
+                    count++;
+                    pair.Value.RequestCancel(reason);
+                    if (pair.Value.Status == BridgeScriptStatus.Queued)
+                        Finish(pair.Value, BridgeScriptStatus.Cancelled, reason);
+                }
+            }
+            return count;
+        }
+
         private void Awake()
         {
             if (Instance != null && Instance != this)
             {
-                Debug.LogWarning("[scene-analyzer] Duplicate McpCommandBridge detected — destroying the new one.");
-                UnityEngine.Object.Destroy(gameObject);
+                Debug.LogWarning("[scene-analyzer] Duplicate McpCommandBridge detected; destroying the new one.");
+                Destroy(gameObject);
                 return;
             }
             Instance = this;
-            if (dontDestroyOnLoad && Application.isPlaying)
-            {
-                DontDestroyOnLoad(gameObject);
-            }
+            _shuttingDown = false;
+            if (dontDestroyOnLoad && Application.isPlaying) DontDestroyOnLoad(gameObject);
+        }
+
+        private void OnEnable() { _shuttingDown = false; }
+
+        private void OnDisable()
+        {
+            _shuttingDown = true;
+            CancelAll("BRIDGE_DISABLED");
+            if (_running != null) StopCoroutine(_running);
+            if (_runningScript != null && !_runningScript.IsComplete)
+                Finish(_runningScript, BridgeScriptStatus.Cancelled, "BRIDGE_DISABLED");
+            _running = null;
+            _runningScript = null;
         }
 
         private void OnDestroy()
         {
+            _shuttingDown = true;
+            CancelAll("BRIDGE_DESTROYED");
+            lock (_handlersLock) _handlers.Clear();
             if (Instance == this) Instance = null;
+        }
+
+        private void OnApplicationQuit()
+        {
+            _shuttingDown = true;
+            CancelAll("APPLICATION_QUIT");
         }
 
         private void Update()
         {
-            // Pull one script at a time and run it as a coroutine. Scripts run
-            // sequentially — submitting many in flight is allowed but they
-            // serialize, which keeps the timeline interpretation predictable.
-            if (_running != null) return;
-            if (!_inbox.TryDequeue(out var script)) return;
-            _running = StartCoroutine(RunScript(script));
+            if (_running != null || _shuttingDown) return;
+            while (_inbox.TryDequeue(out var script))
+            {
+                if (script.IsComplete) continue;
+                if (script.CancelRequested)
+                {
+                    Finish(script, BridgeScriptStatus.Cancelled, script.TerminalError ?? "CANCELLED");
+                    continue;
+                }
+                _runningScript = script;
+                _running = StartCoroutine(RunScript(script));
+                return;
+            }
         }
-
-        private Coroutine _running;
 
         private IEnumerator RunScript(BridgeScript script)
         {
-            script.StartedExecution = true;
+            if (!script.TryStart())
+            {
+                Finish(script, script.CancelRequested ? BridgeScriptStatus.Cancelled : BridgeScriptStatus.Failed,
+                    script.TerminalError ?? "SCRIPT_COULD_NOT_START");
+                yield break;
+            }
+
+            BridgeScriptStatus terminal = BridgeScriptStatus.Completed;
+            string terminalError = null;
             try
             {
                 for (int i = 0; i < script.Steps.Count; i++)
                 {
+                    if (script.CancelRequested) { terminal = BridgeScriptStatus.Cancelled; terminalError = script.TerminalError ?? "CANCELLED"; break; }
                     var step = script.Steps[i];
-                    var result = new BridgeStepResult
-                    {
-                        Name = step.Name,
-                        FrameAtStart = Time.frameCount,
-                    };
+                    var result = new BridgeStepResult { Name = step.Name, FrameAtStart = Time.frameCount };
 
-                    // Inter-step delay (frame-based for determinism).
-                    for (int f = 0; f < step.DelayFrames; f++) yield return null;
-
-                    // Log anchor BEFORE invocation if requested.
-                    if (step.MarkLogAnchorBefore)
+                    for (int frame = 0; frame < Mathf.Max(0, step.DelayFrames); frame++)
                     {
-                        result.LogAnchorSeq = TryGetEditorLogSeq();
+                        if (script.CancelRequested) break;
+                        yield return null;
                     }
+                    if (script.CancelRequested) { terminal = BridgeScriptStatus.Cancelled; terminalError = script.TerminalError ?? "CANCELLED"; break; }
 
-                    // Resolve handler.
-                    CommandHandler handler = null;
+                    if (step.MarkLogAnchorBefore) result.LogAnchorSeq = TryGetEditorLogSeq();
+                    CommandHandler handler;
                     lock (_handlersLock) _handlers.TryGetValue(step.Name, out handler);
-
                     if (handler == null)
                     {
-                        result.Ok = false;
-                        result.Error = "HANDLER_NOT_REGISTERED";
-                        result.FrameAtEnd = Time.frameCount;
-                        script.Results.Add(result);
-                        UpdateLast(result);
-                        if (script.StopOnError) break;
-                        else continue;
+                        CompleteStep(script, result, false, "HANDLER_NOT_REGISTERED", 0f);
+                        if (script.StopOnError) { terminal = BridgeScriptStatus.Failed; terminalError = result.Error; break; }
+                        continue;
                     }
 
-                    var sw = Stopwatch.StartNew();
+                    var stopwatch = Stopwatch.StartNew();
                     bool completed = false;
-                    bool ok = false;
-                    string err = null;
+                    bool succeeded = false;
+                    bool acceptCallback = true;
+                    string error = null;
                     try
                     {
-                        handler(step.PayloadJson ?? "", (success, errorMsg) =>
+                        handler(step.PayloadJson ?? string.Empty, (ok, message) =>
                         {
+                            if (!acceptCallback || completed) return;
                             completed = true;
-                            ok = success;
-                            err = errorMsg;
+                            succeeded = ok;
+                            error = message;
                         });
                     }
-                    catch (Exception e)
+                    catch (Exception exception)
                     {
                         completed = true;
-                        ok = false;
-                        err = $"handler threw: {e.GetType().Name}: {e.Message}";
+                        error = $"handler threw: {exception.GetType().Name}: {exception.Message}";
                     }
 
-                    // Cooperative wait for async handlers — they have until end
-                    // of the current frame plus a safety cap. Tweakable later.
-                    int safetyFrames = 600;
-                    while (!completed && safetyFrames-- > 0) yield return null;
+                    int timeoutFrames = step.TimeoutFrames > 0 ? step.TimeoutFrames : Mathf.Max(1, defaultHandlerTimeoutFrames);
+                    float timeoutSeconds = step.TimeoutSeconds > 0f ? step.TimeoutSeconds : Mathf.Max(0.1f, defaultHandlerTimeoutSeconds);
+                    int startFrame = Time.frameCount;
+                    float startRealtime = Time.realtimeSinceStartup;
+                    while (!completed && !script.CancelRequested
+                        && Time.frameCount - startFrame < timeoutFrames
+                        && Time.realtimeSinceStartup - startRealtime < timeoutSeconds)
+                        yield return null;
 
-                    sw.Stop();
-                    result.Ok = completed && ok;
-                    result.Error = completed ? err : "HANDLER_TIMEOUT_NO_COMPLETE_CALLBACK";
-                    result.DurationMs = (float)sw.Elapsed.TotalMilliseconds;
+                    acceptCallback = false;
+                    stopwatch.Stop();
+                    if (script.CancelRequested)
+                    {
+                        terminal = BridgeScriptStatus.Cancelled;
+                        terminalError = script.TerminalError ?? "CANCELLED";
+                        break;
+                    }
+                    if (!completed)
+                    {
+                        error = $"HANDLER_TIMEOUT: no completion callback within {timeoutFrames} frames/{timeoutSeconds:F1}s";
+                        succeeded = false;
+                    }
+
+                    result.Ok = completed && succeeded;
+                    result.Error = result.Ok ? null : error ?? "HANDLER_FAILED";
+                    result.DurationMs = (float)stopwatch.Elapsed.TotalMilliseconds;
                     result.FrameAtEnd = Time.frameCount;
 
-                    // Optional screenshot AFTER the step. Render path is left
-                    // for the editor side to ask via screenshot_game_view if it
-                    // wants the same camera-selection logic. To keep the bridge
-                    // self-contained for "send_runtime_commands { captureScreenshotAfter:true }",
-                    // we sample Camera.main here at end-of-frame.
-                    if (step.CaptureScreenshotAfter)
+                    if (step.CaptureScreenshotAfter && !script.CancelRequested)
                     {
                         yield return new WaitForEndOfFrame();
-                        TryCapture(result);
+                        if (!script.CancelRequested) TryCapture(result);
                     }
-
                     script.Results.Add(result);
-                    UpdateLast(result);
-
-                    if (!result.Ok && script.StopOnError) break;
+                    UpdateLast(script, result);
+                    if (!result.Ok && script.StopOnError)
+                    {
+                        terminal = BridgeScriptStatus.Failed;
+                        terminalError = result.Error;
+                        break;
+                    }
                 }
+            }
+            catch (Exception exception)
+            {
+                terminal = BridgeScriptStatus.Failed;
+                terminalError = $"BRIDGE_EXCEPTION: {exception.GetType().Name}: {exception.Message}";
+                Debug.LogException(exception);
             }
             finally
             {
-                script.IsComplete = true;
+                if (script.CancelRequested) { terminal = BridgeScriptStatus.Cancelled; terminalError = script.TerminalError ?? terminalError ?? "CANCELLED"; }
+                Finish(script, terminal, terminalError);
                 _running = null;
+                _runningScript = null;
             }
+        }
+
+        private void CompleteStep(BridgeScript script, BridgeStepResult result, bool ok, string error, float durationMs)
+        {
+            result.Ok = ok;
+            result.Error = error;
+            result.DurationMs = durationMs;
+            result.FrameAtEnd = Time.frameCount;
+            script.Results.Add(result);
+            UpdateLast(script, result);
+        }
+
+        private void Finish(BridgeScript script, BridgeScriptStatus status, string error)
+        {
+            if (script == null) return;
+            script.TrySetTerminal(status, error);
+            _scripts.TryRemove(script.Id, out _);
+            Last.LastScriptId = script.Id;
+            Last.LastScriptStatus = script.Status;
+            if (!string.IsNullOrEmpty(error)) Last.LastError = error;
         }
 
         private void TryCapture(BridgeStepResult result)
         {
-            var cam = Camera.main;
-            if (cam == null)
+            var camera = Camera.main;
+            if (camera == null)
             {
-                // Fall back to highest-depth enabled.
-                float bestDepth = float.NegativeInfinity;
-                foreach (var c in Camera.allCameras)
-                {
-                    if (c == null || !c.enabled) continue;
-                    if (c.depth > bestDepth) { cam = c; bestDepth = c.depth; }
-                }
+                float depth = float.NegativeInfinity;
+                foreach (var candidate in Camera.allCameras)
+                    if (candidate != null && candidate.enabled && candidate.depth > depth)
+                    { camera = candidate; depth = candidate.depth; }
             }
-            if (cam == null) return;
+            if (camera == null) { result.Error = result.Error ?? "SCREENSHOT_CAMERA_NOT_FOUND"; return; }
 
-            const int W = 1280, H = 720;
-            RenderTexture rt = null;
-            Texture2D tex = null;
+            const int width = 1280;
+            const int height = 720;
+            RenderTexture texture = null;
+            Texture2D image = null;
+            var previousActive = RenderTexture.active;
+            var previousTarget = camera.targetTexture;
             try
             {
-                rt = RenderTexture.GetTemporary(W, H, 24, RenderTextureFormat.ARGB32);
-                var prevTarget = cam.targetTexture;
-                var prevActive = RenderTexture.active;
-                try
-                {
-                    cam.targetTexture = rt;
-                    cam.Render();
-                }
-                finally { cam.targetTexture = prevTarget; }
-                RenderTexture.active = rt;
-                tex = new Texture2D(W, H, TextureFormat.RGB24, false);
-                tex.ReadPixels(new Rect(0, 0, W, H), 0, 0);
-                tex.Apply();
-                RenderTexture.active = prevActive;
-                result.ScreenshotPng = tex.EncodeToPNG();
-                result.ScreenshotWidth = W;
-                result.ScreenshotHeight = H;
+                texture = RenderTexture.GetTemporary(width, height, 24, RenderTextureFormat.ARGB32);
+                camera.targetTexture = texture;
+                camera.Render();
+                RenderTexture.active = texture;
+                image = new Texture2D(width, height, TextureFormat.RGB24, false);
+                image.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                image.Apply();
+                result.ScreenshotPng = image.EncodeToPNG();
+                result.ScreenshotWidth = width;
+                result.ScreenshotHeight = height;
             }
-            catch (Exception e)
+            catch (Exception exception)
             {
-                Debug.LogWarning($"[scene-analyzer] bridge screenshot failed: {e.Message}");
+                result.Error = result.Error ?? $"SCREENSHOT_FAILED: {exception.Message}";
+                Debug.LogWarning($"[scene-analyzer] bridge screenshot failed: {exception.Message}");
             }
             finally
             {
-                if (tex != null) UnityEngine.Object.Destroy(tex);
-                if (rt != null) RenderTexture.ReleaseTemporary(rt);
+                camera.targetTexture = previousTarget;
+                RenderTexture.active = previousActive;
+                if (image != null) Destroy(image);
+                if (texture != null) RenderTexture.ReleaseTemporary(texture);
             }
         }
 
         private int TryGetEditorLogSeq()
         {
-            // ConsoleCapture is editor-only. Best-effort reflection so the
-            // runtime asmdef stays editor-independent in builds. In play
-            // mode inside the editor, the type is loaded.
             try
             {
-                var t = Type.GetType("Maicon.SceneAnalyzer.Editor.Core.ConsoleCapture, com.maicon.scene-analyzer.Editor");
-                if (t == null) return 0;
-                var prop = t.GetProperty("CurrentSeq",
+                var type = Type.GetType("Maicon.SceneAnalyzer.Editor.Core.ConsoleCapture, com.maicon.scene-analyzer.Editor");
+                var property = type?.GetProperty("CurrentSeq",
                     System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                if (prop == null) return 0;
-                return (int)prop.GetValue(null);
+                return property != null ? (int)property.GetValue(null) : 0;
             }
             catch { return 0; }
         }
 
-        private void UpdateLast(BridgeStepResult r)
+        private void UpdateLast(BridgeScript script, BridgeStepResult result)
         {
-            Last.LastStepName = r.Name;
-            Last.LastFrameCount = r.FrameAtEnd;
-            Last.LastOk = r.Ok;
-            Last.LastError = r.Error;
+            Last.LastScriptId = script.Id;
+            Last.LastStepName = result.Name;
+            Last.LastFrameCount = result.FrameAtEnd;
+            Last.LastOk = result.Ok;
+            Last.LastError = result.Error;
+            Last.LastScriptStatus = script.Status;
         }
     }
 }

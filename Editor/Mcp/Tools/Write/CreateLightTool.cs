@@ -37,7 +37,6 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             var result = LightFactory.Create(args);
             if (!result.Ok) return ToolResult.Error("OP_FAILED", result.Error);
 
-            EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
             return ToolResult.Ok(result.Summary, new JObject
             {
                 ["instanceId"] = result.InstanceID,

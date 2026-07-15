@@ -1,3 +1,5 @@
+using System;
+using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core;
 using Newtonsoft.Json.Linq;
@@ -53,13 +55,12 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 
         public ToolResult Execute(JObject args)
         {
-            int instanceId = (int?)args["instanceId"] ?? 0;
-            if (!MeshResolver.TryGetMeshAndTransforms(instanceId, out var go, out var mesh, out var ltw))
-                return ToolResult.Error("NOT_FOUND",
-                    $"no MeshFilter/SkinnedMeshRenderer mesh on GameObject {instanceId}");
-            if (!MeshResolver.IsReadable(mesh, out var notReadable))
-                return ToolResult.Error("MESH_NOT_READABLE", notReadable);
+            return ToolResult.Error("ASYNC_REQUIRED", "mesh_segment_via_sidecar must run through ExecuteAsync.");
+        }
 
+        public async Task<ToolResult> ExecuteAsync(JObject args)
+        {
+            int instanceId = (int?)args["instanceId"] ?? 0;
             var p = new MeshSidecarClient.SegmentParams
             {
                 Method = (string)args["method"] ?? "semantic",
@@ -73,19 +74,66 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             string url = (string)args["sidecarUrl"] ?? MeshSidecarClient.DefaultUrl;
             int timeout = (int?)args["timeoutSeconds"] ?? 60;
             int faceCap = (int?)args["maxFaceIndicesInResponse"] ?? 0;
+            var context = ToolExecutionContext.Current;
+            var cancellationToken = context != null ? context.CancellationToken : default;
 
-            var result = MeshSidecarClient.Segment(mesh, ltw, url, p, timeout);
+            GameObject go = null;
+            Mesh mesh = null;
+            string gameObjectName = null;
+            string meshName = null;
+            Matrix4x4 ltw = default;
+            string meshObj = null;
+            string captureError = null;
+            try
+            {
+                await MainThreadDispatcher.RunAsync(() =>
+                {
+                    if (!MeshResolver.TryGetMeshAndTransforms(instanceId, out go, out mesh, out ltw))
+                    {
+                        captureError = $"NOT_FOUND: no MeshFilter/SkinnedMeshRenderer mesh on GameObject {instanceId}";
+                        return;
+                    }
+                    if (!MeshResolver.IsReadable(mesh, out var notReadable))
+                    {
+                        captureError = "MESH_NOT_READABLE: " + notReadable;
+                        return;
+                    }
+                    gameObjectName = go.name;
+                    meshName = mesh.name;
+                    meshObj = MeshSidecarClient.MeshToObj(mesh, ltw);
+                }, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return ToolResult.Error("CANCELLED", "mesh capture for sidecar segmentation was cancelled.");
+            }
+            catch (Exception e)
+            {
+                return ToolResult.Error("OBJ_SERIALISE_FAILED", e.Message);
+            }
+            if (!string.IsNullOrEmpty(captureError))
+            {
+                int separator = captureError.IndexOf(':');
+                return ToolResult.Error(separator > 0 ? captureError.Substring(0, separator) : "CAPTURE_FAILED", captureError);
+            }
+
+            MeshSidecarClient.SegmentResult result;
+            try
+            {
+                result = await MeshSidecarClient.SegmentAsync(meshObj, url, p, timeout, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return ToolResult.Error("CANCELLED", "mesh sidecar segmentation was cancelled.");
+            }
             if (!string.IsNullOrEmpty(result.Error))
                 return ToolResult.Error(result.ErrorCode ?? "SIDECAR_ERROR", result.Error);
 
-            // Translate sidecar regions into the in-memory cache so they
-            // can be visualised with render_region_highlight and sampled
-            // with mesh_sample_points_on_region. We use PlaneRegion as the
-            // canonical container because it carries Classification +
-            // OrientationLabel + NormalWorld + PointWorld + WorldBounds —
-            // exactly what the sidecar emits.
-            string meshKey = MeshResolver.MakeMeshKey(mesh);
-            string paramsHash = $"sidecar:{p.Method}:{p.MinFaceCount}:{p.RansacAngleToleranceDeg:F2}:{p.RansacDistanceTolerance:F4}:{p.RansacMaxPlanes}:{p.RegionGrowingFrontierDeg:F2}:{p.NormalBuckets}";
+            string meshKey = await MainThreadDispatcher.RunAsync(() => MeshResolver.MakeMeshKey(mesh), cancellationToken);
+            string paramsHash = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "sidecar:{0}:{1}:{2:F2}:{3:F4}:{4}:{5:F2}:{6}", p.Method, p.MinFaceCount,
+                p.RansacAngleToleranceDeg, p.RansacDistanceTolerance, p.RansacMaxPlanes,
+                p.RegionGrowingFrontierDeg, p.NormalBuckets);
             var bundle = new AnalysisResult
             {
                 MeshGuid = meshKey,
@@ -112,7 +160,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                     Classification = src.Classification,
                 });
             }
-            MeshAnalysisCache.StoreAndPersist(meshKey, paramsHash, bundle);
+            await MainThreadDispatcher.RunAsync(
+                () => MeshAnalysisCache.StoreAndPersist(meshKey, paramsHash, bundle), cancellationToken);
 
             var arr = new JArray();
             foreach (var r in bundle.Planes)
@@ -139,7 +188,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             }
             var payload = new JObject
             {
-                ["meshName"] = mesh.name,
+                ["meshName"] = meshName,
                 ["method"] = result.Method,
                 ["regionCount"] = bundle.Planes.Count,
                 ["elapsedMs"] = result.ElapsedMs,
@@ -147,7 +196,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 ["sidecarInfo"] = result.Info,
             };
             return ToolResult.Ok(
-                $"sidecar '{result.Method}' returned {bundle.Planes.Count} region(s) on '{go.name}' in {result.ElapsedMs:F0}ms",
+                $"sidecar '{result.Method}' returned {bundle.Planes.Count} region(s) on '{gameObjectName}' in {result.ElapsedMs:F0}ms",
                 payload);
         }
 

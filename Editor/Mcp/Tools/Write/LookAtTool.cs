@@ -32,7 +32,6 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         {
             var r = GameObjectEditor.LookAt(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
             return ToolResult.Ok(r.Summary);
         }
     }

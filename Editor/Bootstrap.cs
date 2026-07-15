@@ -10,6 +10,13 @@ using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write;
+using Maicon.SceneAnalyzer.Editor.ProjectTools;
+using Maicon.SceneAnalyzer.Editor.SceneTools;
+using Maicon.SceneAnalyzer.Editor.PrefabTools;
+using Maicon.SceneAnalyzer.Editor.AssetTools;
+using Maicon.SceneAnalyzer.Editor.PackageTools;
+using Maicon.SceneAnalyzer.Editor.BuildTools;
+using Maicon.SceneAnalyzer.Editor.SystemTools;
 using UnityEditor;
 using UnityEngine;
 
@@ -28,6 +35,7 @@ namespace Maicon.SceneAnalyzer.Editor
         public static ChangeWatcher Watcher { get; private set; }
         public static McpToolRegistry ToolRegistry { get; private set; }
         public static HttpMcpServer Server { get; private set; }
+        public static DateTimeOffset DomainLoadedUtc { get; } = DateTimeOffset.UtcNow;
 
         // Coder chat state (Model B — chat panel inside Unity).
         public static ChatSession ChatSession { get; private set; }
@@ -74,6 +82,7 @@ namespace Maicon.SceneAnalyzer.Editor
             try
             {
                 UnityProjectRoot = System.IO.Path.GetDirectoryName(UnityEngine.Application.dataPath);
+                SceneAnalyzerVersion.Initialize();
 
                 // Migration: v0.8.0 and earlier defaulted CoderProjectId to 1
                 // and never persisted the workdir of the matched project. Any
@@ -119,6 +128,9 @@ namespace Maicon.SceneAnalyzer.Editor
                 };
 
                 ToolRegistry = new McpToolRegistry();
+                ToolRegistry.Register(new GetToolInventoryTool());
+                ToolRegistry.Register(new GetServerHealthTool());
+                ToolRegistry.Register(new SelfTestTool());
                 // Read
                 ToolRegistry.Register(new ReadHierarchyTool());
                 ToolRegistry.Register(new ReadSceneTool());
@@ -240,6 +252,98 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new DescribeStaticMethodTool());
                 ToolRegistry.Register(new ExecuteMenuItemTool());
                 ToolRegistry.Register(new InvokeStaticMethodTool());
+
+                // Project, compilation, quality
+                ToolRegistry.Register(new GetEditorContextTool());
+                ToolRegistry.Register(new GetProjectSettingsTool());
+                ToolRegistry.Register(new GetCompilationStatusTool());
+                ToolRegistry.Register(new GetCompilationDiagnosticsTool());
+                ToolRegistry.Register(new RequestScriptCompilationTool());
+                ToolRegistry.Register(new ListTagsLayersTool());
+                ToolRegistry.Register(new PreviewProjectSettingsChangeTool());
+                ToolRegistry.Register(new ApplyProjectSettingsChangeTool());
+                ToolRegistry.Register(new ListQualityLevelsTool());
+                ToolRegistry.Register(new SetQualitySettingsTool());
+                // Multi-scene
+                ToolRegistry.Register(new ListLoadedScenesTool());
+                ToolRegistry.Register(new CreateSceneTool());
+                ToolRegistry.Register(new OpenSceneTool());
+                ToolRegistry.Register(new CloseSceneTool());
+                ToolRegistry.Register(new SetActiveSceneTool());
+                ToolRegistry.Register(new SaveSceneTool());
+                ToolRegistry.Register(new SaveAllScenesTool());
+                // Prefabs and Prefab Mode
+                ToolRegistry.Register(new GetPrefabStageTool());
+                ToolRegistry.Register(new OpenPrefabStageTool());
+                ToolRegistry.Register(new ClosePrefabStageTool());
+                ToolRegistry.Register(new ReadPrefabTool());
+                ToolRegistry.Register(new CreatePrefabTool());
+                ToolRegistry.Register(new CreatePrefabVariantTool());
+                ToolRegistry.Register(new ListPrefabOverridesTool());
+                ToolRegistry.Register(new ApplyPrefabOverrideTool());
+                ToolRegistry.Register(new RevertPrefabOverrideTool());
+                ToolRegistry.Register(new UnpackPrefabTool());
+                // Assets/importers/VCS
+                ToolRegistry.Register(new GetAssetDependenciesTool());
+                ToolRegistry.Register(new GetAssetDependentsTool());
+                ToolRegistry.Register(new CreateFolderTool());
+                ToolRegistry.Register(new CopyAssetTool());
+                ToolRegistry.Register(new MoveAssetTool());
+                ToolRegistry.Register(new PreviewDeleteAssetsTool());
+                ToolRegistry.Register(new ConfirmDeleteAssetsTool());
+                ToolRegistry.Register(new ReadImportSettingsTool());
+                ToolRegistry.Register(new PreviewImportSettingsTool());
+                ToolRegistry.Register(new ApplyImportSettingsTool());
+                ToolRegistry.Register(new ReimportAssetsTool());
+                ToolRegistry.Register(new GetReimportJobTool());
+                ToolRegistry.Register(new CancelReimportJobTool());
+                ToolRegistry.Register(new GetVersionControlStatusTool());
+                ToolRegistry.Register(new MakeAssetsEditableTool());
+                // Packages and builds
+                ToolRegistry.Register(new ListPackagesTool());
+                ToolRegistry.Register(new SearchPackagesTool());
+                ToolRegistry.Register(new PreviewAddPackageTool());
+                ToolRegistry.Register(new ConfirmAddPackageTool());
+                ToolRegistry.Register(new PreviewRemovePackageTool());
+                ToolRegistry.Register(new ConfirmRemovePackageTool());
+                ToolRegistry.Register(new GetPackageJobTool());
+                ToolRegistry.Register(new ListBuildProfilesTool());
+                ToolRegistry.Register(new ValidateBuildTool());
+                ToolRegistry.Register(new PreviewBuildTool());
+                ToolRegistry.Register(new StartBuildTool());
+                ToolRegistry.Register(new GetBuildJobTool());
+                ToolRegistry.Register(new CancelBuildJobTool());
+                ToolRegistry.Register(new ReadBuildReportTool());
+
+                // UI Toolkit, rendering, 2D, terrain, content and profiling
+                ToolRegistry.Register(new GetRenderPipelineContextTool());
+                ToolRegistry.Register(new ListShadersTool());
+                ToolRegistry.Register(new ReadMaterialTool());
+                ToolRegistry.Register(new CreateMaterialTool());
+                ToolRegistry.Register(new SetMaterialPropertyTypedTool());
+                ToolRegistry.Register(new GetLightingContextTool());
+                ToolRegistry.Register(new ListLodGroupsTool());
+                ToolRegistry.Register(new ConfigureLodGroupTool());
+                ToolRegistry.Register(new SetStaticEditorFlagsTool());
+                ToolRegistry.Register(new Physics2DQueryTool());
+                ToolRegistry.Register(new GetPhysics2DSettingsTool());
+                ToolRegistry.Register(new SetPhysics2DSettingsTool());
+                ToolRegistry.Register(new ListSpritesTool());
+                ToolRegistry.Register(new CreateTilemapTool());
+                ToolRegistry.Register(new SetTilemapCellsTool());
+                ToolRegistry.Register(new ReadTerrainTool());
+                ToolRegistry.Register(new CreateTerrainTool());
+                ToolRegistry.Register(new SetTerrainHeightsTool());
+                ToolRegistry.Register(new ListUiDocumentsTool());
+                ToolRegistry.Register(new CreatePanelSettingsTool());
+                ToolRegistry.Register(new CreateUiDocumentTool());
+                ToolRegistry.Register(new ReadUiAssetTool());
+                ToolRegistry.Register(new WriteUiAssetTool());
+                ToolRegistry.Register(new CreateAnimationClipAssetTool());
+                ToolRegistry.Register(new SetAnimationFloatCurveTool());
+                ToolRegistry.Register(new CreateAvatarMaskTool());
+                ToolRegistry.Register(new GetPerformanceSnapshotTool());
+
                 // Mesh analytics (inspect_submeshes, detect_sharp_edges, detect_planes,
                 // sample_points_on_region, render_object_views, render_region_highlight)
                 // live in com.maicon.scene-analyzer.Editor.MeshAnalytics and are

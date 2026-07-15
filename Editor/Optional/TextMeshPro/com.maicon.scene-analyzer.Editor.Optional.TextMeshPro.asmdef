@@ -1,0 +1,31 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.Optional.TextMeshPro",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.Optional.TextMeshPro",
+  "references": [
+    "com.maicon.scene-analyzer",
+    "com.maicon.scene-analyzer.Editor",
+    "Unity.Newtonsoft.Json",
+    "Unity.TextMeshPro",
+    "Unity.ugui"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_TMP"],
+  "versionDefines": [
+    {
+      "name": "com.unity.ugui",
+      "expression": "2.0.0",
+      "define": "SCENE_ANALYZER_HAS_TMP"
+    },
+    {
+      "name": "com.unity.textmeshpro",
+      "expression": "3.0.0",
+      "define": "SCENE_ANALYZER_HAS_TMP"
+    }
+  ],
+  "noEngineReferences": false
+}

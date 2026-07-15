@@ -1,6 +1,8 @@
 using System;
 using Maicon.SceneAnalyzer.Editor.Authoring;
+using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.NavMesh.Tools;
+using Maicon.SceneAnalyzer.Editor.Optional;
 using UnityEditor;
 using UnityEngine;
 
@@ -22,20 +24,19 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
         {
             try
             {
-                if (Bootstrap.ToolRegistry == null) return;
+                if (Bootstrap.ToolRegistry == null || OptionalModuleRegistry.Contains("navmesh")) return;
+
+                OptionalToolSupport.RegisterModule("navmesh", "com.unity.ai.navigation",
+                    new ListNavMeshSurfacesTool(),
+                    new BakeNavMeshSurfaceTool(),
+                    new AddNavMeshSurfaceTool(),
+                    new AddNavMeshModifierTool(),
+                    new AddNavMeshLinkTool());
 
                 ChangesetExecutor.RegisterHandler("bake_navmesh_surface", NavMeshSurfaceAuthor.BakeSurface);
                 ChangesetExecutor.RegisterHandler("add_navmesh_surface", NavMeshSurfaceAuthor.AddSurface);
                 ChangesetExecutor.RegisterHandler("add_navmesh_modifier", NavMeshSurfaceAuthor.AddModifier);
                 ChangesetExecutor.RegisterHandler("add_navmesh_link", NavMeshSurfaceAuthor.AddLink);
-
-                Bootstrap.ToolRegistry.Register(new ListNavMeshSurfacesTool());
-                Bootstrap.ToolRegistry.Register(new BakeNavMeshSurfaceTool());
-                Bootstrap.ToolRegistry.Register(new AddNavMeshSurfaceTool());
-                Bootstrap.ToolRegistry.Register(new AddNavMeshModifierTool());
-                Bootstrap.ToolRegistry.Register(new AddNavMeshLinkTool());
-
-                Bootstrap.RecordEntry("[navmesh] registered 5 modern NavMesh tools (com.unity.ai.navigation present)");
             }
             catch (Exception e) { Debug.LogException(e); }
         }

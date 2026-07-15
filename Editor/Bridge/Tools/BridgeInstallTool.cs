@@ -54,7 +54,6 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
             bridge.dontDestroyOnLoad = ddol;
 
             Undo.RegisterCreatedObjectUndo(go, "Install McpCommandBridge");
-            EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
 
             return ToolResult.Ok(
                 $"bridge installed on '{go.name}' (instanceId {go.GetInstanceID()})",

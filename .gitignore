@@ -1,0 +1,51 @@
+# Unity generated folders
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+MemoryCaptures/
+Recordings/
+
+# Unity generated project files
+ExportedObj/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Unity Asset Store tools
+/[Aa]ssets/AssetStoreTools*
+
+# Python sidecar environments and caches
+Sidecar~/.venv/
+Sidecar~/venv/
+Sidecar~/env/
+Sidecar~/__pycache__/
+Sidecar~/.pytest_cache/
+Sidecar~/.mypy_cache/
+Sidecar~/.ruff_cache/
+Sidecar~/htmlcov/
+Sidecar~/.coverage
+*.py[cod]
+
+# IDE and editor settings
+.vscode/
+.idea/
+.vs/
+
+# Local tooling and operating-system files
+.mcp-indexer/
+.DS_Store
+Thumbs.db

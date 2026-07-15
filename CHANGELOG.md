@@ -5,6 +5,51 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-07-13
+
+### Added — MCP reliability and operational contract
+
+- MCP protocol negotiation for `2025-06-18`, `2025-03-26`, and legacy `2024-11-05`, with modern Streamable HTTP request validation, notification handling, request-size/concurrency limits, deadlines, cancellation, and structured tool content.
+- Central `ToolDescriptor`, capability authorization, risk/mode metadata, and single-use confirmation tokens bound to the exact tool arguments and project for destructive, reflection, Package Manager, and build operations.
+- Stable `ToolTargetRef` identities using GlobalObjectId, asset GUID/local file ID, scene identity, hierarchy path, component type, and ordinal while retaining legacy `instanceId` inputs.
+- Shared `SerializedValueCodec`, `MutationScope`, and `AssetEditingScope` for Undo, Prefab overrides, exact scene/asset dirty tracking, editability checks, and rollback without implicit saves.
+- Project, multi-scene, Prefab, asset/importer/VCS, Package Manager, Unity Test Framework, and build tool families with preview/confirmation and cancellable job records where Unity APIs permit cancellation.
+- uGUI, Input System, UI Toolkit, rendering, materials, lighting, LOD, Physics2D, sprites, Tilemap, Terrain, animation asset, profiling, and frame-timing tool families.
+- Package-gated modules for Cinemachine 3, TextMeshPro in Unity 6 uGUI (with legacy TMP package fallback), Shader Graph 17, ProBuilder 5, Localization 1.5, XR Interaction Toolkit 3, Netcode for GameObjects 2, Addressables, URP 17, and HDRP 17.
+- `get_tool_inventory`, a registry-generated and paginated source of truth for tool module, mode, capabilities, risk, idempotence, preview relationship, confirmation policy, and optional schemas.
+- `get_server_health`, reporting package/server/protocol versions, registry count/hash, loaded modules, compilation state, queue depth, in-flight requests, jobs, domain reload time, capability settings, and optional-package compatibility.
+- Read-only `self_test` coverage for registry, schemas, descriptors, mutability, high-risk confirmation, optional modules, package/server version agreement, and protocol invariants.
+- EditMode contract tests for protocol negotiation, confirmation tokens, schemas, atomic registry batches, descriptors, optional module inventory, and operational tools.
+
+### Changed
+
+- Package and server version are now `0.14.0`; the server resolves the installed UPM package version through `PackageInfo.FindForAssembly` so `initialize.serverInfo.version`, health, and package metadata do not drift.
+- Runtime tool inventory replaces hand-maintained tool counts in package metadata and README documentation.
+- Optional bootstraps register atomic tool batches and expose loaded package/assembly/tool metadata through a shared optional module registry.
+- PostFx, Timeline, NavMesh, Input System, uGUI, and Test Framework now participate in the same idempotent optional module inventory as the ecosystem integrations.
+- Long-running build, test, reimport, package, bridge, sidecar, and Addressables flows use shared job/cancellation infrastructure instead of blocking the Unity main thread.
+- README now documents the Unity 6000.1–6000.3 support contract, safety model, operational tools, package gates, jobs, troubleshooting, and release verification workflow.
+
+### Fixed
+
+- Scene mutations no longer assume the active scene when the target belongs to another loaded scene; affected scenes are tracked and dirtied explicitly.
+- Direct Prefab-instance mutations record property overrides, and stable target resolution handles multi-scene and Prefab Stage identities.
+- `apply_changeset` and normal mutations no longer perform implicit global asset saves.
+- Optional asset edits reject package/read-only assets and respect version-control editability.
+- Addressables entry moves/relabels now use rollback-aware mutations and high-risk confirmation; Addressables content builds expose explicit preview, start, and job-query tools.
+- Sidecar requests and runtime bridge scripts use cooperative cancellation and terminal result handling instead of main-thread spin waits or orphaned work.
+- TextMeshPro registration recognizes that Unity 6 ships TMP through `com.unity.ugui` while preserving the legacy `com.unity.textmeshpro` gate.
+
+### Security
+
+- The MCP listener remains loopback-only and bearer-authenticated, now with Origin/header/envelope validation and bounded request processing.
+- Reflection policy blocks filesystem/process/modal surfaces outside the supported allowlist.
+- Capability switches independently gate writes, reflection, destructive operations, packages, builds, project settings, Play control, and runtime commands.
+
+### Verification status
+
+- Static and automated verification for this release is recorded by `self_test`, the Unity EditMode suite, sidecar pytest, and the release checklist in README. Unity 6000.1/6000.2/6000.3 Built-in/URP/HDRP package matrices must be run in host projects before publishing a production tag.
+
 ## [0.13.0] - 2026-05-11
 
 ### Added — Play mode, Game-view capture, and runtime command bridge (16 tools)

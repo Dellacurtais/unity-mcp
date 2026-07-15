@@ -35,6 +35,8 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                             ["delayFrames"] = new JObject { ["type"] = "integer", ["default"] = 0, ["minimum"] = 0, ["maximum"] = 6000 },
                             ["captureScreenshotAfter"] = new JObject { ["type"] = "boolean", ["default"] = false },
                             ["markLogAnchorBefore"] = new JObject { ["type"] = "boolean", ["default"] = false },
+                            ["timeoutFrames"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 36000 },
+                            ["timeoutSeconds"] = new JObject { ["type"] = "number", ["minimum"] = 0.1, ["maximum"] = 300 },
                         },
                         ["required"] = new JArray { "name" },
                     },
@@ -90,6 +92,8 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                     DelayFrames = Mathf.Clamp((int?)cmdObj["delayFrames"] ?? 0, 0, 6000),
                     CaptureScreenshotAfter = (bool?)cmdObj["captureScreenshotAfter"] ?? false,
                     MarkLogAnchorBefore = (bool?)cmdObj["markLogAnchorBefore"] ?? false,
+                    TimeoutFrames = Mathf.Clamp((int?)cmdObj["timeoutFrames"] ?? 0, 0, 36000),
+                    TimeoutSeconds = Mathf.Clamp((float?)cmdObj["timeoutSeconds"] ?? 0f, 0f, 300f),
                 });
             }
 
@@ -102,11 +106,22 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
 
             try
             {
-                await BridgeChannel.SubmitAndAwait(script, timeoutSeconds);
+                var context = ToolExecutionContext.Current;
+                await BridgeChannel.SubmitAndAwait(
+                    script, timeoutSeconds, context != null ? context.CancellationToken : default);
+            }
+            catch (System.OperationCanceledException)
+            {
+                return ToolResult.Error("CANCELLED",
+                    $"runtime command script #{script.Id} was cancelled; status={script.Status}.", ScriptState(script));
             }
             catch (TimeoutException te)
             {
-                return ToolResult.Error("TIMEOUT", te.Message);
+                return ToolResult.Error("TIMEOUT", te.Message, ScriptState(script));
+            }
+            catch (InvalidOperationException ioe)
+            {
+                return ToolResult.Error("DISPATCH_FAILED", ioe.Message, ScriptState(script));
             }
 
             // Build aggregate result. Content blocks: a JSON summary text, then
@@ -126,6 +141,7 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                 ["stoppedEarly"] = total < steps.Count,
                 ["scriptStartSeq"] = scriptStartSeq,
                 ["scriptEndSeq"] = scriptEndSeq,
+                ["script"] = ScriptState(script),
             };
 
             JArray stepResultsJson = null;
@@ -199,6 +215,22 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                 Text = textHeader,
                 Json = summary,
                 ContentBlocks = finalBlocks,
+            };
+        }
+
+        private static JObject ScriptState(BridgeScript script)
+        {
+            return new JObject
+            {
+                ["scriptId"] = script.Id,
+                ["status"] = script.Status.ToString(),
+                ["cancelRequested"] = script.CancelRequested,
+                ["terminalError"] = script.TerminalError,
+                ["submittedUtcTicks"] = script.SubmittedUtcTicks,
+                ["startedUtcTicks"] = script.StartedUtcTicks,
+                ["completedUtcTicks"] = script.CompletedUtcTicks,
+                ["completedSteps"] = script.Results.Count,
+                ["totalSteps"] = script.Steps.Count,
             };
         }
 

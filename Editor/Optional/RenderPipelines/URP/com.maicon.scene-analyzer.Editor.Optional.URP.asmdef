@@ -1,0 +1,24 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.Optional.URP",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.Optional.URP",
+  "references": [
+    "com.maicon.scene-analyzer",
+    "com.maicon.scene-analyzer.Editor",
+    "Unity.Newtonsoft.Json"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_URP"],
+  "versionDefines": [
+    {
+      "name": "com.unity.render-pipelines.universal",
+      "expression": "17.0.0",
+      "define": "SCENE_ANALYZER_HAS_URP"
+    }
+  ],
+  "noEngineReferences": false
+}

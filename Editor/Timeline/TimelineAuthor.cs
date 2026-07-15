@@ -24,7 +24,7 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
 
             var asset = ScriptableObject.CreateInstance<TimelineAsset>();
             AssetDatabase.CreateAsset(asset, path);
-            AssetDatabase.SaveAssets();
+            EditorUtility.SetDirty(asset);
 
             return new OpResult
             {

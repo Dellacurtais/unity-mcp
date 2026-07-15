@@ -21,22 +21,22 @@ namespace Maicon.SceneAnalyzer.Editor.Play
         {
             try
             {
-                if (Bootstrap.ToolRegistry == null) return;
+                if (Bootstrap.ToolRegistry == null || Bootstrap.ToolRegistry.TryGet("get_play_state", out _)) return;
 
-                // Phase A — play-mode lifecycle
-                Bootstrap.ToolRegistry.Register(new GetPlayStateTool());
-                Bootstrap.ToolRegistry.Register(new EnterPlayModeTool());
-                Bootstrap.ToolRegistry.Register(new ExitPlayModeTool());
-                Bootstrap.ToolRegistry.Register(new SetPlayPausedTool());
-                Bootstrap.ToolRegistry.Register(new StepFrameTool());
-                Bootstrap.ToolRegistry.Register(new SetTimeScaleTool());
-
-                // Phase B — game-view capture & runtime monitoring
-                Bootstrap.ToolRegistry.Register(new ScreenshotGameViewTool());
-                Bootstrap.ToolRegistry.Register(new ScreenshotFromPovTool());
-                Bootstrap.ToolRegistry.Register(new GetActiveCamerasTool());
-                Bootstrap.ToolRegistry.Register(new ReadRuntimeLogDeltaTool());
-                Bootstrap.ToolRegistry.Register(new MarkLogAnchorTool());
+                Bootstrap.ToolRegistry.RegisterRange(new Maicon.SceneAnalyzer.Editor.Mcp.IMcpTool[]
+                {
+                    new GetPlayStateTool(),
+                    new EnterPlayModeTool(),
+                    new ExitPlayModeTool(),
+                    new SetPlayPausedTool(),
+                    new StepFrameTool(),
+                    new SetTimeScaleTool(),
+                    new ScreenshotGameViewTool(),
+                    new ScreenshotFromPovTool(),
+                    new GetActiveCamerasTool(),
+                    new ReadRuntimeLogDeltaTool(),
+                    new MarkLogAnchorTool(),
+                });
 
                 Bootstrap.RecordEntry("[play] registered 11 play-mode + capture tools");
             }

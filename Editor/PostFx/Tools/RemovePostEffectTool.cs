@@ -30,7 +30,6 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx.Tools
         {
             var r = PostEffectEditor.RemoveEffect(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
             return ToolResult.Ok(r.Summary);
         }
     }

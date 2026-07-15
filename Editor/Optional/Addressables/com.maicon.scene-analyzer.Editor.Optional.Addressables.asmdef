@@ -1,0 +1,25 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.Optional.Addressables",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.Optional.Addressables",
+  "references": [
+    "com.maicon.scene-analyzer",
+    "com.maicon.scene-analyzer.Editor",
+    "Unity.Newtonsoft.Json",
+    "Unity.Addressables.Editor"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_ADDRESSABLES"],
+  "versionDefines": [
+    {
+      "name": "com.unity.addressables",
+      "expression": "1.21.0",
+      "define": "SCENE_ANALYZER_HAS_ADDRESSABLES"
+    }
+  ],
+  "noEngineReferences": false
+}

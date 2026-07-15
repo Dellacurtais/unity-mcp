@@ -31,6 +31,8 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                         ["installed"] = false,
                         ["registeredHandlers"] = new JArray(),
                         ["queuedScripts"] = 0,
+                        ["activeScripts"] = 0,
+                        ["runningScriptId"] = 0,
                     });
             }
 
@@ -46,6 +48,8 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                     ["frame"] = last.LastFrameCount,
                     ["ok"] = last.LastOk,
                     ["error"] = last.LastError,
+                    ["scriptId"] = last.LastScriptId,
+                    ["scriptStatus"] = last.LastScriptStatus.ToString(),
                 };
 
             return ToolResult.Ok(
@@ -56,6 +60,11 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                     ["sceneObjectInstanceId"] = inst.gameObject.GetInstanceID(),
                     ["registeredHandlers"] = handlers,
                     ["queuedScripts"] = inst.QueuedScripts,
+                    ["activeScripts"] = inst.ActiveScripts,
+                    ["runningScriptId"] = inst.RunningScriptId,
+                    ["maxQueuedScripts"] = inst.maxQueuedScripts,
+                    ["defaultHandlerTimeoutFrames"] = inst.defaultHandlerTimeoutFrames,
+                    ["defaultHandlerTimeoutSeconds"] = inst.defaultHandlerTimeoutSeconds,
                     ["lastDispatch"] = lastDispatch,
                 });
         }

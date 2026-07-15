@@ -1,254 +1,168 @@
 # Scene Analyzer (MCP) — Unity Plugin
 
-Real-time scene analysis, validation, and authoring for Unity, exposed to an AI coding agent (the D:\MCP coder) over MCP **and** chatted with directly from inside the editor.
+Production-grade Unity Editor automation exposed to AI agents over the Model Context Protocol (MCP). The package targets Unity **6000.1–6000.3**, keeps legacy tool names and `instanceId` inputs compatible, and adds stable Unity identities, structured results, capability gates, confirmation for high-risk operations, explicit persistence, jobs, health reporting, and package-gated ecosystem modules.
 
 ## What you get
 
-Two windows in Unity:
+Two Unity windows work together:
 
-- **Window → Scene Analyzer**: turns the plugin into an MCP server (`streamable_http` on `127.0.0.1:8765`), shows scene snapshot + issues, and gates writes via a kill switch.
-- **Window → Coder Chat (Scene Analyzer)**: chat panel that talks to the D:\MCP coder runtime via SSE. The dev never has to leave Unity. The coder, on the other side, calls back into the plugin's MCP server for tools — both windows work in tandem.
+- **Window → Scene Analyzer** runs a localhost MCP server at `http://127.0.0.1:8765/mcp/`, shows scene analysis, controls the server, and exposes capability switches.
+- **Window → Coder Chat (Scene Analyzer)** talks to the configured coder runtime over HTTP/SSE. The coder can call the Scene Analyzer MCP server to inspect, author, test, and validate the Unity project.
 
-## Capabilities
+The MCP surface covers scene and asset inspection, safe authoring, project settings, multi-scene and Prefab workflows, importers, Package Manager, builds, tests, UI, input, rendering, 2D, terrain, animation, audio, profiling, Play Mode, runtime gameplay commands, mesh analytics, and optional Unity ecosystem packages.
 
-Inside the Unity Editor:
+## Supported contract
 
-- **Reads** the active scene (hierarchy, components, transforms, serialized properties)
-- **Analyzes** performance (geometry, draw calls, lighting, script cost, hierarchy depth)
-- **Validates** the scene (missing references, required fields)
-- **Discovers** project assets via an in-memory catalog (prefabs, materials, meshes, audio clips, …)
-- **Screenshots** the active SceneView and returns a PNG so the LLM can visually reason about appearance
-- **Authors** scene content (primitives, prefab instances, lights, cameras, particle systems, audio sources, post-processing volumes) — with full Undo support
-- **Tunes** rendering (camera fov/clip planes, ambient + fog + skybox, color grading, bloom, vignette, tonemapping, etc.)
-- **Drives editor menus and static APIs** — `execute_menu_item` invokes any `[MenuItem]` (built-in, your own, or third-party like Probuilder/Odin); `invoke_static_method` calls public/non-public static methods reflectively. Powerful — gated by the same `Allow writes` kill switch.
-- **Controls play mode** — enter/exit/pause/step the editor, set `Time.timeScale`. Combined with the runtime command bridge below, this lets the agent close its own iteration loop: enter paused on frame 0 → script a few gameplay actions → screenshot → read log delta → exit.
-- **Captures the Game view** — `screenshot_game_view` (active main / overlay camera) and `screenshot_from_pov` (spawn a temporary camera at any position+rotation, render, destroy — no scene mutation). Includes URP/HDRP post-fx when in play mode.
-- **Runs scripted gameplay via the McpCommandBridge** — install a small MonoBehaviour, register handlers in your own scripts (`McpCommandBridge.Register("jump", ...)`), then the agent sends timeline scripts (`send_runtime_commands`) with per-step screenshots + log deltas in one round-trip. See [`Runtime/Bridge/README.md`](Runtime/Bridge/README.md).
+| Area | Supported contract |
+| --- | --- |
+| Unity | 6000.1, 6000.2, and 6000.3 |
+| MCP | `2025-06-18` preferred; `2025-03-26` and `2024-11-05` accepted |
+| Transport | Streamable HTTP POST on loopback; GET/SSE is not enabled |
+| Authentication | Bearer token required |
+| Compatibility | Existing tool names and legacy `instanceId` inputs remain supported additively |
+| Identity | Stable `ToolTargetRef` using GlobalObjectId, asset GUID/local file ID, scene identity, hierarchy path, component type, and ordinal |
+| Persistence | Mutations mark the affected scenes/assets dirty; only explicit save/build tools persist changes |
+| High-risk operations | Capabilities plus a single-use confirmation token bound to tool, normalized arguments, project, and expiry |
 
-Reactive: the plugin keeps a live snapshot driven by `ObjectChangeEvents`, with a 250 ms debounce.
+## Operational tools
 
-## How the agent talks to the plugin
-
-The plugin runs an MCP server (`streamable_http`) on `127.0.0.1:8765`. The agent connects with a bearer token, lists the tools, and calls them.
-
-### Read
+The registry is the source of truth. Do not maintain or rely on a hand-written tool count.
 
 | Tool | Purpose |
 | --- | --- |
-| `read_hierarchy` | Flat list: instanceId, name, parent, components types. Cheap. |
-| `read_scene` | Hierarchical tree with transforms; optional component dump. Bounded by depth/maxNodes. |
-| `read_component` | Serialized properties of one (or every) component on a GameObject. |
-| `get_project_meta` | Unity version, render pipeline, color space, build target. |
-| `screenshot_scene_view` | Renders the active SceneView camera and returns a base64 PNG (MCP image content block). |
+| `get_tool_inventory` | Registry-generated, paginated inventory. Each row includes module, assembly, category, mode, capabilities, risk, idempotence, preview relationship, confirmation policy, and optional schemas. Filters include module, category, capability, risk, mode, confirmation, and write-only. |
+| `get_server_health` | Reports package/server version, supported protocol versions, registry count/hash, loaded modules, compilation state, dispatcher queue depth, in-flight requests, retained jobs, domain reload time, capability policy, and optional-package compatibility. |
+| `self_test` | Read-only validation of registry uniqueness/count/hash, input/output schemas, descriptors, mutability, high-risk confirmation, optional-module references, package/server version agreement, and protocol invariants. |
 
-### Analyze
+Example inventory calls:
 
-| Tool | Purpose |
-| --- | --- |
-| `analyze_performance` | Geometry, draw calls, lighting, script cost, hierarchy depth. |
-| `validate_scene` | Missing references, broken scripts, required-field violations. |
-
-### Discover
-
-| Tool | Purpose |
-| --- | --- |
-| `list_assets` | Paginated list filtered by type / name / folder. |
-| `search_assets` | Quick name-substring search with optional type filter. |
-| `read_asset_metadata` | Per-asset details (mesh tris, texture size, audio length, …). |
-| `find_references_to_asset` | Which scene GameObjects reference a given asset. |
-
-### Author — create
-
-| Tool | Purpose |
-| --- | --- |
-| `create_primitive` | Cube/Sphere/Capsule/Cylinder/Plane/Quad. (URP/HDRP: follow up with `set_material`.) |
-| `create_empty` | Empty GameObject (grouping). |
-| `instantiate_prefab` | Instantiate by GUID/path with prefab link preserved. |
-| `create_light` | Directional/Point/Spot/Area/Disc light. |
-| `create_camera` | Camera, optionally tagged MainCamera. |
-| `create_audio_source` | AudioSource with optional clip assignment. |
-| `create_particle_system` | Templates: smoke, fire, sparks, dust, trail. |
-| `create_volume`* | URP/HDRP Volume + VolumeProfile asset. |
-
-### Author — modify
-
-| Tool | Purpose |
-| --- | --- |
-| `set_transform` | Position/rotation/scale (world or local). |
-| `set_camera_props` | fov, clip planes, clear flags, background, depth, ortho. |
-| `set_property` | Generic SerializedProperty setter on any component. |
-| `add_component` | Add a Component by type name. |
-| `set_material` | Assign material to a Renderer slot. |
-| `parent_object` | Reparent (preserve world position or snap). |
-| `delete_object` | Destroy GameObject (recursive, with safety threshold). |
-
-### Author — post-processing & render
-
-| Tool | Purpose |
-| --- | --- |
-| `add_post_effect`* | Add Bloom/Tonemapping/ColorAdjustments/Vignette/etc. to a Volume profile. |
-| `set_post_effect_property`* | Set any VolumeParameter (resolves URP/HDRP/SRP-Core types). |
-| `apply_color_grading`* | Convenience: exposure / contrast / saturation / hue / color filter in one call. |
-| `set_render_settings` | Ambient mode + colors, fog, skybox material, reflection intensity. |
-
-\* = ships in the secondary asmdef gated by SRP Core (see "Render pipelines" below).
-
-### Batch & selection
-
-| Tool | Purpose |
-| --- | --- |
-| `apply_changeset` | Run N ops as ONE Undo group. Supports `preview: true` for dry-run. Ops can carry a `label` and later ops can reference earlier results via `{ ref: <label> }` (e.g. set `parent` on children to the labeled root). |
-| `select_object` | Select in Hierarchy and optionally frame in SceneView. |
-
-### Reflect — menu items & static methods
-
-| Tool | Purpose |
-| --- | --- |
-| `list_menu_items` | Enumerates `[MenuItem]` attributes in loaded assemblies (filter by path prefix or assembly). Built-in Unity menus live in C++ and are NOT listed here; `execute_menu_item` still runs them when the path is known. |
-| `describe_static_method` | Returns parameter and return-type info for every static overload of a method. Use before `invoke_static_method` to learn the right `argTypes` and arg shapes. |
-| `execute_menu_item` | Wraps `EditorApplication.ExecuteMenuItem(path)`. Covers every `[MenuItem]` — your own, built-in, or third-party (Probuilder, Odin, asset-store). |
-| `invoke_static_method` | Reflectively calls any public/non-public static method. Coerces JSON args to .NET types (Vector3/Quaternion/Color, `UnityEngine.Object` via `instanceId`, enums by name). |
-
-> ⚠️ **Powerful tools.** `execute_menu_item` and `invoke_static_method` can run arbitrary editor code — they're how you reach tools that don't have a dedicated MCP wrapper. Both honour the same `Allow writes` kill switch as the rest of the write surface; turn it off when not authoring. Menu items that open MODAL dialogs (Build Settings, File/Save..., Player Settings) BLOCK the editor — avoid them. Generic and ref/out methods are explicitly unsupported.
-
-### Play mode — lifecycle, capture, monitoring
-
-| Tool | Purpose |
-| --- | --- |
-| `get_play_state` | `isPlaying / isPaused / isCompiling / frameCount / time / timeScale` snapshot — precheck before any play-mode action. |
-| `enter_play_mode` | Enters play mode and (default) waits for the first frame. Supports `paused: true` for frame-0 inspection. Refuses if compiling. Cooperative wait via `playModeStateChanged`. |
-| `exit_play_mode` | Exits play mode; waits for `EnteredEditMode`. |
-| `set_play_paused` | Toggles `EditorApplication.isPaused` — freeze the frame before a screenshot or sequence of steps. |
-| `step_frame` | Advances N frames while paused (auto-pauses if needed). Deterministic frame-by-frame inspection. |
-| `set_time_scale` | Sets `Time.timeScale`. Auto-resets to 1.0 on `ExitingPlayMode` so the editor isn't left stuck at slow speed. |
-| `screenshot_game_view` | Renders the active game-view camera into a PNG/JPG. In play mode, waits for end-of-frame so URP/HDRP post-fx is included. Edit-mode fallback reflects over `UnityEditor.GameView.m_TargetTexture`. |
-| `screenshot_from_pov` | Spawns a hidden temporary camera at `{ position, lookAt | rotationEuler, fov, ... }`, renders it, destroys it. No GameObject persists. Best way to inspect from a custom angle without moving the player. |
-| `get_active_cameras` | Lists every enabled `Camera` with instanceId, name, depth, tag, position, forward, URP renderType (when present). |
-| `mark_log_anchor` | Returns `ConsoleCapture.CurrentSeq`. Pair with `read_runtime_log_delta` to isolate the logs produced by one action. |
-| `read_runtime_log_delta` | Returns console entries since a `sinceSeq` anchor (severity-filtered). Use to correlate a screenshot with the errors/warnings emitted around it. |
-
-### Runtime bridge — scripted gameplay
-
-Requires you to call `McpCommandBridge.Register("name", handler)` in your own scripts to wire commands to your game. See [`Runtime/Bridge/README.md`](Runtime/Bridge/README.md) for the quick-start.
-
-| Tool | Purpose |
-| --- | --- |
-| `bridge_status` | Whether the bridge GameObject is in the active scene, what handlers the game has registered, queue depth, last dispatch. |
-| `bridge_install` | Adds `McpCommandBridge` to the active scene (idempotent). With Undo + scene-dirty. Sets `DontDestroyOnLoad` by default. |
-| `list_bridge_handlers` | Names of currently registered handlers. |
-| `send_runtime_command` | Invokes one handler. Singleton form — use for ad-hoc debug pokes. |
-| `send_runtime_commands` | **Primary.** Sends a timeline of `{ name, payload?, delayFrames?, captureScreenshotAfter?, markLogAnchorBefore? }` steps. The runtime executes them sequentially, captures per-step screenshots and log deltas as requested, and returns everything in one round-trip — including image content blocks the LLM can see inline. Use to script a whole gameplay sequence (load level → move → wait → shoot → screenshot) without N round-trips. |
-
-## Embedded chat panel (Model B)
-
-`Window → Coder Chat (Scene Analyzer)` is a chat client that talks directly to the coder runtime in D:\MCP — no need to leave Unity to converse with the agent.
-
-Architecture in one picture:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Unity Editor (host)                      │
-│                                                             │
-│  Window → Coder Chat ─────────► HTTP/SSE                    │
-│  (dev types here)               POST /api/coder/sessions/*  │
-│                                       │                     │
-│                                       ▼                     │
-│                              ┌────────────────┐             │
-│                              │ D:\MCP coder   │             │
-│                              └────────┬───────┘             │
-│                                       │ MCP                 │
-│                                       ▼                     │
-│  Window → Scene Analyzer ◄──── ext_unity_editor__*          │
-│  (MCP server localhost:8765)                                │
-└─────────────────────────────────────────────────────────────┘
+```json
+{ "module": "core", "limit": 250 }
 ```
 
-The dev's message goes to the coder, which streams text + tool calls back. When the agent decides to operate on the scene, it calls the plugin's MCP server (also running locally) — no network roundtrip, just two ports on `127.0.0.1`.
+```json
+{ "capability": "Build", "confirmationRequired": true, "includeSchemas": true }
+```
 
-### First run
+Run `self_test` after package installation, package changes, or a domain reload. Run `get_server_health` before long jobs or when an optional tool family is missing.
 
-1. Open **Window → Scene Analyzer** → Generate token → Start MCP server.
-2. In your D:\MCP dashboard, register the Unity MCP server: transport `streamable_http`, URL `http://127.0.0.1:8765/mcp`, bearer token from step 1.
-3. Open **Window → Coder Chat (Scene Analyzer)**.
-4. Configure the coder URL (defaults to `http://localhost:7333`) and, if `MCP_AUTH_ENABLED=true`, paste a bearer token issued by `/api/admin/tokens`.
-5. Pick agent (`build`, `explore`, `plan`, `admin`) and tool tier (`auto`, `bootstrap`, `navigate`, `full`).
-6. Type and Send. Replies stream back; tool calls appear inline. Cancel via the button. New session via the **New** button (clears the local transcript and forces a fresh server-side session on the next message).
+## Module inventory
 
-### What you see in the panel
+The exact per-tool table is generated by `get_tool_inventory`; the table below documents module boundaries and support policy without freezing a count in Markdown.
 
-- **You / Coder bubbles** — your messages and the assistant's replies.
-- **System notes** — plan submissions, ask_user prompts, tasks, notifications.
-- **Tool call lines** — each `ext_unity_editor__*` (and any other MCP tool) call is logged inline with name, duration and a truncated result preview.
+| Module | Assembly or package gate | Mode | Capabilities / maximum risk | Preview and confirmation | Coverage |
+| --- | --- | --- | --- | --- | --- |
+| Core MCP and operations | `com.maicon.scene-analyzer.Editor` | Any | Read; Low | None | Protocol negotiation, registry inventory, health, self-test, schemas, authorization, cancellation, jobs |
+| Read / analyze / discover | Main editor assembly | Any | Read; Low | None | Hierarchy, scenes, components, assets, references, console, performance and validation |
+| Scene authoring | Main editor assembly | Edit Mode | SceneWrite, AssetWrite, Destructive; High | Destructive operations require confirmation | Create/modify/delete objects, materials, audio, animation, physics, render settings, changesets |
+| Project | Main editor assembly | Mostly Edit Mode | Read, ProjectSettings; High | Project settings changes use preview/apply and confirmation | Editor context, compilation, tags/layers, quality and project settings |
+| Scene | Main editor assembly | Edit Mode | SceneWrite; Medium | Save is explicit | Loaded scenes, create/open/close/activate/save, multi-scene identity |
+| Prefab | Main editor assembly | Edit Mode | SceneWrite, AssetWrite, Destructive; High | Apply/revert/unpack follow descriptor confirmation policy | Prefab Stage, read/create/variant, overrides and unpack |
+| Assets/importers/VCS | Main editor assembly | Edit Mode | AssetWrite, Destructive; High | Delete/import changes support preview/confirm or explicit apply | Dependencies, copy/move/delete, import settings, reimport jobs, editability |
+| Packages | Main editor assembly | Edit Mode | PackageManager; Critical | `preview_*` then `confirm_*` with single-use token | List/search/add/remove packages and job polling |
+| Build | Main editor assembly | Edit Mode | Build; Critical | `preview_build` then confirmed `start_build` | Profiles, validation, build jobs, cancellation and BuildReport |
+| uGUI | `com.unity.ugui >= 1.0.0` | Edit Mode | Read, SceneWrite, Reflection; Critical | Event binding requires confirmation | Canvas/elements/layout/RectTransform/events/button binding |
+| Input System | `com.unity.inputsystem >= 1.7.0` | Edit Mode | Read, AssetWrite, SceneWrite; Medium | Normal write authorization | InputActionAsset/maps/actions/bindings/control schemes/PlayerInput |
+| Unity Test Framework | `com.unity.test-framework >= 1.1.0` | Any | Read, PlayControl; Medium | No destructive confirmation | List/run/poll/cancel EditMode and PlayMode tests |
+| System tools | Main editor assembly | Edit Mode unless read-only | Read, SceneWrite, AssetWrite, ProjectSettings; High | Project settings follow confirmation policy | Rendering, materials, lighting, LOD, Physics2D, sprites, Tilemap, Terrain, UI Toolkit, animation assets, frame timing |
+| Play | `com.maicon.scene-analyzer.Editor.Play` | Any / Play Mode | PlayControl; Medium | Capability gate | Play lifecycle, pause/step/time scale, cameras, screenshots, runtime logs |
+| Runtime bridge | Runtime + editor bridge assemblies | Play Mode | RuntimeCommand; Medium | Capability gate and bounded/cancellable scripts | Handler discovery and scripted gameplay sequences |
+| Mesh analytics | Editor mesh analytics assembly + optional Python sidecar | Any | Read, AssetWrite; Medium | Importer mutations use normal write authorization | Mesh regions, sampling, highlights, sidecar segmentation and health |
+| PostFx | `com.unity.render-pipelines.core >= 10.0.0` | Edit Mode | Read, SceneWrite, AssetWrite; Medium | Normal write authorization | Volumes and post-effect profiles |
+| Timeline | `com.unity.timeline >= 1.0.0` | Edit/Play | Read, SceneWrite, AssetWrite; Medium | Normal write authorization | Timeline assets, tracks, clips, bindings and playback |
+| NavMesh | `com.unity.ai.navigation >= 1.0.0` | Edit Mode | Read, SceneWrite; Medium | Normal write authorization | Surfaces, bake, modifiers and links |
+| Cinemachine | `com.unity.cinemachine >= 3.0.0` | Edit Mode | Read, SceneWrite; Medium | Normal write authorization | Context, camera/brain discovery, camera creation/configuration and validation |
+| TextMeshPro | `com.unity.ugui >= 2.0.0` or legacy `com.unity.textmeshpro >= 3.0.0` | Edit Mode | Read, SceneWrite; Medium | Normal write authorization | TMP UI/world text, font assets, creation/configuration and validation |
+| Shader Graph | `com.unity.shadergraph >= 17.0.0` | Edit Mode | Read, AssetWrite, Destructive; Critical | Source replacement requires confirmation and expected SHA-256 | Graph context, source/structure/validation and guarded replacement |
+| ProBuilder | `com.unity.probuilder >= 5.0.0` | Edit Mode | Read, SceneWrite; Medium | Normal write authorization | Shape creation, mesh refresh/context |
+| Localization | `com.unity.localization >= 1.5.0` | Edit Mode | Read, AssetWrite; Medium | Normal write authorization | Locales, string tables, localized values and validation |
+| XR Interaction Toolkit | `com.unity.xr.interaction.toolkit >= 3.0.0` | Edit Mode | Read, SceneWrite; Medium | Normal write authorization | XR context, interactors/interactables, creation/configuration and validation |
+| Netcode for GameObjects | `com.unity.netcode.gameobjects >= 2.0.0` | Edit Mode | Read, SceneWrite; Medium | Normal write authorization | NetworkManager, NetworkObject/NetworkTransform, context and validation |
+| Addressables | `com.unity.addressables >= 1.21.0` | Edit Mode | Read, AssetWrite, Destructive, Build; Critical | Entry moves/relabels and builds require confirmation; build has preview/job polling | Settings/groups/entries/validation/key audit/content build |
+| URP | `com.unity.render-pipelines.universal >= 17.0.0` | Any | Read; Low | None | Active URP asset and renderer context |
+| HDRP | `com.unity.render-pipelines.high-definition >= 17.0.0` | Any | Read; Low | None | Active HDRP asset and settings context |
+
+`get_server_health.packageCompatibility` reports every known gate as `loaded`, `package_missing`, `version_unsupported`, `available_not_loaded`, or `loaded_incompatible` with installed and minimum versions.
+
+## Safety model
+
+- The listener binds only to `127.0.0.1`.
+- Every MCP request requires a bearer token.
+- `Origin`, `Accept`, `Content-Type`, protocol version, JSON-RPC envelope, body size, concurrency, deadlines, and notifications are validated centrally.
+- Reads and mutations use a request coordinator; mutations are serialized.
+- `notifications/cancelled`, deadlines, jobs, bridge scripts, sidecar requests, and pending main-thread work support cooperative cancellation.
+- Capability switches separately gate writes, reflection, destructive operations, packages, builds, project settings, Play control, and runtime commands.
+- Destructive, reflection, Package Manager, and build operations require two-step confirmation when high-risk confirmation is enabled.
+- Confirmation tokens are single-use and bound to exact normalized arguments and the current project.
+- Reflection has explicit allow/deny policy for filesystem, process, modal menu, and other unsafe surfaces.
+- Mutations use Undo-aware APIs, record Prefab instance overrides, and dirty the actual affected scene or asset.
+- Stable targets are preferred; `instanceId` remains a session-local compatibility fallback.
+- No normal mutation implicitly calls `SaveAssets` or saves a scene. Use `save_scene` / `save_all_scenes` explicitly.
+
+## Jobs and long-running work
+
+Builds, tests, reimports, Package Manager operations, captures, and Addressables content builds expose job records with status, progress, timestamps, cancellation support when the underlying Unity API permits it, result, and structured error.
+
+A job can be `Queued`, `Running`, `CancelRequested`, `Completed`, `Failed`, or `Cancelled`. Some Unity APIs are synchronous once started; their preview/result explicitly states when cancellation is not possible.
 
 ## Install
 
-**Required dependency: Newtonsoft Json.** This plugin uses `JObject` extensively. The package `com.unity.nuget.newtonsoft-json` must be installed. Without it you'll get a wall of `CS0122 'JObject' is inaccessible` errors and a Burst `Failed to resolve assembly` complaint about the PostFx asmdef.
+### UPM via Git URL
 
-### Recommended: UPM via Git URL
+In Unity, open **Window → Package Manager → + → Add package from git URL** and enter:
 
-In Unity: **Window → Package Manager → + → Add package from git URL** →
-
-```
+```text
 https://github.com/<your-org>/<your-repo>.git?path=extensions/unity-scene-analyzer
 ```
 
-UPM resolves the `com.unity.nuget.newtonsoft-json` dependency automatically.
+The required dependency `com.unity.nuget.newtonsoft-json` is declared in `package.json` and is resolved by UPM.
 
-### Alternative: copy under `Packages/`
+### Local package
 
-Drop the `unity-scene-analyzer/` folder into your project's `Packages/` directory. Same UPM treatment as above — dependencies are resolved.
+Copy this directory under the Unity project's `Packages/` directory. If it is copied under `Assets/`, UPM does not process its `package.json`; install `com.unity.nuget.newtonsoft-json` manually.
 
-### If you copied under `Assets/Plugins/` (or any other Assets path)
+### First run
 
-UPM does **not** process `package.json` for things under `Assets/`, so you must install Newtonsoft yourself. Either:
+1. Open **Window → Scene Analyzer**.
+2. Generate or paste a bearer token.
+3. Start the MCP server.
+4. Register transport `streamable_http`, URL `http://127.0.0.1:8765/mcp`, and the same bearer token in the MCP client.
+5. Call `get_server_health`, then `self_test`.
+6. Use `get_tool_inventory` to discover the exact tool surface for the installed packages.
 
-1. **Window → Package Manager → '+' → Add package by name →** `com.unity.nuget.newtonsoft-json` (any 3.x, e.g. 3.2.1).
-2. Or edit `Packages/manifest.json` and add the line:
+## Embedded chat panel
 
-   ```json
-   "com.unity.nuget.newtonsoft-json": "3.2.1"
-   ```
+Open **Window → Coder Chat (Scene Analyzer)**, configure the coder runtime URL/token, select the desired coder agent/profile, and send a message. Tool calls appear inline and execute through the authenticated Scene Analyzer MCP server; the chat panel does not bypass MCP authorization.
 
-Then let Unity reimport. If you still see compile errors, delete `Library/ScriptAssemblies/` and let Unity rebuild.
-
-### Verifying the install worked
-
-The plugin ships a tiny diagnostics asmdef (`com.maicon.scene-analyzer.Editor.Diagnostics`) with no references — it always compiles and prints a guided error to the Console if Newtonsoft is missing. If you see no errors after import, you're good.
+For runtime gameplay handlers, see [`Runtime/Bridge/README.md`](Runtime/Bridge/README.md).
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
+| Symptom | Check | Resolution |
 | --- | --- | --- |
-| `CS0122 'JObject' is inaccessible due to its protection level` (lots of files) | `com.unity.nuget.newtonsoft-json` not installed; compiler picks up the internal copy from `com.unity.visualscripting` instead. | Install the official Newtonsoft package (see Install above). The `NewtonsoftCheck` diagnostic logs this automatically. |
-| `Mono.Cecil.AssemblyResolutionException: Failed to resolve assembly 'com.maicon.scene-analyzer.Editor.PostFx'` (from Burst) | Side-effect of the JObject error: PostFx asmdef can't compile, so its DLL is missing, so Burst's reference walk fails. | Fix Newtonsoft first; both errors clear together. If they persist, delete `Library/ScriptAssemblies/` and reimport. |
-| `create_volume` / `add_post_effect` not visible in tool list | Project doesn't have URP or HDRP installed (no SRP Core), so the gated PostFx asmdef is skipped. | Install URP via Package Manager, or use the Built-in-only subset (28 tools). |
-| Window → Coder Chat opens but Send fails | D:\MCP coder runtime not running, or wrong URL/token. | Start the runtime (`pnpm dev` etc. depending on your D:\MCP setup), confirm `http://localhost:7333/api/health` (or your configured port). If `MCP_AUTH_ENABLED=true`, paste a token issued by `/api/admin/tokens`. |
-| Plugin asmdef compiles but nothing happens on Unity reload | `Allow writes` toggle off, server not started, or token mismatch with the dashboard's MCP server entry. | Open Window → Scene Analyzer, verify Start is green and the token matches what's saved in Admin → MCP Servers. |
+| Tool family is missing | `get_server_health.packageCompatibility` | Install a supported package version and wait for the domain reload/delayed bootstrap. |
+| Package is installed but module is `available_not_loaded` | `self_test` and Unity Console | Wait for compilation/domain reload; resolve any assembly errors. |
+| `JObject` accessibility/compiler errors | Newtonsoft package | Install `com.unity.nuget.newtonsoft-json` 3.x through UPM. |
+| Request rejected | Server health, token, Origin, headers, protocol version | Match the configured token and use Streamable HTTP POST with JSON and a supported MCP protocol header. |
+| Confirmation required | Tool error metadata | Repeat the exact call with the returned `_confirmationToken` before it expires. |
+| Target no longer resolves | Refresh the read result | Prefer the returned `target.globalObjectId`; use `instanceId` only inside the current editor session. |
+| Changes are not on disk | Dirty scenes/assets | This is intentional. Call explicit save tools after review. |
+| Build/test/import job appears stuck | Health `jobs`, queue and compilation fields | Poll the matching `get_*_job`; cancel when supported; inspect compilation/update state. |
+| Sidecar unavailable | `mesh_sidecar_health` | Start the configured localhost sidecar and verify its Python dependencies. |
 
-## Render pipelines
+## Release verification
 
-The plugin ships in several assemblies. All secondary asmdefs register their tools via `delayCall` against `Bootstrap.ToolRegistry`, so deleting a folder cleanly disables only its tools.
+Before publishing:
 
-- **`com.maicon.scene-analyzer.Editor`** — main editor functionality. Compiles on every Unity 6.1 project regardless of pipeline.
-- **`com.maicon.scene-analyzer.Editor.PostFx`** — Volume / post-effect tools. Gated by `defineConstraints: ["SCENE_ANALYZER_HAS_SRP_CORE"]` (defined when `com.unity.render-pipelines.core` 10.0.0+ is installed). On a Built-in-only project this asmdef simply doesn't compile — the plugin still works, just without `create_volume` / `add_post_effect` / `set_post_effect_property` / `apply_color_grading`. Install URP or HDRP to unlock them.
-- **`com.maicon.scene-analyzer.Editor.Play`** — play-mode lifecycle + Game-view capture (11 tools). No gating; works on every Unity 6.1+ install regardless of pipeline. Edit-mode Game-view capture uses reflection (`UnityEditor.GameView.m_TargetTexture`) and degrades gracefully on Unity-version drift.
-- **`com.maicon.scene-analyzer.Bridge`** (runtime) + **`com.maicon.scene-analyzer.Editor.Bridge`** — the `McpCommandBridge` MonoBehaviour and its 5 editor-side tools. Runtime asmdef ships cross-platform so the bridge can also live in player builds if you want.
-
-Other notes:
-
-- `create_primitive` and `create_particle_system` use Unity's legacy default materials, which appear pink in URP/HDRP. Follow with `set_material` (URP/HDRP-Lit) when on a non-Built-in pipeline.
-- `create_light` intensity scale differs across pipelines — Built-in arbitrary 0..8, URP lumens for Point/Spot, HDRP physical units. Consult `get_project_meta` first.
-
-## Safety
-
-- HTTP listener binds to `127.0.0.1` only.
-- Bearer token required on every MCP request.
-- **Allow writes** toggle in the Scene Analyzer panel kills all write tools when off — including `execute_menu_item` and `invoke_static_method`.
-- `delete_object` refuses recursive deletes of large subtrees without `force: true`.
-- All write ops register with `Undo`; `apply_changeset` collapses N ops into one undo step.
-- Plugin never auto-saves the scene.
-- Chat panel never executes commands locally — all execution flows through the coder runtime in D:\MCP.
-- `execute_menu_item` and `invoke_static_method` are intentionally unsandboxed: they let the agent drive arbitrary editor code (your own scripts, asset-store tools). The localhost bind + bearer token + `Allow writes` toggle are the only guard rails.
+1. Import the package in Unity 6000.1, 6000.2, and 6000.3.
+2. Run `self_test` and verify zero errors.
+3. Run EditMode tests; run PlayMode/bridge tests when the project includes runtime fixtures.
+4. Exercise Built-in, URP, and HDRP projects.
+5. Test each optional package both absent and present at a supported version.
+6. Verify high-risk calls return `CONFIRMATION_REQUIRED` and consume the token only once.
+7. Verify a mutation in an additive non-active scene and a Prefab instance records the correct dirty scene/override without saving.
+8. Run sidecar pytest when shipping the sidecar.
+9. Capture `get_server_health` and `get_tool_inventory` output as release evidence.
 
 ## License
 

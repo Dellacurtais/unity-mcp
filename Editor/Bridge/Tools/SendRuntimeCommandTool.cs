@@ -60,11 +60,21 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
 
             try
             {
-                await BridgeChannel.SubmitAndAwait(script, timeoutSeconds);
+                var context = ToolExecutionContext.Current;
+                await BridgeChannel.SubmitAndAwait(
+                    script, timeoutSeconds, context != null ? context.CancellationToken : default);
+            }
+            catch (System.OperationCanceledException)
+            {
+                return ToolResult.Error("CANCELLED", $"runtime command '{name}' was cancelled; bridge script #{script.Id} status={script.Status}.");
             }
             catch (System.TimeoutException te)
             {
-                return ToolResult.Error("TIMEOUT", te.Message);
+                return ToolResult.Error("TIMEOUT", te.Message, BridgeState(script));
+            }
+            catch (System.InvalidOperationException ioe)
+            {
+                return ToolResult.Error("DISPATCH_FAILED", ioe.Message, BridgeState(script));
             }
 
             if (script.Results.Count == 0)
@@ -83,7 +93,21 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                     ["durationMs"] = r.DurationMs,
                     ["frameAtStart"] = r.FrameAtStart,
                     ["frameAtEnd"] = r.FrameAtEnd,
+                    ["script"] = BridgeState(script),
                 });
+        }
+
+        private static JObject BridgeState(BridgeScript script)
+        {
+            return new JObject
+            {
+                ["scriptId"] = script.Id,
+                ["status"] = script.Status.ToString(),
+                ["cancelRequested"] = script.CancelRequested,
+                ["terminalError"] = script.TerminalError,
+                ["completedSteps"] = script.Results.Count,
+                ["totalSteps"] = script.Steps.Count,
+            };
         }
 
         private static string SerializePayload(JToken token)

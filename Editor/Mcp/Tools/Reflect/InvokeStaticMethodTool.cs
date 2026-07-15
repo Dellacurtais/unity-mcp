@@ -108,6 +108,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
             if (method.GetParameters().Any(p => p.ParameterType.IsByRef))
                 return ToolResult.Error("UNSUPPORTED",
                     "ref/out parameters are not supported");
+            if (!ReflectionPolicy.ValidateMethod(method, jsonArgs, out var policyError))
+                return ToolResult.Error("REFLECTION_BLOCKED", policyError,
+                    new JObject
+                    {
+                        ["typeFullName"] = t.FullName,
+                        ["method"] = method.Name,
+                    });
 
             object[] coerced;
             try { coerced = ReflectionResolver.CoerceArgs(method, jsonArgs); }

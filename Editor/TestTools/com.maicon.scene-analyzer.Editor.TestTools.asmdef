@@ -1,0 +1,25 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.TestTools",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.TestTools",
+  "references": [
+    "com.maicon.scene-analyzer.Editor",
+    "Unity.Newtonsoft.Json",
+    "UnityEditor.TestRunner",
+    "UnityEngine.TestRunner"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_TEST_FRAMEWORK"],
+  "versionDefines": [
+    {
+      "name": "com.unity.test-framework",
+      "expression": "1.1.0",
+      "define": "SCENE_ANALYZER_HAS_TEST_FRAMEWORK"
+    }
+  ],
+  "noEngineReferences": false
+}

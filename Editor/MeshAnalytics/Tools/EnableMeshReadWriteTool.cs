@@ -46,8 +46,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             int instanceId = (int?)args["instanceId"] ?? 0;
             bool reimport = (bool?)args["reimport"] ?? true;
 
-            if (string.IsNullOrEmpty(assetPath) && instanceId == 0)
-                return ToolResult.Error("BAD_ARGS", "provide either instanceId or assetPath");
+            if (string.IsNullOrEmpty(assetPath) == (instanceId == 0))
+                return ToolResult.Error("BAD_ARGS", "provide exactly one of instanceId or assetPath");
 
             // Resolve to an asset path. instanceId path: GameObject → mesh
             // → AssetDatabase.GetAssetPath(mesh).
@@ -77,17 +77,29 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                     $"For native .asset meshes, edit the Mesh asset's Read/Write Enabled directly.");
             }
 
+            if (!AssetDatabase.IsOpenForEdit(assetPath, out var editMessage, StatusQueryOptions.ForceUpdate))
+                return ToolResult.Error("ASSET_NOT_EDITABLE", $"'{assetPath}' is not editable: {editMessage}");
+
             bool wasEnabled = model.isReadable;
             if (!wasEnabled)
             {
-                model.isReadable = true;
-                if (reimport)
+                Undo.RegisterCompleteObjectUndo(model, "Enable Mesh Read/Write");
+                try
                 {
-                    model.SaveAndReimport();
+                    model.isReadable = true;
+                    EditorUtility.SetDirty(model);
+                    if (reimport)
+                        model.SaveAndReimport();
+                    else
+                        AssetDatabase.WriteImportSettingsIfDirty(assetPath);
                 }
-                else
+                catch (System.Exception exception)
                 {
+                    model.isReadable = wasEnabled;
+                    EditorUtility.SetDirty(model);
                     AssetDatabase.WriteImportSettingsIfDirty(assetPath);
+                    return ToolResult.Error("REIMPORT_FAILED", exception.Message,
+                        new JObject { ["assetPath"] = assetPath, ["restoredReadable"] = wasEnabled });
                 }
             }
 
@@ -97,6 +109,10 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 ["wasEnabled"] = wasEnabled,
                 ["isEnabledNow"] = model.isReadable,
                 ["reimported"] = !wasEnabled && reimport,
+                ["savedAssets"] = false,
+                ["warning"] = !wasEnabled && reimport
+                    ? "SaveAndReimport is synchronous and may pause the Editor for large model assets."
+                    : null,
             };
             string summary = wasEnabled
                 ? $"'{assetPath}' was already Read/Write Enabled — no-op"

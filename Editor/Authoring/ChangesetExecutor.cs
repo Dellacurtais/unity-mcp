@@ -176,7 +176,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     report.Failed = true;
                     report.Error = $"op #{i} is not an object";
                     report.FailedAtIndex = i;
-                    RevertAndCleanup(report);
+                    RevertAndCleanup(report, group);
                     return report;
                 }
 
@@ -205,7 +205,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     report.Failed = true;
                     report.Error = $"op #{i} failed: {r.Error}";
                     report.FailedAtIndex = i;
-                    RevertAndCleanup(report);
+                    RevertAndCleanup(report, group);
                     return report;
                 }
 
@@ -224,7 +224,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                         failure.CreatedAssetPath = r.CreatedAssetPath;
                         failure.InstanceID = r.InstanceID;
                         report.Results[report.Results.Count - 1] = failure;
-                        RevertAndCleanup(report);
+                        RevertAndCleanup(report, group);
                         return report;
                     }
                     labels[label] = r.InstanceID;
@@ -234,16 +234,13 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             }
 
             Undo.CollapseUndoOperations(group);
-            EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
-            try { AssetDatabase.SaveAssets(); }
-            catch (Exception e) { Debug.LogException(e); }
             try { OnApplied?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
             return report;
         }
 
-        private static void SafeRevertAll()
+        private static void SafeRevertAll(int group)
         {
-            try { Undo.RevertAllInCurrentGroup(); }
+            try { Undo.RevertAllDownToGroup(group); }
             catch (Exception e) { Debug.LogException(e); }
         }
 
@@ -252,9 +249,9 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         /// VolumeFactory.Create) write a path to OpResult.CreatedAssetPath;
         /// this loop deletes those paths so the failed batch leaves no
         /// orphan files behind.
-        private static void RevertAndCleanup(Report report)
+        private static void RevertAndCleanup(Report report, int group)
         {
-            SafeRevertAll();
+            SafeRevertAll(group);
             foreach (var prior in report.Results)
             {
                 if (string.IsNullOrEmpty(prior?.CreatedAssetPath)) continue;

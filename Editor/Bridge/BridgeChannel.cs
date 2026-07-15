@@ -7,60 +7,67 @@ using UnityEditor;
 
 namespace Maicon.SceneAnalyzer.Editor.Bridge
 {
-    /// Editor-side wrapper around McpCommandBridge.Instance. The MCP tools
-    /// shouldn't talk to the bridge GameObject directly — they go through
-    /// here so we can handle:
-    ///   - preconditions (bridge exists, scene in play mode)
-    ///   - script id allocation
-    ///   - awaiting completion without blocking the dispatcher pump
-    ///   - graceful cancellation when the editor reloads assemblies during
-    ///     a long script
     public static class BridgeChannel
     {
-        private static int _nextScriptId = 1;
+        private static int _nextScriptId;
 
         public static (bool ok, string error) Precheck(bool requirePlayMode)
         {
             if (requirePlayMode && !EditorApplication.isPlaying)
-                return (false, "NOT_PLAYING: bridge handlers only run during play mode — call enter_play_mode first.");
+                return (false, "NOT_PLAYING: bridge handlers only run during play mode; call enter_play_mode first.");
             if (!McpCommandBridge.Exists)
-                return (false, "BRIDGE_NOT_INSTALLED: no McpCommandBridge in the active scene — call bridge_install first.");
+                return (false, "BRIDGE_NOT_INSTALLED: no McpCommandBridge is active; call bridge_install first.");
             return (true, null);
         }
 
         public static async Task<BridgeScript> SubmitAndAwait(
-            BridgeScript script, double timeoutSeconds)
+            BridgeScript script, double timeoutSeconds, CancellationToken cancellationToken = default)
         {
             if (script == null) throw new ArgumentNullException(nameof(script));
+            if (timeoutSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(timeoutSeconds));
+            cancellationToken.ThrowIfCancellationRequested();
             script.Id = Interlocked.Increment(ref _nextScriptId);
 
-            await MainThreadDispatcher.RunAsync(() =>
-            {
-                if (McpCommandBridge.Instance == null) return;
-                McpCommandBridge.Instance.Submit(script);
-            });
+            var completion = new TaskCompletionSource<BridgeScript>(TaskCreationOptions.RunContinuationsAsynchronously);
+            script.CompletionCallback = terminal => completion.TrySetResult(terminal);
 
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            EditorApplication.CallbackFunction poll = null;
-            poll = () =>
+            string submitError = null;
+            var submitted = await MainThreadDispatcher.RunAsync(() =>
             {
-                if (script.IsComplete)
-                {
-                    EditorApplication.update -= poll;
-                    tcs.TrySetResult(true);
-                }
-            };
-            await MainThreadDispatcher.RunAsync(() => EditorApplication.update += poll);
-
-            var winner = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(timeoutSeconds)));
-            if (winner != tcs.Task)
+                var bridge = McpCommandBridge.Instance;
+                if (bridge == null) { submitError = "BRIDGE_DISAPPEARED"; return false; }
+                return bridge.TrySubmit(script, out submitError);
+            }, cancellationToken);
+            if (!submitted)
             {
-                await MainThreadDispatcher.RunAsync(() => EditorApplication.update -= poll);
-                throw new TimeoutException(
-                    $"bridge script #{script.Id} did not complete within {timeoutSeconds}s — " +
-                    $"completed {script.Results.Count}/{script.Steps.Count} steps (started={script.StartedExecution})");
+                script.TrySetTerminal(BridgeScriptStatus.Failed, submitError ?? "BRIDGE_SUBMIT_FAILED");
+                throw new InvalidOperationException(submitError ?? "BRIDGE_SUBMIT_FAILED");
             }
-            return script;
+
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds)))
+            using (var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token))
+            {
+                var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                using (linked.Token.Register(() => cancelled.TrySetResult(true)))
+                {
+                    var winner = await Task.WhenAny(completion.Task, cancelled.Task);
+                    if (winner == completion.Task) return await completion.Task;
+                }
+
+                var reason = cancellationToken.IsCancellationRequested ? "MCP_REQUEST_CANCELLED" : "EDITOR_TIMEOUT";
+                try
+                {
+                    await MainThreadDispatcher.RunAsync(() => McpCommandBridge.Instance?.Cancel(script.Id, reason));
+                }
+                catch { }
+                script.ClearCompletionCallback();
+                if (completion.Task.IsCompleted) return await completion.Task;
+                if (script.IsComplete) return script;
+                if (cancellationToken.IsCancellationRequested) throw new OperationCanceledException(cancellationToken);
+                throw new TimeoutException(
+                    $"bridge script #{script.Id} exceeded {timeoutSeconds:F1}s; status={script.Status}, " +
+                    $"results={script.Results.Count}/{script.Steps.Count}; cancellation requested.");
+            }
         }
     }
 }

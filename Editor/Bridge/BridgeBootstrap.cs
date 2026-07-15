@@ -19,13 +19,16 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge
         {
             try
             {
-                if (Bootstrap.ToolRegistry == null) return;
+                if (Bootstrap.ToolRegistry == null || Bootstrap.ToolRegistry.TryGet("bridge_status", out _)) return;
 
-                Bootstrap.ToolRegistry.Register(new BridgeStatusTool());
-                Bootstrap.ToolRegistry.Register(new BridgeInstallTool());
-                Bootstrap.ToolRegistry.Register(new ListBridgeHandlersTool());
-                Bootstrap.ToolRegistry.Register(new SendRuntimeCommandTool());
-                Bootstrap.ToolRegistry.Register(new SendRuntimeCommandsTool());
+                Bootstrap.ToolRegistry.RegisterRange(new Maicon.SceneAnalyzer.Editor.Mcp.IMcpTool[]
+                {
+                    new BridgeStatusTool(),
+                    new BridgeInstallTool(),
+                    new ListBridgeHandlersTool(),
+                    new SendRuntimeCommandTool(),
+                    new SendRuntimeCommandsTool(),
+                });
 
                 Bootstrap.RecordEntry("[bridge] registered 5 runtime-command tools");
             }

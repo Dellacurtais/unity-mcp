@@ -1,0 +1,24 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.Optional.XR",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.Optional.XR",
+  "references": [
+    "com.maicon.scene-analyzer",
+    "com.maicon.scene-analyzer.Editor",
+    "Unity.Newtonsoft.Json"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_XRI"],
+  "versionDefines": [
+    {
+      "name": "com.unity.xr.interaction.toolkit",
+      "expression": "3.0.0",
+      "define": "SCENE_ANALYZER_HAS_XRI"
+    }
+  ],
+  "noEngineReferences": false
+}

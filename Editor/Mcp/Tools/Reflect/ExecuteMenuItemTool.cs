@@ -47,8 +47,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
         public ToolResult Execute(JObject args)
         {
             var menuPath = (string)args["menuPath"];
-            if (string.IsNullOrEmpty(menuPath))
-                return ToolResult.Error("BAD_ARGS", "menuPath is required");
+            if (!ReflectionPolicy.ValidateMenuPath(menuPath, out var policyError))
+                return ToolResult.Error("MENU_BLOCKED", policyError,
+                    new JObject { ["menuPath"] = menuPath });
             bool verify = (bool?)args["verifyEnabledFirst"] ?? true;
 
             bool enabled = Menu.GetEnabled(menuPath);

@@ -1,0 +1,24 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.Optional.Netcode",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.Optional.Netcode",
+  "references": [
+    "com.maicon.scene-analyzer",
+    "com.maicon.scene-analyzer.Editor",
+    "Unity.Newtonsoft.Json"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_NETCODE"],
+  "versionDefines": [
+    {
+      "name": "com.unity.netcode.gameobjects",
+      "expression": "2.0.0",
+      "define": "SCENE_ANALYZER_HAS_NETCODE"
+    }
+  ],
+  "noEngineReferences": false
+}
