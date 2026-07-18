@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix corrupted character literal in `ShaderGraphTools.TryPath` (`'\\'` escape) that caused CS1010/CS1012/CS1003 syntax errors.
 - Qualify the world-space TMP component as `TMPro.TextMeshPro` in `CreateTmpTextTool` — the module namespace `Optional.TextMeshPro` shadowed the type (CS0118).
 - Explicit `(int)scene.handle` casts in editor tests for `SceneHandle` JSON serialization and comparison.
+- Rework `McpCommandBridge` script loop: the step iterator is pumped manually so unexpected exceptions are still caught and reported as `BRIDGE_EXCEPTION` without yielding inside a try/catch (CS1626), and cancel/fail status propagates through an outcome object.
 
 ## [0.14.1] - 2026-07-18
 

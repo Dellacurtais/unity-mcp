@@ -175,103 +175,155 @@ namespace Maicon.SceneAnalyzer.Bridge
                 yield break;
             }
 
-            BridgeScriptStatus terminal = BridgeScriptStatus.Completed;
+            var terminal = BridgeScriptStatus.Completed;
             string terminalError = null;
+            var outcome = new StepLoopOutcome();
             try
             {
-                for (int i = 0; i < script.Steps.Count; i++)
+                // C# forbids yield inside try/catch (CS1626). The pump lives in a
+                // non-iterator helper where try/catch is legal; this method yields the
+                // step values between pump calls and keeps cleanup in finally (allowed).
+                var steps = RunScriptSteps(script, outcome);
+                for (;;)
                 {
-                    if (script.CancelRequested) { terminal = BridgeScriptStatus.Cancelled; terminalError = script.TerminalError ?? "CANCELLED"; break; }
-                    var step = script.Steps[i];
-                    var result = new BridgeStepResult { Name = step.Name, FrameAtStart = Time.frameCount };
-
-                    for (int frame = 0; frame < Mathf.Max(0, step.DelayFrames); frame++)
-                    {
-                        if (script.CancelRequested) break;
-                        yield return null;
-                    }
-                    if (script.CancelRequested) { terminal = BridgeScriptStatus.Cancelled; terminalError = script.TerminalError ?? "CANCELLED"; break; }
-
-                    if (step.MarkLogAnchorBefore) result.LogAnchorSeq = TryGetEditorLogSeq();
-                    CommandHandler handler;
-                    lock (_handlersLock) _handlers.TryGetValue(step.Name, out handler);
-                    if (handler == null)
-                    {
-                        CompleteStep(script, result, false, "HANDLER_NOT_REGISTERED", 0f);
-                        if (script.StopOnError) { terminal = BridgeScriptStatus.Failed; terminalError = result.Error; break; }
-                        continue;
-                    }
-
-                    var stopwatch = Stopwatch.StartNew();
-                    bool completed = false;
-                    bool succeeded = false;
-                    bool acceptCallback = true;
-                    string error = null;
-                    try
-                    {
-                        handler(step.PayloadJson ?? string.Empty, (ok, message) =>
-                        {
-                            if (!acceptCallback || completed) return;
-                            completed = true;
-                            succeeded = ok;
-                            error = message;
-                        });
-                    }
-                    catch (Exception exception)
-                    {
-                        completed = true;
-                        error = $"handler threw: {exception.GetType().Name}: {exception.Message}";
-                    }
-
-                    int timeoutFrames = step.TimeoutFrames > 0 ? step.TimeoutFrames : Mathf.Max(1, defaultHandlerTimeoutFrames);
-                    float timeoutSeconds = step.TimeoutSeconds > 0f ? step.TimeoutSeconds : Mathf.Max(0.1f, defaultHandlerTimeoutSeconds);
-                    int startFrame = Time.frameCount;
-                    float startRealtime = Time.realtimeSinceStartup;
-                    while (!completed && !script.CancelRequested
-                        && Time.frameCount - startFrame < timeoutFrames
-                        && Time.realtimeSinceStartup - startRealtime < timeoutSeconds)
-                        yield return null;
-
-                    acceptCallback = false;
-                    stopwatch.Stop();
-                    if (script.CancelRequested)
-                    {
-                        terminal = BridgeScriptStatus.Cancelled;
-                        terminalError = script.TerminalError ?? "CANCELLED";
-                        break;
-                    }
-                    if (!completed)
-                    {
-                        error = $"HANDLER_TIMEOUT: no completion callback within {timeoutFrames} frames/{timeoutSeconds:F1}s";
-                        succeeded = false;
-                    }
-
-                    result.Ok = completed && succeeded;
-                    result.Error = result.Ok ? null : error ?? "HANDLER_FAILED";
-                    result.DurationMs = (float)stopwatch.Elapsed.TotalMilliseconds;
-                    result.FrameAtEnd = Time.frameCount;
-
-                    if (step.CaptureScreenshotAfter && !script.CancelRequested)
-                    {
-                        yield return new WaitForEndOfFrame();
-                        if (!script.CancelRequested) TryCapture(result);
-                    }
-                    script.Results.Add(result);
-                    UpdateLast(script, result);
-                    if (!result.Ok && script.StopOnError)
-                    {
-                        terminal = BridgeScriptStatus.Failed;
-                        terminalError = result.Error;
-                        break;
-                    }
+                    var pending = PumpSteps(steps, outcome);
+                    if (pending == null) break;
+                    for (int i = 0; i < pending.Count; i++) yield return pending[i];
+                    if (outcome.Done) break;
                 }
             }
             finally
             {
-                if (script.CancelRequested) { terminal = BridgeScriptStatus.Cancelled; terminalError = script.TerminalError ?? terminalError ?? "CANCELLED"; }
+                if (script.CancelRequested) { outcome.Status = BridgeScriptStatus.Cancelled; outcome.Error = script.TerminalError ?? outcome.Error ?? "CANCELLED"; }
+                terminal = outcome.Status;
+                terminalError = outcome.Error;
                 Finish(script, terminal, terminalError);
                 _running = null;
                 _runningScript = null;
+            }
+        }
+
+        // Non-iterator helper: may use try/catch. Pumps the step iterator until it
+        // needs to yield, buffering yielded values. Returns null on completion/exception.
+        private static List<object> PumpSteps(IEnumerator steps, StepLoopOutcome outcome)
+        {
+            var buffer = new List<object>();
+            try
+            {
+                while (steps.MoveNext())
+                {
+                    buffer.Add(steps.Current);
+                    // Stop after each yield so the outer coroutine schedules per-frame/
+                    // end-of-frame waits with Unity instead of running everything at once.
+                    break;
+                }
+                if (buffer.Count == 0) outcome.Done = true;
+            }
+            catch (Exception exception)
+            {
+                outcome.Status = BridgeScriptStatus.Failed;
+                outcome.Error = $"BRIDGE_EXCEPTION: {exception.GetType().Name}: {exception.Message}";
+                outcome.Done = true;
+                Debug.LogException(exception);
+                return null;
+            }
+            return buffer.Count > 0 ? buffer : null;
+        }
+
+        private sealed class StepLoopOutcome
+        {
+            public BridgeScriptStatus Status = BridgeScriptStatus.Completed;
+            public string Error;
+            public bool Done;
+        }
+
+        private IEnumerator RunScriptSteps(BridgeScript script, StepLoopOutcome outcome)
+        {
+            for (int i = 0; i < script.Steps.Count; i++)
+            {
+                if (script.CancelRequested) { outcome.Status = BridgeScriptStatus.Cancelled; outcome.Error = script.TerminalError ?? "CANCELLED"; yield break; }
+                var step = script.Steps[i];
+                var result = new BridgeStepResult { Name = step.Name, FrameAtStart = Time.frameCount };
+
+                for (int frame = 0; frame < Mathf.Max(0, step.DelayFrames); frame++)
+                {
+                    if (script.CancelRequested) break;
+                    yield return null;
+                }
+                if (script.CancelRequested) { outcome.Status = BridgeScriptStatus.Cancelled; outcome.Error = script.TerminalError ?? "CANCELLED"; yield break; }
+
+                if (step.MarkLogAnchorBefore) result.LogAnchorSeq = TryGetEditorLogSeq();
+                CommandHandler handler;
+                lock (_handlersLock) _handlers.TryGetValue(step.Name, out handler);
+                if (handler == null)
+                {
+                    CompleteStep(script, result, false, "HANDLER_NOT_REGISTERED", 0f);
+                    if (script.StopOnError) { outcome.Status = BridgeScriptStatus.Failed; outcome.Error = result.Error; yield break; }
+                    continue;
+                }
+
+                var stopwatch = Stopwatch.StartNew();
+                bool completed = false;
+                bool succeeded = false;
+                bool acceptCallback = true;
+                string error = null;
+                try
+                {
+                    handler(step.PayloadJson ?? string.Empty, (ok, message) =>
+                    {
+                        if (!acceptCallback || completed) return;
+                        completed = true;
+                        succeeded = ok;
+                        error = message;
+                    });
+                }
+                catch (Exception exception)
+                {
+                    completed = true;
+                    error = $"handler threw: {exception.GetType().Name}: {exception.Message}";
+                }
+
+                int timeoutFrames = step.TimeoutFrames > 0 ? step.TimeoutFrames : Mathf.Max(1, defaultHandlerTimeoutFrames);
+                float timeoutSeconds = step.TimeoutSeconds > 0f ? step.TimeoutSeconds : Mathf.Max(0.1f, defaultHandlerTimeoutSeconds);
+                int startFrame = Time.frameCount;
+                float startRealtime = Time.realtimeSinceStartup;
+                while (!completed && !script.CancelRequested
+                    && Time.frameCount - startFrame < timeoutFrames
+                    && Time.realtimeSinceStartup - startRealtime < timeoutSeconds)
+                    yield return null;
+
+                acceptCallback = false;
+                stopwatch.Stop();
+                if (script.CancelRequested)
+                {
+                    outcome.Status = BridgeScriptStatus.Cancelled;
+                    outcome.Error = script.TerminalError ?? "CANCELLED";
+                    yield break;
+                }
+                if (!completed)
+                {
+                    error = $"HANDLER_TIMEOUT: no completion callback within {timeoutFrames} frames/{timeoutSeconds:F1}s";
+                    succeeded = false;
+                }
+
+                result.Ok = completed && succeeded;
+                result.Error = result.Ok ? null : error ?? "HANDLER_FAILED";
+                result.DurationMs = (float)stopwatch.Elapsed.TotalMilliseconds;
+                result.FrameAtEnd = Time.frameCount;
+
+                if (step.CaptureScreenshotAfter && !script.CancelRequested)
+                {
+                    yield return new WaitForEndOfFrame();
+                    if (!script.CancelRequested) TryCapture(result);
+                }
+                script.Results.Add(result);
+                UpdateLast(script, result);
+                if (!result.Ok && script.StopOnError)
+                {
+                    outcome.Status = BridgeScriptStatus.Failed;
+                    outcome.Error = result.Error;
+                    yield break;
+                }
             }
         }
 
