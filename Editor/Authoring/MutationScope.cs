@@ -108,7 +108,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             for (int i = 0; i < SceneManager.sceneCount; i++)
             {
                 var scene = SceneManager.GetSceneAt(i);
-                if (scene.handle == handle) return scene;
+                if ((int)scene.handle == handle) return scene;
             }
             return default;
         }

@@ -48,7 +48,7 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.TextMeshPro
                     }
                     text = ui
                         ? (TMP_Text)mutation.AddComponent(gameObject, typeof(TextMeshProUGUI))
-                        : mutation.AddComponent<TextMeshPro>(gameObject);
+                        : mutation.AddComponent<TMPro.TextMeshPro>(gameObject);
                     text.text = (string)arguments["text"] ?? "Text";
                     text.fontSize = (float?)arguments["fontSize"] ?? 36f;
                     mutation.Touch(text);

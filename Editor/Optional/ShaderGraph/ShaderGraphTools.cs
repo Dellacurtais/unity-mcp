@@ -18,7 +18,7 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.ShaderGraph
 
         public static bool TryPath(string requested, bool mustExist, out string path, out string absolute, out string error)
         {
-            path = (requested ?? string.Empty).Replace('\', '/').Trim();
+            path = (requested ?? string.Empty).Replace('\\', '/').Trim();
             absolute = null;
             error = null;
             if (!path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)

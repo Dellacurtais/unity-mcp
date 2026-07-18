@@ -189,7 +189,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 var result = new SaveSceneTool().Execute(new JObject
                 {
-                    ["sceneHandle"] = scene.handle,
+                    ["sceneHandle"] = (int)scene.handle,
                     ["destinationPath"] = "Assets/Scenes/../Escaped.unity",
                 });
                 Assert.That(result.IsError, Is.True);
@@ -216,7 +216,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             for (int i = 0; i < SceneManager.sceneCount; i++)
             {
                 var candidate = SceneManager.GetSceneAt(i);
-                if (candidate.handle == handle) { scene = candidate; break; }
+                if ((int)candidate.handle == handle) { scene = candidate; break; }
             }
             try
             {

@@ -5,6 +5,16 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-07-18
+
+### Fixed — Unity 6000.3 API compatibility
+
+- Resolve `PackageInfo` ambiguity between `UnityEditor.PackageManager.PackageInfo` and `UnityEditor.PackageInfo` (new in Unity 6.3) with explicit type alias in package, optional-support, input, and operational tool files.
+- Adapt to `Scene.handle` now returning the `SceneHandle` struct (wrapper around `EntityId`): cast to `int` for JSON serialization in scene, prefab, and project tool payloads.
+- Replace removed `SceneManager.GetSceneByHandle` with a loaded-scene iteration resolver in `MutationScope` and editor tests.
+- Fix `McpCommandBridge.RunScript` coroutine: C# forbids `yield` inside a `try` block that has a `catch` clause; kept exception capture around handler invocation and moved script finalization to `finally`.
+- Add missing `Tests.meta` folder asset so the package's Tests folder imports cleanly from the Package Cache.
+
 ## [0.14.0] - 2026-07-13
 
 ### Added — MCP reliability and operational contract
