@@ -109,7 +109,7 @@ namespace Maicon.SceneAnalyzer.Editor.PrefabTools
                 ["open"] = true,
                 ["assetPath"] = stage.assetPath,
                 ["assetGuid"] = AssetDatabase.AssetPathToGUID(stage.assetPath),
-                ["sceneHandle"] = stage.scene.handle,
+                ["sceneHandle"] = (int)stage.scene.handle,
                 ["sceneName"] = stage.scene.name,
                 ["isDirty"] = stage.scene.isDirty,
                 ["root"] = ToolTargetRef.Capture(stage.prefabContentsRoot)?.ToJson(),
@@ -143,7 +143,7 @@ namespace Maicon.SceneAnalyzer.Editor.PrefabTools
             return ToolResult.Ok($"opened Prefab Mode for '{path}'", new JObject
             {
                 ["asset"] = PrefabToolSupport.PrefabAssetJson(prefab),
-                ["sceneHandle"] = stage.scene.handle,
+                ["sceneHandle"] = (int)stage.scene.handle,
                 ["root"] = ToolTargetRef.Capture(stage.prefabContentsRoot)?.ToJson(),
             });
         }

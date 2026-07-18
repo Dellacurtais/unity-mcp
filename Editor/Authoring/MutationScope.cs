@@ -102,12 +102,23 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (scene.IsValid()) _sceneHandles.Add(scene.handle);
         }
 
+        // SceneManager.GetSceneByHandle was removed in Unity 6000.3; resolve by iterating loaded scenes.
+        private static Scene ResolveSceneByHandle(int handle)
+        {
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var scene = SceneManager.GetSceneAt(i);
+                if (scene.handle == handle) return scene;
+            }
+            return default;
+        }
+
         public void Complete()
         {
             if (_completed) return;
             foreach (var handle in _sceneHandles)
             {
-                var scene = SceneManager.GetSceneByHandle(handle);
+                var scene = ResolveSceneByHandle(handle);
                 if (scene.IsValid()) EditorSceneManager.MarkSceneDirty(scene);
             }
             foreach (var target in _objects)
@@ -121,7 +132,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var scenes = new JArray();
             foreach (var handle in _sceneHandles)
             {
-                var scene = SceneManager.GetSceneByHandle(handle);
+                var scene = ResolveSceneByHandle(handle);
                 scenes.Add(new JObject { ["handle"] = handle, ["path"] = scene.path, ["name"] = scene.name });
             }
             return new JObject { ["scenes"] = scenes, ["assets"] = new JArray(_assets), ["objectCount"] = _objects.Count, ["completed"] = _completed };
@@ -147,7 +158,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var scenes = new JArray();
             foreach (var handle in touchedScenes)
             {
-                var scene = SceneManager.GetSceneByHandle(handle);
+                var scene = ResolveSceneByHandle(handle);
                 if (!scene.IsValid()) continue;
                 EditorSceneManager.MarkSceneDirty(scene);
                 scenes.Add(new JObject { ["handle"] = handle, ["name"] = scene.name, ["path"] = scene.path });

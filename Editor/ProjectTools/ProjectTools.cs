@@ -126,7 +126,7 @@ namespace Maicon.SceneAnalyzer.Editor.ProjectTools
                 {
                     ["name"] = activeScene.name,
                     ["path"] = activeScene.path,
-                    ["handle"] = activeScene.handle,
+                    ["handle"] = (int)activeScene.handle,
                     ["isDirty"] = activeScene.isDirty,
                 },
                 ["selection"] = ToolTargetRef.Capture(selection)?.ToJson(),

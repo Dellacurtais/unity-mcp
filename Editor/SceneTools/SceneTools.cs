@@ -64,7 +64,7 @@ namespace Maicon.SceneAnalyzer.Editor.SceneTools
                 ["name"] = scene.name,
                 ["path"] = scene.path,
                 ["guid"] = string.IsNullOrEmpty(scene.path) ? null : UnityEditor.AssetDatabase.AssetPathToGUID(scene.path),
-                ["handle"] = scene.handle,
+                ["handle"] = (int)scene.handle,
                 ["buildIndex"] = scene.buildIndex,
                 ["isLoaded"] = scene.isLoaded,
                 ["isDirty"] = scene.isDirty,
@@ -130,7 +130,7 @@ namespace Maicon.SceneAnalyzer.Editor.SceneTools
                 scenes.Add(SceneToolSupport.ToJson(SceneManager.GetSceneAt(index)));
             return ToolResult.Ok($"{scenes.Count} loaded scene(s)", new JObject
             {
-                ["activeSceneHandle"] = SceneManager.GetActiveScene().handle,
+                ["activeSceneHandle"] = (int)SceneManager.GetActiveScene().handle,
                 ["scenes"] = scenes,
             });
         }

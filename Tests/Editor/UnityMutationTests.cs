@@ -212,7 +212,12 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(result.IsError, Is.False, result.Text);
             var sceneJson = (JObject)result.Json["scene"];
             int handle = (int)sceneJson["handle"];
-            var scene = SceneManager.GetSceneByHandle(handle);
+            var scene = default(UnityEngine.SceneManagement.Scene);
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var candidate = SceneManager.GetSceneAt(i);
+                if (candidate.handle == handle) { scene = candidate; break; }
+            }
             try
             {
                 Assert.That(scene.IsValid(), Is.True);
