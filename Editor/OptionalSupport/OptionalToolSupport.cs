@@ -8,6 +8,7 @@ using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.PackageManager;
 using UnityEditor.SceneManagement;
+using PackageInfo = UnityEditor.PackageManager.PackageInfo;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 

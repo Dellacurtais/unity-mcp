@@ -8,6 +8,7 @@ using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.PackageManager;
 using UnityEditor.PackageManager.Requests;
+using PackageInfo = UnityEditor.PackageManager.PackageInfo;
 
 namespace Maicon.SceneAnalyzer.Editor.PackageTools
 {

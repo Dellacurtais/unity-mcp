@@ -266,12 +266,6 @@ namespace Maicon.SceneAnalyzer.Bridge
                     }
                 }
             }
-            catch (Exception exception)
-            {
-                terminal = BridgeScriptStatus.Failed;
-                terminalError = $"BRIDGE_EXCEPTION: {exception.GetType().Name}: {exception.Message}";
-                Debug.LogException(exception);
-            }
             finally
             {
                 if (script.CancelRequested) { terminal = BridgeScriptStatus.Cancelled; terminalError = script.TerminalError ?? terminalError ?? "CANCELLED"; }
