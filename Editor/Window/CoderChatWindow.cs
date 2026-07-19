@@ -1,678 +1,741 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Chat;
 using UnityEditor;
+using UnityEditor.PackageManager;
 using UnityEngine;
+using UnityEngine.UIElements;
+using PackageInfo = UnityEditor.PackageManager.PackageInfo;
 
 namespace Maicon.SceneAnalyzer.Editor.Window
 {
-    /// Embedded chat panel — Model B. Talks to the coder runtime in D:\MCP via
-    /// `/api/coder/sessions/<id>/messages` (SSE). The Unity plugin still hosts
-    /// the MCP server (Model A) so the agent on the other side can call back
-    /// into Unity for ext_unity_editor__* tools while answering.
-    public sealed class CoderChatWindow : EditorWindow
+    public sealed partial class CoderChatWindow : EditorWindow
     {
-        private Vector2 _scroll;
-        private string _input = "";
-        private string _answerInput = "";
-        private string _planNote = "";
-        private bool _showSettings = true;
-        private bool _showPreamble = false;
-        private Vector2 _preambleScroll;
-        private string _urlBuffer;
-        private string _sessionBuffer;
-        private int _lastMessageCount;
-        private int _lastStreamingTextLen;
-        private bool _autoScrollPending;
-        private static GUIStyle _bubbleStyle;
-        private static GUIStyle _bubbleHeaderRoleStyle;
-        private static GUIStyle _bodyStyle;
-        private static GUIStyle _toolCallStyle;
+        private const string WindowTitle = "Coder Chat";
+        private const string UxmlRelativePath = "Editor/Window/CoderChatWindow.uxml";
+
+        private readonly List<ChatMessage> _visibleMessages = new();
+        private readonly Dictionary<ChatMessage, int> _renderedRevisions = new();
+        private readonly List<ChatReference> _draftReferences = new();
+        private readonly Dictionary<string, CoderAgentInfo> _agentByLabel = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, CoderSessionInfo> _sessionByLabel = new(StringComparer.Ordinal);
+
+        private ListView _transcriptList;
+        private VisualElement _interactionsContainer;
+        private VisualElement _referenceChips;
+        private VisualElement _connectionActions;
+        private VisualElement _composerLeft;
+        private VisualElement _composerRight;
+        private Label _statusLabel;
+        private Label _sessionMetaLabel;
+        private Label _permissionBadge;
+        private Label _composerFeedback;
+        private VisualElement _statusDot;
+        private Button _newMessagesButton;
+        private Button _sendButton;
+        private Button _modelButton;
+        private TextField _composerInput;
+        private DropdownField _agentField;
+        private DropdownField _effortField;
+        private DropdownField _sessionField;
+        private ScrollView _transcriptScroll;
+        private IVisualElementScheduledItem _uiPump;
+
+        private bool _sessionDirty = true;
+        private bool _catalogDirty = true;
+        private bool _userAtBottom = true;
+        private bool _showSystemMessages;
+        private bool _eventsSubscribed;
+        private string _composerDraft = "";
+        private string _interactionSignature = "";
+        private int _pendingAttachSessionId;
+        private int _attachedSessionId;
 
         [MenuItem("Window/Coder Chat (Scene Analyzer)")]
         public static void Open()
         {
-            var w = GetWindow<CoderChatWindow>("Coder Chat");
-            w.minSize = new Vector2(420, 560);
-            w.Show();
+            var window = GetWindow<CoderChatWindow>(WindowTitle);
+            window.minSize = new Vector2(420, 560);
+            window.Show();
         }
 
         private void OnEnable()
         {
-            _urlBuffer = Settings.CoderUrl;
-            _sessionBuffer = Settings.CoderSessionId.ToString();
-            if (Bootstrap.ChatSession != null)
-            {
-                Bootstrap.ChatSession.OnChanged += Repaint;
-                Bootstrap.ChatSession.OnChanged += SyncSessionBuffer;
-            }
-            Bootstrap.OnCoderProvidersChanged += Repaint;
-            Bootstrap.OnServerStateChanged += OnServerStateChanged;
-
-            if (Bootstrap.CoderProviders != null && Bootstrap.CoderProviders.Count == 0)
-                Bootstrap.ChatClient?.RefreshProviders(Settings.CoderUrl, Settings.CoderToken);
-        }
-
-        private void OnServerStateChanged(string state)
-        {
-            // Surfaces "online / back online after assembly reload / stopped"
-            // as a chat system note, so the dev knows immediately when an
-            // in-flight 503 will succeed on retry — no more guessing whether
-            // the recompile finished.
-            try { Bootstrap.ChatSession?.AddSystemNote($"MCP server: {state}"); }
-            catch { /* never crash the editor on a UI subscription */ }
-        }
-
-        private void SyncSessionBuffer()
-        {
-            var s = Settings.CoderSessionId.ToString();
-            if (s != _sessionBuffer) _sessionBuffer = s;
+            _showSystemMessages = Settings.CoderShowSystemMessages;
+            _attachedSessionId = 0;
+            _pendingAttachSessionId = Settings.CoderSessionId;
+            SubscribeEvents();
         }
 
         private void OnDisable()
         {
-            if (Bootstrap.ChatSession != null)
+            if (_composerInput != null) _composerDraft = _composerInput.value ?? "";
+            _uiPump?.Pause();
+            _uiPump = null;
+            CloseReferencePicker();
+            Bootstrap.ChatClient?.StopSessionSync();
+            _attachedSessionId = 0;
+            UnsubscribeEvents();
+        }
+
+        public void CreateGUI()
+        {
+            _uiPump?.Pause();
+            _uiPump = null;
+            CloseReferencePicker();
+            rootVisualElement.Clear();
+            var tree = LoadVisualTree();
+            if (tree == null)
             {
-                Bootstrap.ChatSession.OnChanged -= Repaint;
-                Bootstrap.ChatSession.OnChanged -= SyncSessionBuffer;
+                BuildAssetErrorFallback();
+                return;
             }
-            Bootstrap.OnCoderProvidersChanged -= Repaint;
+
+            tree.CloneTree(rootVisualElement);
+            if (!CacheVisualElements())
+            {
+                BuildAssetErrorFallback("O UXML foi carregado, mas não contém todos os elementos esperados.");
+                return;
+            }
+
+            BuildConnectionBar();
+            BuildSettingsPanel(rootVisualElement.Q<VisualElement>("settings-host"));
+            BuildTranscript();
+            BuildComposer();
+            RegisterComposerDragAndDrop();
+            WireNewMessagesButton();
+
+            _sessionDirty = true;
+            _catalogDirty = true;
+            _uiPump = rootVisualElement.schedule.Execute(FlushUi).Every(33);
+            rootVisualElement.schedule.Execute(InitializeTranscriptScroll);
+            RefreshRemoteCatalogs();
+            FlushUi();
+        }
+
+        private void SubscribeEvents()
+        {
+            if (_eventsSubscribed) return;
+            _eventsSubscribed = true;
+            if (Bootstrap.ChatSession != null)
+                Bootstrap.ChatSession.OnChanged += OnSessionChanged;
+            Bootstrap.OnCoderProvidersChanged += OnCatalogChanged;
+            Bootstrap.OnCoderAgentsChanged += OnCatalogChanged;
+            Bootstrap.OnCoderSessionsChanged += OnCatalogChanged;
+            Bootstrap.OnServerStateChanged += OnServerStateChanged;
+        }
+
+        private void UnsubscribeEvents()
+        {
+            if (!_eventsSubscribed) return;
+            _eventsSubscribed = false;
+            if (Bootstrap.ChatSession != null)
+                Bootstrap.ChatSession.OnChanged -= OnSessionChanged;
+            Bootstrap.OnCoderProvidersChanged -= OnCatalogChanged;
+            Bootstrap.OnCoderAgentsChanged -= OnCatalogChanged;
+            Bootstrap.OnCoderSessionsChanged -= OnCatalogChanged;
             Bootstrap.OnServerStateChanged -= OnServerStateChanged;
         }
 
-        private static void EnsureStyles()
+        private void OnSessionChanged()
         {
-            if (_bubbleStyle != null) return;
-            _bubbleStyle = new GUIStyle(EditorStyles.helpBox)
+            _sessionDirty = true;
+            _pendingAttachSessionId = Settings.CoderSessionId;
+        }
+
+        private void OnCatalogChanged()
+        {
+            _catalogDirty = true;
+            _sessionDirty = true;
+        }
+
+        private static void OnServerStateChanged(string state)
+        {
+            Bootstrap.ChatSession?.AddSystemNote($"Servidor MCP: {state}");
+        }
+
+        private bool CacheVisualElements()
+        {
+            _statusDot = rootVisualElement.Q<VisualElement>("status-dot");
+            _statusLabel = rootVisualElement.Q<Label>("status-label");
+            _sessionMetaLabel = rootVisualElement.Q<Label>("session-meta-label");
+            _permissionBadge = rootVisualElement.Q<Label>("permission-badge");
+            _connectionActions = rootVisualElement.Q<VisualElement>("connection-actions");
+            _transcriptList = rootVisualElement.Q<ListView>("transcript-list");
+            _newMessagesButton = rootVisualElement.Q<Button>("new-messages-button");
+            _interactionsContainer = rootVisualElement.Q<VisualElement>("interactions-container");
+            _referenceChips = rootVisualElement.Q<VisualElement>("reference-chips");
+            _composerInput = rootVisualElement.Q<TextField>("composer-input");
+            _composerFeedback = rootVisualElement.Q<Label>("composer-feedback");
+            _composerLeft = rootVisualElement.Q<VisualElement>("composer-left");
+            _composerRight = rootVisualElement.Q<VisualElement>("composer-right");
+
+            return _statusDot != null
+                && _statusLabel != null
+                && _sessionMetaLabel != null
+                && _permissionBadge != null
+                && _connectionActions != null
+                && _transcriptList != null
+                && _newMessagesButton != null
+                && _interactionsContainer != null
+                && _referenceChips != null
+                && _composerInput != null
+                && _composerFeedback != null
+                && _composerLeft != null
+                && _composerRight != null;
+        }
+
+        private void BuildConnectionBar()
+        {
+            _connectionActions.Clear();
+
+            _sessionField = new DropdownField
             {
-                padding = new RectOffset(10, 10, 8, 8),
-                margin = new RectOffset(2, 2, 4, 4),
+                name = "session-field",
+                tooltip = "Sessões recentes deste projeto",
             };
-            _bubbleHeaderRoleStyle = new GUIStyle(EditorStyles.boldLabel) { fixedWidth = 70 };
-            _bodyStyle = new GUIStyle(EditorStyles.label)
+            _sessionField.AddToClassList("agent-field");
+            _sessionField.RegisterValueChangedCallback(evt =>
             {
-                wordWrap = true,
-                richText = false,
+                if (string.IsNullOrEmpty(evt.newValue)
+                    || !_sessionByLabel.TryGetValue(evt.newValue, out var selected)) return;
+                AttachSession(selected.Id, true);
+            });
+            _connectionActions.Add(_sessionField);
+
+            _connectionActions.Add(new Button(() =>
+            {
+                var sessionId = Settings.CoderSessionId;
+                if (sessionId > 0) AttachSession(sessionId, false);
+                RefreshRemoteCatalogs();
+            }) { text = "Sincronizar", tooltip = "Atualizar sessão, agentes, modelos e lista de sessões" });
+
+            _connectionActions.Add(new Button(CreateNewSession)
+            {
+                text = "Nova",
+                tooltip = "Criar uma sessão para este projeto Unity",
+            });
+
+            _connectionActions.Add(new Button(() =>
+            {
+                if (_settingsFoldout != null) _settingsFoldout.value = !_settingsFoldout.value;
+            }) { text = "Configurações" });
+        }
+
+        private void BuildTranscript()
+        {
+            _transcriptList.itemsSource = _visibleMessages;
+            _transcriptList.makeItem = () => new CoderChatMessageElement();
+            _transcriptList.bindItem = (element, index) =>
+            {
+                var messageElement = (CoderChatMessageElement)element;
+                messageElement.Bind(index >= 0 && index < _visibleMessages.Count ? _visibleMessages[index] : null);
             };
-            _toolCallStyle = new GUIStyle(EditorStyles.miniLabel)
+            _transcriptList.unbindItem = (element, _) => ((CoderChatMessageElement)element).Bind(null);
+            _transcriptList.virtualizationMethod = CollectionVirtualizationMethod.DynamicHeight;
+            _transcriptList.selectionType = SelectionType.None;
+            _transcriptList.horizontalScrollingEnabled = false;
+            _transcriptList.showBorder = false;
+        }
+
+        private void BuildComposer()
+        {
+            _composerLeft.Clear();
+            _composerRight.Clear();
+
+            _composerInput.value = _composerDraft;
+            _composerInput.multiline = true;
+            _composerInput.RegisterValueChangedCallback(evt => _composerDraft = evt.newValue ?? "");
+            _composerInput.RegisterCallback<KeyDownEvent>(OnComposerKeyDown, TrickleDown.TrickleDown);
+
+            var attachButton = new Button(OpenReferencePicker)
             {
-                wordWrap = true,
-                fontStyle = FontStyle.Italic,
+                text = "Anexar",
+                tooltip = "Adicionar GameObjects, Components, assets ou pastas",
             };
+            _composerLeft.Add(attachButton);
+
+            var selectionButton = new Button(AttachCurrentSelection)
+            {
+                text = "Seleção",
+                tooltip = "Anexar os objetos selecionados no Unity",
+            };
+            _composerLeft.Add(selectionButton);
+
+            _agentField = new DropdownField { tooltip = "Agente definido pelo runtime" };
+            _agentField.AddToClassList("agent-field");
+            _agentField.RegisterValueChangedCallback(evt =>
+            {
+                if (!_agentByLabel.TryGetValue(evt.newValue, out var selected)) return;
+                Settings.CoderAgent = selected.Id;
+                if (!string.IsNullOrEmpty(selected.Profile)) Settings.CoderProfile = selected.Profile;
+                _agentField.tooltip = selected.Description ?? selected.Label;
+            });
+            _composerLeft.Add(_agentField);
+
+            _effortField = new DropdownField(new List<string> { "Padrão", "Pensar" }, 0);
+            _effortField.AddToClassList("effort-field");
+            _effortField.RegisterValueChangedCallback(evt =>
+            {
+                if (!_effortField.enabledSelf) return;
+                Settings.CoderThinking = evt.newValue == "Pensar";
+            });
+            _composerLeft.Add(_effortField);
+
+            _modelButton = new Button(() =>
+            {
+                if (_settingsFoldout != null) _settingsFoldout.value = true;
+                _modelField?.Focus();
+            });
+            _modelButton.tooltip = "Provider/modelo da nova sessão";
+            _composerLeft.Add(_modelButton);
+
+            _sendButton = new Button(DoSend);
+            _sendButton.AddToClassList("send-button");
+            _composerRight.Add(_sendButton);
+
+            RenderReferenceChips();
         }
 
-        private void OnGUI()
+        private void OnComposerKeyDown(KeyDownEvent evt)
         {
-            EnsureStyles();
-            EditorGUILayout.LabelField("Coder Chat", EditorStyles.boldLabel);
-
-            DrawSettingsSection();
-            DrawPreambleSection();
-            EditorGUILayout.Space(4);
-            DrawMessageList();
-            DrawPendingInteractions();
-            DrawInput();
-        }
-
-        // -------------------- Settings --------------------
-
-        private void DrawSettingsSection()
-        {
-            _showSettings = EditorGUILayout.Foldout(_showSettings, "Coder server", true);
-            if (!_showSettings) return;
-
-            using (new EditorGUI.IndentLevelScope())
-            {
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label("URL", GUILayout.Width(60));
-                    _urlBuffer = EditorGUILayout.TextField(_urlBuffer);
-                    if (GUILayout.Button("Save", GUILayout.Width(50)))
-                    {
-                        Settings.CoderUrl = _urlBuffer.Trim();
-                        Bootstrap.RecordEntry($"[chat] coder URL set to {Settings.CoderUrl}");
-                    }
-                    if (GUILayout.Button("Test", GUILayout.Width(50)))
-                        Bootstrap.ChatClient?.TestConnection(_urlBuffer.Trim(), Settings.CoderToken);
-                }
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label("Token", GUILayout.Width(60));
-                    var t = EditorGUILayout.PasswordField(Settings.CoderToken ?? "");
-                    if (t != Settings.CoderToken) Settings.CoderToken = t;
-                    GUILayout.Label("(empty if MCP_AUTH_ENABLED=false)", EditorStyles.miniLabel);
-                }
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label("Project", GUILayout.Width(60));
-                    var newProjectId = EditorGUILayout.IntField(Settings.CoderProjectId, GUILayout.Width(80));
-                    if (newProjectId >= 0 && newProjectId != Settings.CoderProjectId)
-                        Settings.CoderProjectId = newProjectId;
-                    if (GUILayout.Button("Auto-detect", GUILayout.Width(110)))
-                    {
-                        Bootstrap.ChatClient?.EnsureProject(
-                            Settings.CoderUrl,
-                            Settings.CoderToken,
-                            Bootstrap.UnityProjectRoot);
-                    }
-                    if (GUILayout.Button("Clear", GUILayout.Width(50)))
-                    {
-                        Settings.CoderProjectId = 0;
-                        Settings.CoderProjectWorkdir = "";
-                        Settings.CoderProjectName = "";
-                    }
-                }
-
-                // Status — always visible, helps the dev see exactly which
-                // dashboard project this Unity instance is pinned to.
-                if (Settings.CoderProjectId > 0)
-                {
-                    var nameDisplay = string.IsNullOrEmpty(Settings.CoderProjectName)
-                        ? "(name not cached — click Auto-detect)"
-                        : Settings.CoderProjectName;
-                    var workdirDisplay = string.IsNullOrEmpty(Settings.CoderProjectWorkdir)
-                        ? "(workdir not cached)"
-                        : Settings.CoderProjectWorkdir;
-                    EditorGUILayout.LabelField("  pinned",
-                        $"#{Settings.CoderProjectId} — {nameDisplay} @ {workdirDisplay}",
-                        EditorStyles.miniLabel);
-                }
-                else
-                {
-                    EditorGUILayout.LabelField("  pinned", "(none — Send will auto-detect from workdir)",
-                        EditorStyles.miniLabel);
-                }
-                EditorGUILayout.LabelField("Workdir", Bootstrap.UnityProjectRoot ?? "(unavailable)", EditorStyles.miniLabel);
-
-                // Mismatch warning: cached project points at a different folder
-                // than this Unity instance. Send/New auto-corrects on next call.
-                if (Settings.CoderProjectId > 0
-                    && !string.IsNullOrEmpty(Settings.CoderProjectWorkdir)
-                    && !CoderApiClient.WorkdirMatches(Settings.CoderProjectWorkdir, Bootstrap.UnityProjectRoot))
-                {
-                    EditorGUILayout.HelpBox(
-                        "Cached project points to a different folder than this Unity workdir. " +
-                        "Send (or click Auto-detect) — the plugin will switch to the correct project automatically.",
-                        MessageType.Warning);
-                }
-
-                DrawProviderModelRow();
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label("Session", GUILayout.Width(60));
-                    _sessionBuffer = EditorGUILayout.TextField(_sessionBuffer);
-                    if (GUILayout.Button("Set", GUILayout.Width(50)))
-                    {
-                        if (int.TryParse(_sessionBuffer, out var sid)) Settings.CoderSessionId = sid;
-                    }
-                    if (GUILayout.Button("New", GUILayout.Width(50)))
-                    {
-                        Bootstrap.ChatSession?.Reset();
-                        Bootstrap.ChatClient?.CreateSession(
-                            Settings.CoderUrl,
-                            Settings.CoderToken,
-                            Settings.CoderProjectId,
-                            $"Unity chat — {System.DateTime.Now:HH:mm:ss}",
-                            Settings.CoderProvider,
-                            Settings.CoderModel,
-                            Settings.CoderAgent);
-                    }
-                    if (GUILayout.Button("Refresh", GUILayout.Width(70)))
-                        _sessionBuffer = Settings.CoderSessionId.ToString();
-                }
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label("Profile", GUILayout.Width(60));
-                    var profiles = new[] { "auto", "bootstrap", "navigate", "full" };
-                    int idx = System.Array.IndexOf(profiles, Settings.CoderProfile);
-                    if (idx < 0) idx = 0;
-                    var newIdx = EditorGUILayout.Popup(idx, profiles, GUILayout.Width(140));
-                    if (newIdx != idx) Settings.CoderProfile = profiles[newIdx];
-
-                    GUILayout.Label("Agent", GUILayout.Width(50));
-                    var agents = new[] { "build", "explore", "plan", "admin" };
-                    int aIdx = System.Array.IndexOf(agents, Settings.CoderAgent);
-                    if (aIdx < 0) aIdx = 0;
-                    var newAIdx = EditorGUILayout.Popup(aIdx, agents);
-                    if (newAIdx != aIdx) Settings.CoderAgent = agents[newAIdx];
-                }
-
-                EditorGUILayout.HelpBox(
-                    "If Project=0, Send auto-detects (or creates) a D:\\MCP project pointing at this Unity workdir, " +
-                    "then auto-creates a session, then sends. New project not showing in dashboard? " +
-                    "F5 the dashboard browser tab.",
-                    MessageType.Info);
-            }
-        }
-
-        private void DrawProviderModelRow()
-        {
-            var cache = Bootstrap.CoderProviders;
-            var hasCache = cache != null && cache.Count > 0;
-
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                GUILayout.Label("Provider", GUILayout.Width(60));
-                if (hasCache)
-                {
-                    var ids = cache.Select(p =>
-                        p.Id + (p.HasKey ? "" : "  [no key]") + (p.IsDefault ? "  (default)" : "")
-                    ).ToArray();
-                    var rawIds = cache.Select(p => p.Id).ToArray();
-                    int pIdx = System.Array.IndexOf(rawIds, Settings.CoderProvider);
-                    if (pIdx < 0) pIdx = System.Array.FindIndex(cache.ToArray(), p => p.IsDefault);
-                    if (pIdx < 0) pIdx = 0;
-                    var newPIdx = EditorGUILayout.Popup(pIdx, ids, GUILayout.Width(220));
-                    if (newPIdx != pIdx) Settings.CoderProvider = rawIds[newPIdx];
-                }
-                else
-                {
-                    GUILayout.Label("(loading…)", EditorStyles.miniLabel);
-                }
-                if (GUILayout.Button("Refresh", GUILayout.Width(70)))
-                    Bootstrap.ChatClient?.RefreshProviders(Settings.CoderUrl, Settings.CoderToken);
-            }
-
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                GUILayout.Label("Model", GUILayout.Width(60));
-                if (hasCache)
-                {
-                    var prov = cache.FirstOrDefault(p => p.Id == Settings.CoderProvider) ?? cache[0];
-                    if (prov.Models == null || prov.Models.Count == 0)
-                    {
-                        GUILayout.Label("(no models for this provider)", EditorStyles.miniLabel);
-                    }
-                    else
-                    {
-                        var modelIds = prov.Models.Select(m => m.Id).ToArray();
-                        var modelLabels = prov.Models.Select(m =>
-                            string.IsNullOrEmpty(m.Name) ? m.Id : $"{m.Name}  ({m.Id})"
-                        ).ToArray();
-                        int mIdx = System.Array.IndexOf(modelIds, Settings.CoderModel);
-                        if (mIdx < 0) mIdx = 0;
-                        var newMIdx = EditorGUILayout.Popup(mIdx, modelLabels, GUILayout.Width(280));
-                        if (newMIdx != mIdx) Settings.CoderModel = modelIds[newMIdx];
-
-                        var mInfo = prov.Models[mIdx];
-                        if (mInfo.ContextWindow.HasValue)
-                            GUILayout.Label($"ctx={mInfo.ContextWindow.Value:N0}", EditorStyles.miniLabel);
-                    }
-                }
-                else
-                {
-                    var newModel = EditorGUILayout.TextField(Settings.CoderModel ?? "");
-                    if (newModel != Settings.CoderModel) Settings.CoderModel = newModel;
-                }
-            }
-        }
-
-        // -------------------- Preamble --------------------
-
-        private void DrawPreambleSection()
-        {
-            _showPreamble = EditorGUILayout.Foldout(_showPreamble,
-                $"Context preamble ({(Settings.CoderAutoInjectContext ? "on" : "off")})",
-                true);
-            if (!_showPreamble) return;
-
-            using (new EditorGUI.IndentLevelScope())
-            {
-                Settings.CoderAutoInjectContext = EditorGUILayout.Toggle(
-                    new GUIContent("Auto-inject on first message",
-                        "Prepends a short context block to the FIRST message of every newly-created session."),
-                    Settings.CoderAutoInjectContext);
-
-                EditorGUILayout.LabelField("Custom override (empty = use default)", EditorStyles.miniBoldLabel);
-                using (var sv = new EditorGUILayout.ScrollViewScope(_preambleScroll, GUILayout.MinHeight(80), GUILayout.MaxHeight(160)))
-                {
-                    _preambleScroll = sv.scrollPosition;
-                    var newPre = EditorGUILayout.TextArea(Settings.CoderCustomPreamble ?? "", GUILayout.ExpandHeight(true));
-                    if (newPre != Settings.CoderCustomPreamble) Settings.CoderCustomPreamble = newPre;
-                }
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    if (GUILayout.Button("Preview default", GUILayout.Width(120)))
-                    {
-                        var preview = CoderApiClient.BuildDefaultPreamble(Bootstrap.UnityProjectRoot);
-                        Bootstrap.ChatSession?.AddSystemNote("PREVIEW DEFAULT PREAMBLE:\n" + preview);
-                    }
-                    if (GUILayout.Button("Clear override", GUILayout.Width(110)))
-                        Settings.CoderCustomPreamble = "";
-                    GUILayout.FlexibleSpace();
-                }
-            }
-        }
-
-        // -------------------- Conversation --------------------
-
-        private void DrawMessageList()
-        {
-            var session = Bootstrap.ChatSession;
-            if (session == null) { GUILayout.Label("(chat session not initialised)"); return; }
-
-            // Header row: section label + filter toggle + scroll-to-bottom.
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                EditorGUILayout.LabelField("Conversation", EditorStyles.boldLabel, GUILayout.Width(110));
-                GUILayout.FlexibleSpace();
-
-                var newShowSystem = GUILayout.Toggle(Settings.CoderShowSystemMessages,
-                    new GUIContent(
-                        Settings.CoderShowSystemMessages ? "Hide system msgs" : "Show system msgs",
-                        "Toggle visibility of [1/3]/[2/3]/[3/3], (thinking), preamble previews, " +
-                        "and other internal log lines. The events still arrive — just not rendered."),
-                    "Button", GUILayout.Width(150));
-                if (newShowSystem != Settings.CoderShowSystemMessages)
-                {
-                    Settings.CoderShowSystemMessages = newShowSystem;
-                    _autoScrollPending = true; // re-anchor after the list height changes
-                }
-
-                if (GUILayout.Button(new GUIContent("↓", "Scroll to latest"), GUILayout.Width(28)))
-                    _autoScrollPending = true;
-            }
-
-            // Auto-scroll triggers: a brand-new message arrived OR the streaming
-            // assistant message grew since last paint.
-            int visibleCount = session.Messages.Count;
-            int streamingLen = session.StreamingAssistant?.Text?.Length ?? 0;
-            if (visibleCount > _lastMessageCount || streamingLen > _lastStreamingTextLen)
-                _autoScrollPending = true;
-            _lastMessageCount = visibleCount;
-            _lastStreamingTextLen = streamingLen;
-
-            // Apply pending scroll BEFORE the ScrollViewScope so IMGUI clamps it
-            // to the new content height on this paint.
-            if (_autoScrollPending)
-            {
-                _scroll.y = float.MaxValue;
-                _autoScrollPending = false;
-            }
-
-            using (var sv = new EditorGUILayout.ScrollViewScope(_scroll,
-                GUILayout.ExpandHeight(true)))
-            {
-                _scroll = sv.scrollPosition;
-                if (session.Messages.Count == 0)
-                {
-                    EditorGUILayout.HelpBox("No messages yet. Type below and press Send. " +
-                                            "If Session=0 and Project=0, the plugin auto-creates both.",
-                        MessageType.None);
-                }
-                else
-                {
-                    var showSystem = Settings.CoderShowSystemMessages;
-                    foreach (var msg in session.Messages)
-                    {
-                        if (!showSystem && msg.Role == ChatRole.System) continue;
-                        DrawMessage(msg);
-                    }
-                }
-            }
-
-            if (session.IsRunning)
-            {
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label("● in progress…", EditorStyles.miniLabel);
-                    GUILayout.FlexibleSpace();
-                    if (GUILayout.Button("Cancel", GUILayout.Width(80)))
-                        Bootstrap.ChatClient?.Cancel();
-                }
-            }
-        }
-
-        private void DrawMessage(ChatMessage msg)
-        {
-            var prevColor = GUI.backgroundColor;
-            GUI.backgroundColor = ColorFor(msg.Role);
-            using (new EditorGUILayout.VerticalScope(_bubbleStyle))
-            {
-                GUI.backgroundColor = prevColor;
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.Label(LabelFor(msg.Role), _bubbleHeaderRoleStyle);
-                    GUILayout.Label(msg.Timestamp.ToString("HH:mm:ss"), EditorStyles.miniLabel);
-                    GUILayout.FlexibleSpace();
-                    if (msg.Streaming) GUILayout.Label("typing…", EditorStyles.miniLabel);
-                }
-
-                if (!string.IsNullOrEmpty(msg.Text))
-                {
-                    var width = position.width - 50;
-                    var content = new GUIContent(msg.Text);
-                    var height = _bodyStyle.CalcHeight(content, width);
-                    EditorGUILayout.SelectableLabel(msg.Text, _bodyStyle,
-                        GUILayout.MinHeight(height + 2),
-                        GUILayout.ExpandHeight(true));
-                }
-
-                if (msg.ToolCalls != null && msg.ToolCalls.Count > 0)
-                {
-                    GUILayout.Space(3);
-                    foreach (var tc in msg.ToolCalls)
-                    {
-                        var line = tc.Completed
-                            ? $"⚙ {tc.Name}  ({tc.DurationMs:0}ms)"
-                            : $"⚙ {tc.Name}  …";
-                        GUILayout.Label(line, _toolCallStyle);
-                        if (tc.Completed && !string.IsNullOrEmpty(tc.ResultText))
-                        {
-                            var tcContent = new GUIContent("    " + tc.ResultText);
-                            var tcHeight = _toolCallStyle.CalcHeight(tcContent, position.width - 60);
-                            GUILayout.Label(tcContent, _toolCallStyle, GUILayout.MinHeight(tcHeight));
-                        }
-                    }
-                }
-            }
-        }
-
-        // -------------------- Pending interactions --------------------
-
-        private void DrawPendingInteractions()
-        {
-            var session = Bootstrap.ChatSession;
-            if (session == null) return;
-
-            if (session.CurrentQuestion != null) DrawPendingQuestion(session, session.CurrentQuestion);
-            if (session.CurrentPlan != null) DrawPendingPlan(session, session.CurrentPlan);
-            if (session.CurrentTasks != null) DrawPendingTasks(session, session.CurrentTasks);
-            if (!string.IsNullOrEmpty(session.LastError))
-                EditorGUILayout.HelpBox(session.LastError, MessageType.Error);
-        }
-
-        private void DrawPendingQuestion(ChatSession session, PendingQuestion q)
-        {
-            var prev = GUI.backgroundColor;
-            GUI.backgroundColor = new Color(1f, 0.95f, 0.6f);
-            using (new EditorGUILayout.VerticalScope(_bubbleStyle))
-            {
-                GUI.backgroundColor = prev;
-                GUILayout.Label("Agent is asking", EditorStyles.boldLabel);
-
-                var content = new GUIContent(q.Question);
-                var h = _bodyStyle.CalcHeight(content, position.width - 50);
-                EditorGUILayout.SelectableLabel(q.Question, _bodyStyle, GUILayout.MinHeight(h + 2));
-
-                if (q.Options != null && q.Options.Count > 0)
-                {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        foreach (var opt in q.Options)
-                        {
-                            if (GUILayout.Button(opt, GUILayout.Height(24)))
-                                Bootstrap.ChatClient?.AnswerQuestion(
-                                    Settings.CoderUrl, Settings.CoderToken,
-                                    Settings.CoderSessionId, q.Id, opt);
-                        }
-                    }
-                }
-
-                if (q.AllowFreeform)
-                {
-                    GUILayout.Label("Or type a free-form answer:", EditorStyles.miniLabel);
-                    _answerInput = EditorGUILayout.TextArea(_answerInput, GUILayout.MinHeight(50));
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        GUILayout.FlexibleSpace();
-                        using (new EditorGUI.DisabledScope(string.IsNullOrWhiteSpace(_answerInput)))
-                        {
-                            if (GUILayout.Button("Send answer", GUILayout.Width(120)))
-                            {
-                                Bootstrap.ChatClient?.AnswerQuestion(
-                                    Settings.CoderUrl, Settings.CoderToken,
-                                    Settings.CoderSessionId, q.Id, _answerInput.Trim());
-                                _answerInput = "";
-                            }
-                        }
-                        if (GUILayout.Button("Skip", GUILayout.Width(60)))
-                        {
-                            session.ClearPendingQuestion();
-                        }
-                    }
-                }
-            }
-        }
-
-        private void DrawPendingPlan(ChatSession session, PendingPlan p)
-        {
-            var prev = GUI.backgroundColor;
-            GUI.backgroundColor = new Color(0.7f, 0.85f, 1f);
-            using (new EditorGUILayout.VerticalScope(_bubbleStyle))
-            {
-                GUI.backgroundColor = prev;
-                GUILayout.Label("Plan submitted", EditorStyles.boldLabel);
-
-                var content = new GUIContent(p.Plan);
-                var h = _bodyStyle.CalcHeight(content, position.width - 50);
-                EditorGUILayout.SelectableLabel(p.Plan, _bodyStyle, GUILayout.MinHeight(h + 2));
-
-                GUILayout.Label("Note (optional):", EditorStyles.miniLabel);
-                _planNote = EditorGUILayout.TextArea(_planNote, GUILayout.MinHeight(40));
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.FlexibleSpace();
-                    if (GUILayout.Button("Approve", GUILayout.Width(110)))
-                    {
-                        Bootstrap.ChatClient?.RespondToPlan(
-                            Settings.CoderUrl, Settings.CoderToken,
-                            Settings.CoderSessionId, p.Id, true, _planNote);
-                        _planNote = "";
-                    }
-                    if (GUILayout.Button("Reject", GUILayout.Width(110)))
-                    {
-                        Bootstrap.ChatClient?.RespondToPlan(
-                            Settings.CoderUrl, Settings.CoderToken,
-                            Settings.CoderSessionId, p.Id, false, _planNote);
-                        _planNote = "";
-                    }
-                }
-            }
-        }
-
-        private void DrawPendingTasks(ChatSession session, PendingTasks t)
-        {
-            var prev = GUI.backgroundColor;
-            GUI.backgroundColor = new Color(0.7f, 1f, 0.8f);
-            using (new EditorGUILayout.VerticalScope(_bubbleStyle))
-            {
-                GUI.backgroundColor = prev;
-                GUILayout.Label("Tasks submitted", EditorStyles.boldLabel);
-
-                var content = new GUIContent(t.Summary);
-                var h = _bodyStyle.CalcHeight(content, position.width - 50);
-                EditorGUILayout.SelectableLabel(t.Summary, _bodyStyle, GUILayout.MinHeight(h + 2));
-
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    GUILayout.FlexibleSpace();
-                    if (GUILayout.Button("Approve", GUILayout.Width(110)))
-                        Bootstrap.ChatClient?.RespondToTasks(
-                            Settings.CoderUrl, Settings.CoderToken,
-                            Settings.CoderSessionId, t.ToolUseId, true);
-                    if (GUILayout.Button("Reject", GUILayout.Width(110)))
-                        Bootstrap.ChatClient?.RespondToTasks(
-                            Settings.CoderUrl, Settings.CoderToken,
-                            Settings.CoderSessionId, t.ToolUseId, false);
-                }
-            }
-        }
-
-        // -------------------- Composer --------------------
-
-        private void DrawInput()
-        {
-            EditorGUILayout.LabelField("Message", EditorStyles.boldLabel);
-            _input = EditorGUILayout.TextArea(_input, GUILayout.MinHeight(70));
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                var newThinking = GUILayout.Toggle(Settings.CoderThinking,
-                    new GUIContent(" 🧠 Think mode",
-                        "Sends `thinking: true` on every outgoing message."),
-                    "Button", GUILayout.Width(120));
-                if (newThinking != Settings.CoderThinking) Settings.CoderThinking = newThinking;
-
-                GUILayout.FlexibleSpace();
-                using (new EditorGUI.DisabledScope(string.IsNullOrWhiteSpace(_input)
-                    || (Bootstrap.ChatSession?.IsRunning ?? false)))
-                {
-                    if (GUILayout.Button("Send", GUILayout.Width(120))) DoSend();
-                }
-                if (GUILayout.Button("Clear", GUILayout.Width(80)))
-                {
-                    _input = "";
-                    Bootstrap.ChatSession?.Reset();
-                }
-            }
+            if (evt.keyCode != KeyCode.Return && evt.keyCode != KeyCode.KeypadEnter) return;
+            if (evt.shiftKey) return;
+            evt.PreventDefault();
+            evt.StopImmediatePropagation();
+            DoSend();
         }
 
         private void DoSend()
         {
-            var text = _input.Trim();
-            if (string.IsNullOrEmpty(text)) return;
-            Bootstrap.ChatSession.AddUser(text);
-            Bootstrap.ChatClient.Send(
+            var client = Bootstrap.ChatClient;
+            var session = Bootstrap.ChatSession;
+            if (client == null || session == null)
+            {
+                ShowComposerFeedback("O cliente de chat ainda não foi inicializado.");
+                return;
+            }
+
+            if (client.IsRunning)
+            {
+                client.Cancel();
+                return;
+            }
+
+            var text = (_composerInput.value ?? "").Trim();
+            var validReferences = _draftReferences.Where(reference => reference != null && reference.Validate()).ToList();
+            if (string.IsNullOrEmpty(text) && validReferences.Count == 0)
+            {
+                ShowComposerFeedback("Escreva uma mensagem ou anexe uma referência.");
+                return;
+            }
+
+            var invalidCount = _draftReferences.Count - validReferences.Count;
+            var content = ChatReference.BuildMessageContent(text, validReferences);
+            session.AddUser(text, validReferences);
+            client.Send(
                 Settings.CoderUrl,
                 Settings.CoderToken,
                 Settings.CoderSessionId,
-                text,
+                content,
                 Settings.CoderProfile,
                 Settings.CoderAgent);
-            _input = "";
-            GUI.FocusControl(null);
+
+            _composerDraft = "";
+            _composerInput.SetValueWithoutNotify("");
+            _draftReferences.Clear();
+            RenderReferenceChips();
+            if (invalidCount > 0)
+                ShowComposerFeedback($"{invalidCount} referência(s) indisponível(is) não foram enviada(s).", false);
+            else
+                HideComposerFeedback();
+            _userAtBottom = true;
+            _composerInput.Focus();
         }
 
-        // -------------------- Helpers --------------------
-
-        private static string LabelFor(ChatRole role)
+        private void CreateNewSession()
         {
-            switch (role)
+            if (Bootstrap.ChatClient == null || Bootstrap.ChatSession == null) return;
+            Bootstrap.ChatClient.StopSessionSync();
+            _attachedSessionId = 0;
+            _pendingAttachSessionId = 0;
+            Settings.CoderSessionId = 0;
+            Bootstrap.ChatSession.Reset();
+            Bootstrap.ChatClient.CreateSession(
+                Settings.CoderUrl,
+                Settings.CoderToken,
+                Settings.CoderProjectId,
+                $"Unity chat — {DateTime.Now:yyyy-MM-dd HH:mm}",
+                Settings.CoderProvider,
+                Settings.CoderModel,
+                Settings.CoderAgent);
+        }
+
+        private void AttachSession(int sessionId, bool replaceConversation)
+        {
+            if (sessionId <= 0 || Bootstrap.ChatClient == null || Bootstrap.ChatSession == null) return;
+            if (replaceConversation) Bootstrap.ChatSession.Reset();
+            Settings.CoderSessionId = sessionId;
+            _attachedSessionId = sessionId;
+            _pendingAttachSessionId = sessionId;
+            Bootstrap.ChatClient.AttachSession(
+                Settings.CoderUrl, Settings.CoderToken, sessionId, replaceConversation);
+        }
+
+        private void FlushUi()
+        {
+            if (rootVisualElement.panel == null) return;
+            TryAttachPendingSession();
+
+            if (_catalogDirty)
             {
-                case ChatRole.User: return "You";
-                case ChatRole.Assistant: return "Coder";
-                case ChatRole.System: return "System";
-                case ChatRole.Error: return "Error";
-                default: return role.ToString();
+                _catalogDirty = false;
+                RefreshCatalogControls();
+                RefreshSettingsControls();
+            }
+
+            if (!_sessionDirty) return;
+            _sessionDirty = false;
+
+            UpdateConnectionHeader();
+            UpdateSendButton();
+            RefreshTranscript();
+            RefreshInteractions();
+            RefreshEffortAvailability();
+        }
+
+        private void TryAttachPendingSession()
+        {
+            if (_pendingAttachSessionId <= 0
+                || _pendingAttachSessionId == _attachedSessionId
+                || Bootstrap.ChatClient == null
+                || Bootstrap.ChatClient.IsRunning) return;
+
+            _attachedSessionId = _pendingAttachSessionId;
+            Bootstrap.ChatClient.AttachSession(
+                Settings.CoderUrl, Settings.CoderToken, _attachedSessionId, _visibleMessages.Count == 0);
+        }
+
+        private void RefreshTranscript()
+        {
+            var session = Bootstrap.ChatSession;
+            if (session == null) return;
+
+            var oldCount = _visibleMessages.Count;
+            var structureChanged = VisibleSequenceChanged(session.Messages);
+            var lastItemChanged = false;
+            if (structureChanged)
+            {
+                _visibleMessages.Clear();
+                foreach (var message in session.Messages)
+                    if (IsVisible(message)) _visibleMessages.Add(message);
+                _renderedRevisions.Clear();
+                foreach (var message in _visibleMessages) _renderedRevisions[message] = message.Revision;
+                _transcriptList.Rebuild();
+            }
+            else
+            {
+                for (var index = 0; index < _visibleMessages.Count; index++)
+                {
+                    var message = _visibleMessages[index];
+                    if (_renderedRevisions.TryGetValue(message, out var revision) && revision == message.Revision)
+                        continue;
+                    _renderedRevisions[message] = message.Revision;
+                    _transcriptList.RefreshItem(index);
+                    if (index == _visibleMessages.Count - 1) lastItemChanged = true;
+                }
+            }
+
+            if (_visibleMessages.Count > oldCount || lastItemChanged)
+            {
+                if (_userAtBottom) ScrollTranscriptToEnd();
+                else SetDisplayed(_newMessagesButton, true);
             }
         }
 
-        private static Color ColorFor(ChatRole role)
+        private bool VisibleSequenceChanged(IReadOnlyList<ChatMessage> messages)
         {
-            switch (role)
+            var visibleIndex = 0;
+            for (var index = 0; index < messages.Count; index++)
             {
-                case ChatRole.User: return new Color(0.85f, 0.95f, 1f);     // light blue
-                case ChatRole.Assistant: return new Color(0.92f, 0.92f, 0.95f); // soft gray
-                case ChatRole.System: return new Color(0.95f, 0.95f, 0.85f);    // pale yellow
-                case ChatRole.Error: return new Color(1f, 0.85f, 0.85f);        // light red
-                default: return Color.white;
+                var message = messages[index];
+                if (!IsVisible(message)) continue;
+                if (visibleIndex >= _visibleMessages.Count || !ReferenceEquals(_visibleMessages[visibleIndex], message))
+                    return true;
+                visibleIndex++;
             }
+            return visibleIndex != _visibleMessages.Count;
+        }
+
+        private bool IsVisible(ChatMessage message)
+        {
+            return message != null && (_showSystemMessages || message.Role != ChatRole.System);
+        }
+
+        private void RefreshInteractions()
+        {
+            var interactions = Bootstrap.ChatSession?.Interactions;
+            if (interactions == null) return;
+            var signature = string.Join("|", interactions.Select(interaction =>
+                $"{interaction.Key}:{interaction.State}:{interaction.Error}:{InteractionContentLength(interaction)}"));
+            if (signature == _interactionSignature) return;
+
+            _interactionSignature = signature;
+            _interactionsContainer.Clear();
+            foreach (var interaction in interactions)
+                _interactionsContainer.Add(new CoderChatInteractionElement(interaction));
+            SetDisplayed(_interactionsContainer, interactions.Count > 0);
+        }
+
+        private static int InteractionContentLength(PendingInteraction interaction)
+        {
+            return interaction switch
+            {
+                PendingQuestion question => question.Question?.Length ?? 0,
+                PendingPlan plan => plan.Plan?.Length ?? 0,
+                PendingTasks tasks => tasks.Summary?.Length ?? 0,
+                _ => 0,
+            };
+        }
+
+        private void UpdateConnectionHeader()
+        {
+            var session = Bootstrap.ChatSession;
+            if (session == null) return;
+
+            _statusLabel.text = string.IsNullOrEmpty(session.ConnectionDetail)
+                ? StateLabel(session.ConnectionState)
+                : $"{StateLabel(session.ConnectionState)} · {session.ConnectionDetail}";
+            SetStatusClass(session.ConnectionState);
+
+            var remote = session.RemoteSession;
+            var sessionId = remote?.Id ?? Settings.CoderSessionId;
+            var title = remote?.Title;
+            var model = remote?.Model ?? Settings.CoderModel;
+            _sessionMetaLabel.text = sessionId > 0
+                ? $"#{sessionId} · {(string.IsNullOrEmpty(title) ? "sessão Unity" : title)}"
+                    + (string.IsNullOrEmpty(model) ? "" : $" · {model}")
+                : "Nenhuma sessão · o envio criará uma automaticamente";
+
+            var permission = remote?.ToolPermissionMode;
+            _permissionBadge.text = string.IsNullOrEmpty(permission) ? "PERMISSÃO —" : permission.ToUpperInvariant();
+            _permissionBadge.tooltip = string.IsNullOrEmpty(permission)
+                ? "O runtime ainda não informou o modo de permissão desta sessão"
+                : $"Modo de permissão do runtime: {permission}";
+        }
+
+        private void SetStatusClass(ChatConnectionState state)
+        {
+            foreach (var className in new[] { "state-idle", "state-running", "state-syncing", "state-connecting", "state-waiting", "state-error" })
+                _statusDot.RemoveFromClassList(className);
+
+            switch (state)
+            {
+                case ChatConnectionState.Idle: _statusDot.AddToClassList("state-idle"); break;
+                case ChatConnectionState.Running: _statusDot.AddToClassList("state-running"); break;
+                case ChatConnectionState.Syncing: _statusDot.AddToClassList("state-syncing"); break;
+                case ChatConnectionState.Connecting: _statusDot.AddToClassList("state-connecting"); break;
+                case ChatConnectionState.WaitingForApproval: _statusDot.AddToClassList("state-waiting"); break;
+                case ChatConnectionState.Error: _statusDot.AddToClassList("state-error"); break;
+            }
+        }
+
+        private void UpdateSendButton()
+        {
+            if (_sendButton == null) return;
+            var running = Bootstrap.ChatClient?.IsRunning == true;
+            _sendButton.text = running ? "Parar" : "Enviar";
+            _sendButton.EnableInClassList("stop", running);
+            _sendButton.tooltip = running ? "Cancelar a resposta atual" : "Enviar (Enter) · nova linha (Shift+Enter)";
+        }
+
+        private void RefreshCatalogControls()
+        {
+            RefreshAgentChoices();
+            RefreshSessionChoices();
+            UpdateModelButton();
+        }
+
+        private void RefreshAgentChoices()
+        {
+            if (_agentField == null) return;
+            var agents = Bootstrap.CoderAgents != null && Bootstrap.CoderAgents.Count > 0
+                ? Bootstrap.CoderAgents
+                : FallbackAgents();
+
+            _agentByLabel.Clear();
+            var labels = new List<string>();
+            foreach (var agent in agents)
+            {
+                if (agent == null || string.IsNullOrEmpty(agent.Id)) continue;
+                var label = string.IsNullOrEmpty(agent.Label) ? agent.Id : agent.Label;
+                if (_agentByLabel.ContainsKey(label)) label = $"{label} ({agent.Id})";
+                _agentByLabel[label] = agent;
+                labels.Add(label);
+            }
+
+            _agentField.choices = labels;
+            var selected = _agentByLabel.FirstOrDefault(pair => pair.Value.Id == Settings.CoderAgent);
+            if (string.IsNullOrEmpty(selected.Key) && labels.Count > 0) selected = new KeyValuePair<string, CoderAgentInfo>(labels[0], _agentByLabel[labels[0]]);
+            if (!string.IsNullOrEmpty(selected.Key))
+            {
+                _agentField.SetValueWithoutNotify(selected.Key);
+                _agentField.tooltip = selected.Value.Description ?? selected.Value.Label;
+                if (string.IsNullOrEmpty(Settings.CoderAgent)) Settings.CoderAgent = selected.Value.Id;
+            }
+        }
+
+        private void RefreshSessionChoices()
+        {
+            if (_sessionField == null) return;
+            _sessionByLabel.Clear();
+            var labels = new List<string>();
+            foreach (var session in Bootstrap.CoderSessions ?? new List<CoderSessionInfo>())
+            {
+                if (session == null || session.Id <= 0) continue;
+                var label = $"{(string.IsNullOrEmpty(session.Title) ? "Sessão" : session.Title)} · #{session.Id}";
+                if (_sessionByLabel.ContainsKey(label)) label += $" · {session.UpdatedAt:HH:mm}";
+                _sessionByLabel[label] = session;
+                labels.Add(label);
+            }
+            if (labels.Count == 0) labels.Add("Nenhuma sessão recente");
+            _sessionField.choices = labels;
+            var selected = _sessionByLabel.FirstOrDefault(pair => pair.Value.Id == Settings.CoderSessionId);
+            _sessionField.SetValueWithoutNotify(string.IsNullOrEmpty(selected.Key) ? labels[0] : selected.Key);
+        }
+
+        private void RefreshEffortAvailability()
+        {
+            if (_effortField == null) return;
+            var model = SelectedModelInfo();
+            var canReason = model == null || model.CanReason;
+            _effortField.SetEnabled(canReason);
+            _effortField.SetValueWithoutNotify(canReason && Settings.CoderThinking ? "Pensar" : "Padrão");
+            _effortField.tooltip = canReason
+                ? "Padrão omite thinking; Pensar envia thinking=true"
+                : "Este modelo informou can_reason=false";
+        }
+
+        private CoderModelInfo SelectedModelInfo()
+        {
+            var provider = Bootstrap.CoderProviders?.FirstOrDefault(item => item.Id == Settings.CoderProvider);
+            return provider?.Models?.FirstOrDefault(item => item.Id == Settings.CoderModel);
+        }
+
+        private void UpdateModelButton()
+        {
+            if (_modelButton == null) return;
+            var provider = string.IsNullOrEmpty(Settings.CoderProvider) ? "provider" : Settings.CoderProvider;
+            var model = string.IsNullOrEmpty(Settings.CoderModel) ? "modelo padrão" : Settings.CoderModel;
+            _modelButton.text = $"{provider} · {model}";
+        }
+
+        private void InitializeTranscriptScroll()
+        {
+            if (_transcriptList == null) return;
+            _transcriptScroll = _transcriptList.Q<ScrollView>();
+            if (_transcriptScroll == null) return;
+            _transcriptScroll.verticalScroller.RegisterValueChangedCallback(_ =>
+            {
+                var scroller = _transcriptScroll.verticalScroller;
+                _userAtBottom = scroller.highValue - scroller.value < 24f;
+                if (_userAtBottom) SetDisplayed(_newMessagesButton, false);
+            });
+        }
+
+        private void WireNewMessagesButton()
+        {
+            _newMessagesButton.clicked += () =>
+            {
+                _userAtBottom = true;
+                ScrollTranscriptToEnd();
+                SetDisplayed(_newMessagesButton, false);
+            };
+        }
+
+        private void ScrollTranscriptToEnd()
+        {
+            if (_transcriptList == null || _visibleMessages.Count == 0) return;
+            _transcriptList.schedule.Execute(() => _transcriptList.ScrollToItem(_visibleMessages.Count - 1));
+            SetDisplayed(_newMessagesButton, false);
+        }
+
+        private void RefreshRemoteCatalogs()
+        {
+            var client = Bootstrap.ChatClient;
+            if (client == null) return;
+            client.RefreshAgents(Settings.CoderUrl, Settings.CoderToken);
+            if (Bootstrap.CoderProviders == null || Bootstrap.CoderProviders.Count == 0)
+                client.RefreshProviders(Settings.CoderUrl, Settings.CoderToken);
+            if (Settings.CoderProjectId > 0)
+                client.RefreshSessions(Settings.CoderUrl, Settings.CoderToken, Settings.CoderProjectId);
+        }
+
+        private void ShowComposerFeedback(string message, bool error = true)
+        {
+            if (_composerFeedback == null) return;
+            _composerFeedback.text = message ?? "";
+            _composerFeedback.style.color = error
+                ? new StyleColor(new Color(0.86f, 0.42f, 0.45f))
+                : new StyleColor(StyleKeyword.Null);
+            SetDisplayed(_composerFeedback, !string.IsNullOrEmpty(message));
+        }
+
+        private void HideComposerFeedback()
+        {
+            if (_composerFeedback != null) SetDisplayed(_composerFeedback, false);
+        }
+
+        private static string StateLabel(ChatConnectionState state)
+        {
+            switch (state)
+            {
+                case ChatConnectionState.Offline: return "Offline";
+                case ChatConnectionState.Connecting: return "Conectando";
+                case ChatConnectionState.Syncing: return "Sincronizando";
+                case ChatConnectionState.Idle: return "Pronto";
+                case ChatConnectionState.Running: return "Executando";
+                case ChatConnectionState.WaitingForApproval: return "Aguardando aprovação";
+                case ChatConnectionState.Error: return "Erro";
+                default: return state.ToString();
+            }
+        }
+
+        private static List<CoderAgentInfo> FallbackAgents()
+        {
+            return new List<CoderAgentInfo>
+            {
+                new() { Id = "plan", Label = "Plan", Description = "Planejar antes de alterar o projeto", Profile = "navigate", PlanMode = true },
+                new() { Id = "build", Label = "Code", Description = "Investigar, implementar e validar", Profile = "auto" },
+                new() { Id = "explore", Label = "Explore", Description = "Investigação somente leitura", Profile = "bootstrap" },
+            };
+        }
+
+        private static VisualTreeAsset LoadVisualTree()
+        {
+            var package = PackageInfo.FindForAssembly(typeof(CoderChatWindow).Assembly);
+            var packageName = string.IsNullOrEmpty(package?.name) ? "com.maicon.scene-analyzer" : package.name;
+            var asset = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>($"Packages/{packageName}/{UxmlRelativePath}");
+            if (asset != null) return asset;
+            return AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(UxmlRelativePath);
+        }
+
+        private void BuildAssetErrorFallback(string detail = null)
+        {
+            rootVisualElement.Clear();
+            var label = new Label(
+                "Não foi possível carregar a interface do Coder Chat.\n"
+                + (detail ?? $"Asset esperado: {UxmlRelativePath}")
+                + "\nReimporte o pacote e reabra esta janela.");
+            label.AddToClassList("fatal-error");
+            rootVisualElement.Add(label);
+            rootVisualElement.Add(new Button(() => CreateGUI()) { text = "Tentar novamente" });
+        }
+
+        private static void SetDisplayed(VisualElement element, bool displayed)
+        {
+            if (element != null) element.style.display = displayed ? DisplayStyle.Flex : DisplayStyle.None;
         }
     }
 }

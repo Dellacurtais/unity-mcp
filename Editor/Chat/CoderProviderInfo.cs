@@ -20,5 +20,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public string Mode;
         public int? ContextWindow;
         public int? DefaultMaxTokens;
+        public bool CanReason;
+        public List<string> SupportedReasoningLevels = new();
+        public string DefaultReasoningLevel;
     }
 }

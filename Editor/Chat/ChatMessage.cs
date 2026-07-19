@@ -9,6 +9,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         Assistant,
         System,
         Error,
+        Tool,
     }
 
     public sealed class ChatToolCall
@@ -18,6 +19,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public string InputJson;
         public string ResultText;
         public bool Completed;
+        public bool Failed;
         public double DurationMs;
     }
 
@@ -25,14 +27,39 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
     {
         public ChatRole Role;
         public string Text = "";
+        public string ThinkingText = "";
         public DateTime Timestamp = DateTime.Now;
-        public List<ChatToolCall> ToolCalls = new();
-        public bool Streaming;       // assistant message being built incrementally
-        public string SystemNote;    // info bubble (e.g. plan submission, ask_user prompt)
+        public readonly List<ChatToolCall> ToolCalls = new();
+        public readonly List<ChatReference> References = new();
+        public bool Streaming;
+        public string SystemNote;
+        public long RemoteId;
+        public int RemoteSessionId;
+        public bool IsRemote;
+        public bool IsMeta;
+        public int Revision;
 
-        public override string ToString()
+        public void Touch() => Revision++;
+
+        public void CopyRemoteContentFrom(ChatMessage source)
         {
-            return $"[{Role}] {Text}";
+            if (source == null) return;
+            Role = source.Role;
+            Text = source.Text ?? "";
+            ThinkingText = source.ThinkingText ?? "";
+            Timestamp = source.Timestamp;
+            RemoteId = source.RemoteId;
+            RemoteSessionId = source.RemoteSessionId;
+            IsRemote = true;
+            IsMeta = source.IsMeta;
+            Streaming = false;
+            ToolCalls.Clear();
+            ToolCalls.AddRange(source.ToolCalls);
+            References.Clear();
+            References.AddRange(source.References);
+            Touch();
         }
+
+        public override string ToString() => $"[{Role}] {Text}";
     }
 }

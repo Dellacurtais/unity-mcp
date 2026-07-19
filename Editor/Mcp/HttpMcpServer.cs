@@ -37,6 +37,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         private McpRequestCoordinator _coordinator;
         private string _token;
         private int _port;
+        // Snapshots of Settings captured in Start() (main thread) — HandleAsync
+        // runs on HttpListener thread-pool threads where EditorPrefs.GetInt
+        // throws UnityException, so it must never read Settings directly.
+        private int _maxRequestBodyBytes;
+        private int _toolTimeoutSeconds;
         private static int _callSeq;
 
         public bool IsRunning => _listener != null && _listener.IsListening;
@@ -57,7 +62,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 
             _port = port;
             _token = token;
-            _coordinator = new McpRequestCoordinator(Settings.MaxConcurrentRequests);
+            var maxConcurrentRequests = Settings.MaxConcurrentRequests;
+            _maxRequestBodyBytes = Settings.MaxRequestBodyBytes;
+            _toolTimeoutSeconds = Settings.ToolTimeoutSeconds;
+            _coordinator = new McpRequestCoordinator(maxConcurrentRequests);
             _cts = new CancellationTokenSource();
             _listener = new HttpListener();
             _listener.Prefixes.Add($"http://127.0.0.1:{port}/mcp/");
@@ -169,14 +177,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     await WriteHttpError(response, 400, $"Unsupported MCP-Protocol-Version '{protocolHeader}'.", serverToken);
                     return;
                 }
-                if (request.ContentLength64 > Settings.MaxRequestBodyBytes)
+                if (request.ContentLength64 > _maxRequestBodyBytes)
                 {
                     await WriteHttpError(response, 413, "MCP request body exceeds the configured limit.", serverToken);
                     return;
                 }
 
                 string body;
-                try { body = await ReadBodyBoundedAsync(request, Settings.MaxRequestBodyBytes, serverToken); }
+                try { body = await ReadBodyBoundedAsync(request, _maxRequestBodyBytes, serverToken); }
                 catch (InvalidDataException e)
                 {
                     await WriteHttpError(response, 413, e.Message, serverToken);
@@ -434,7 +442,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             }
 
             var requestId = id != null ? id.ToString(Formatting.None) : Guid.NewGuid().ToString("N");
-            var timeout = TimeSpan.FromSeconds(Settings.ToolTimeoutSeconds);
+            var timeout = TimeSpan.FromSeconds(_toolTimeoutSeconds);
             using (var lease = await _coordinator.BeginAsync(requestId, descriptor.IsWrite, serverToken, timeout))
             using (ToolExecutionContext.Push(new ToolExecutionContext
             {

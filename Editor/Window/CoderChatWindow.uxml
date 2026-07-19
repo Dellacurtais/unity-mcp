@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ui:UXML xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ui="UnityEngine.UIElements" noNamespaceSchemaLocation="../../UIElementsSchema/UIElements.xsd" editor-extension-mode="True">
+    <Style src="CoderChatWindow.uss" />
+    <ui:VisualElement name="chat-root" class="coder-chat-root">
+        <ui:VisualElement name="connection-bar" class="connection-bar">
+            <ui:VisualElement class="connection-summary">
+                <ui:VisualElement name="status-dot" class="status-dot" />
+                <ui:VisualElement class="connection-copy">
+                    <ui:Label name="status-label" text="Inicializando…" class="status-label" />
+                    <ui:Label name="session-meta-label" text="Nenhuma sessão" class="meta-label" />
+                </ui:VisualElement>
+                <ui:Label name="permission-badge" text="ASK" class="badge permission-badge" />
+            </ui:VisualElement>
+            <ui:VisualElement name="connection-actions" class="connection-actions" />
+        </ui:VisualElement>
+
+        <ui:VisualElement name="settings-host" class="settings-host" />
+
+        <ui:VisualElement name="transcript-shell" class="transcript-shell">
+            <ui:ListView name="transcript-list" class="transcript-list" />
+            <ui:Button name="new-messages-button" text="Novas mensagens" class="new-messages-button hidden" />
+        </ui:VisualElement>
+
+        <ui:VisualElement name="interactions-container" class="interactions-container" />
+
+        <ui:VisualElement name="composer-panel" class="composer-panel">
+            <ui:VisualElement name="reference-chips" class="reference-chips" />
+            <ui:Label text="Mensagem" class="composer-caption" />
+            <ui:TextField name="composer-input" multiline="true" class="composer-input" />
+            <ui:Label name="composer-feedback" class="composer-feedback hidden" />
+            <ui:VisualElement class="composer-toolbar">
+                <ui:VisualElement name="composer-left" class="composer-left" />
+                <ui:VisualElement name="composer-right" class="composer-right" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

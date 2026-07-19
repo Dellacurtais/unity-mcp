@@ -50,9 +50,34 @@ namespace Maicon.SceneAnalyzer.Editor
         /// Populated by CoderApiClient.RefreshProviders. The window reads this
         /// to render the provider/model dropdowns dynamically.
         public static List<CoderProviderInfo> CoderProviders { get; set; } = new();
+        public static List<CoderAgentInfo> CoderAgents { get; set; } = new();
+        public static List<CoderSessionInfo> CoderSessions { get; set; } = new();
         public static event Action OnCoderProvidersChanged;
-        public static void NotifyCoderProvidersChanged() {
+        public static event Action OnCoderAgentsChanged;
+        public static event Action OnCoderSessionsChanged;
+
+        public static void NotifyCoderProvidersChanged()
+        {
             try { OnCoderProvidersChanged?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
+        }
+
+        public static void NotifyCoderAgentsChanged()
+        {
+            try { OnCoderAgentsChanged?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
+        }
+
+        public static void NotifyCoderSessionsChanged()
+        {
+            try { OnCoderSessionsChanged?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
+        }
+
+        public static void UpdateCoderSession(CoderSessionInfo session)
+        {
+            if (session == null || session.Id <= 0) return;
+            var index = CoderSessions.FindIndex(item => item.Id == session.Id);
+            if (index >= 0) CoderSessions[index] = session;
+            else CoderSessions.Insert(0, session);
+            NotifyCoderSessionsChanged();
         }
 
         public static event Action OnIssuesChanged;
@@ -361,6 +386,7 @@ namespace Maicon.SceneAnalyzer.Editor
 
                 AssemblyReloadEvents.beforeAssemblyReload += OnBeforeReload;
                 AssemblyReloadEvents.afterAssemblyReload += OnAfterReload;
+                EditorApplication.quitting += OnQuitting;
 
                 // Auto-start: if EITHER user toggled AutoStartServer once OR
                 // the sticky flag is set (meaning they clicked Start at some
@@ -443,11 +469,22 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             try
             {
+                ChatClient?.Dispose();
                 // Pass a reason so HttpMcpServer writes 503 to in-flight tool
                 // calls before the AppDomain is torn down. Without this, the
                 // MCP client hangs on the dead socket until its 60s request
                 // timeout fires (-32001).
                 Server?.Stop("Unity assembly reload — server restarting; retry in ~5s");
+            }
+            catch (Exception e) { Debug.LogException(e); }
+        }
+
+        private static void OnQuitting()
+        {
+            try
+            {
+                ChatClient?.Dispose();
+                Server?.Stop("Unity Editor is quitting");
             }
             catch (Exception e) { Debug.LogException(e); }
         }

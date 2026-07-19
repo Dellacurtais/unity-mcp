@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -22,12 +23,23 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
     /// Reference: D:\MCP\src\apps\http-api\server.ts:345-348 (server),
     /// D:\MCP\src\apps\dashboard\hooks\agent-stream\openStream.ts:28-172
     /// (browser client mirrored here).
-    public sealed class CoderApiClient
+    public sealed partial class CoderApiClient
     {
         private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
 
         private CancellationTokenSource _cts;
+        private CancellationTokenSource _syncCts;
+        private readonly CancellationTokenSource _lifetimeCts = new();
         private readonly ChatSession _session;
+        private int _disposed;
+        private readonly ConcurrentQueue<CoderStreamEvent> _streamEvents = new();
+        private int _streamDrainScheduled;
+        private long _enqueuedStreamEvents;
+        private long _appliedStreamEvents;
+
+        private const int MaxEventsPerDrain = 96;
+        private const double MaxDrainMilliseconds = 3.5;
+        private static readonly TimeSpan InteractionTimeout = TimeSpan.FromSeconds(30);
 
         // Sessions that haven't received their context preamble yet. A session
         // gets added here the moment it's created (either via auto-create on
@@ -49,16 +61,61 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             lock (_preambleLock) return _pendingPreambleFor.Remove(sessionId);
         }
 
+        private bool TryBeginForegroundOperation(out CancellationTokenSource operationCts)
+        {
+            operationCts = null;
+            if (Volatile.Read(ref _disposed) != 0) return false;
+
+            var candidate = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+            if (Interlocked.CompareExchange(ref _cts, candidate, null) == null)
+            {
+                operationCts = candidate;
+                return true;
+            }
+
+            candidate.Dispose();
+            return false;
+        }
+
+        private void CompleteForegroundOperation(CancellationTokenSource operationCts)
+        {
+            if (operationCts == null) return;
+            Interlocked.CompareExchange(ref _cts, null, operationCts);
+            operationCts.Dispose();
+        }
+
         public CoderApiClient(ChatSession session)
         {
             _session = session;
         }
 
-        public bool IsRunning => _cts != null && !_cts.IsCancellationRequested;
+        public bool IsRunning => Volatile.Read(ref _cts) != null;
+
+        public bool IsSyncing => _syncCts != null && !_syncCts.IsCancellationRequested;
 
         public void Cancel()
         {
-            try { _cts?.Cancel(); } catch { }
+            var cts = Volatile.Read(ref _cts);
+            if (cts == null) return;
+            try { cts.Cancel(); } catch { }
+        }
+
+        public void StopSessionSync()
+        {
+            var cts = Interlocked.Exchange(ref _syncCts, null);
+            if (cts == null) return;
+            try { cts.Cancel(); } catch { }
+            cts.Dispose();
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            Cancel();
+            StopSessionSync();
+            try { _lifetimeCts.Cancel(); } catch { }
+            while (_streamEvents.TryDequeue(out _)) { }
+            _lifetimeCts.Dispose();
         }
 
         public void Send(string serverUrl, string token, int sessionId, string content,
@@ -66,14 +123,13 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         {
             // Caller is the main thread (button click). Don't dispatch + wait —
             // would deadlock against the dispatcher running on EditorApplication.update.
-            if (IsRunning)
+            if (!TryBeginForegroundOperation(out var operationCts))
             {
                 _session.AddSystemNote("a request is already in flight — cancel it first");
                 return;
             }
 
-            _cts = new CancellationTokenSource();
-            var token2 = _cts.Token;
+            var token2 = operationCts.Token;
             // Capture EVERYTHING from Settings on the main thread before
             // dispatching — EditorPrefs is not guaranteed thread-safe.
             // (CoderProjectId / CoderProjectWorkdir are read inside
@@ -154,7 +210,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 }
                 finally
                 {
-                    _cts = null;
+                    CompleteForegroundOperation(operationCts);
                 }
             });
         }
@@ -259,13 +315,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public void CreateSession(string serverUrl, string token, int projectId, string title,
             string provider, string model, string agent)
         {
-            if (IsRunning)
+            if (!TryBeginForegroundOperation(out var operationCts))
             {
                 _session.AddSystemNote("a request is already in flight — cancel it first");
                 return;
             }
-            _cts = new CancellationTokenSource();
-            var ct = _cts.Token;
+            var ct = operationCts.Token;
             var unityRoot = Bootstrap.UnityProjectRoot;
             _ = Task.Run(async () =>
             {
@@ -301,7 +356,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     await MainThreadDispatcher.RunAsync(() => _session.AddError(
                         $"create session pipeline error: {e.GetType().Name}: {e.Message}"));
                 }
-                finally { _cts = null; }
+                finally { CompleteForegroundOperation(operationCts); }
             });
         }
 
@@ -309,9 +364,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         /// the Unity workdir (creates if needed) and stores its id in Settings.
         public void EnsureProject(string serverUrl, string token, string unityRoot)
         {
-            if (IsRunning) { _session.AddSystemNote("a request is already in flight — cancel it first"); return; }
-            _cts = new CancellationTokenSource();
-            var ct = _cts.Token;
+            if (!TryBeginForegroundOperation(out var operationCts))
+            {
+                _session.AddSystemNote("a request is already in flight — cancel it first");
+                return;
+            }
+            var ct = operationCts.Token;
             _ = Task.Run(async () =>
             {
                 try
@@ -335,7 +393,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     await MainThreadDispatcher.RunAsync(() => _session.AddError(
                         $"ensure project pipeline error: {e.GetType().Name}: {e.Message}"));
                 }
-                finally { _cts = null; }
+                finally { CompleteForegroundOperation(operationCts); }
             });
         }
 
@@ -343,112 +401,34 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         /// `/api/coder/sessions/<id>/answer` so the paused run continues.
         public void AnswerQuestion(string serverUrl, string token, int sessionId, string questionId, string answer)
         {
-            if (sessionId <= 0) { _session.AddError("session not set — cannot answer"); return; }
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/answer";
-                    var body = new JObject { ["answer"] = answer };
-                    if (!string.IsNullOrEmpty(questionId)) body["question_id"] = questionId;
-                    using var req = new HttpRequestMessage(HttpMethod.Post, url)
-                    {
-                        Content = new StringContent(body.ToString(FormattingNs.None), Encoding.UTF8, "application/json"),
-                    };
-                    if (!string.IsNullOrEmpty(token))
-                        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                    using var resp = await Http.SendAsync(req);
-                    var bodyText = await resp.Content.ReadAsStringAsync();
-                    await MainThreadDispatcher.RunAsync(() =>
-                    {
-                        _session.ClearPendingQuestion();
-                        if (resp.IsSuccessStatusCode)
-                            _session.AddSystemNote($"answered question with: {answer}");
-                        else
-                            _session.AddError($"answer failed: HTTP {(int)resp.StatusCode} — {bodyText}");
-                    });
-                }
-                catch (Exception e)
-                {
-                    Debug.LogException(e);
-                    await MainThreadDispatcher.RunAsync(() => _session.AddError($"answer error: {e.Message}"));
-                }
-            });
+            var key = "question:" + (questionId ?? "");
+            var body = new JObject { ["answer"] = answer ?? "" };
+            if (!string.IsNullOrEmpty(questionId)) body["question_id"] = questionId;
+            _ = PostInteractionAsync(serverUrl, token, sessionId, "answer", key, body,
+                $"Pergunta respondida: {answer}");
         }
 
         /// Approve / reject a plan submitted by the agent via `submit_plan`.
         public void RespondToPlan(string serverUrl, string token, int sessionId, string planId, bool approved, string note)
         {
-            if (sessionId <= 0) { _session.AddError("session not set — cannot respond to plan"); return; }
-            _ = Task.Run(async () =>
+            var key = "plan:" + (planId ?? "");
+            var body = new JObject
             {
-                try
-                {
-                    var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/plan-response";
-                    var body = new JObject
-                    {
-                        ["approved"] = approved,
-                        ["note"] = note ?? "",
-                    };
-                    if (!string.IsNullOrEmpty(planId)) body["plan_id"] = planId;
-                    using var req = new HttpRequestMessage(HttpMethod.Post, url)
-                    {
-                        Content = new StringContent(body.ToString(FormattingNs.None), Encoding.UTF8, "application/json"),
-                    };
-                    if (!string.IsNullOrEmpty(token))
-                        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                    using var resp = await Http.SendAsync(req);
-                    var bodyText = await resp.Content.ReadAsStringAsync();
-                    await MainThreadDispatcher.RunAsync(() =>
-                    {
-                        _session.ClearPendingPlan();
-                        if (resp.IsSuccessStatusCode)
-                            _session.AddSystemNote($"plan {(approved ? "approved" : "rejected")}{(string.IsNullOrEmpty(note) ? "" : $" — {note}")}");
-                        else
-                            _session.AddError($"plan response failed: HTTP {(int)resp.StatusCode} — {bodyText}");
-                    });
-                }
-                catch (Exception e)
-                {
-                    Debug.LogException(e);
-                    await MainThreadDispatcher.RunAsync(() => _session.AddError($"plan response error: {e.Message}"));
-                }
-            });
+                ["approved"] = approved,
+                ["note"] = note ?? "",
+            };
+            if (!string.IsNullOrEmpty(planId)) body["plan_id"] = planId;
+            _ = PostInteractionAsync(serverUrl, token, sessionId, "plan-response", key, body,
+                approved ? "Plano aprovado" : string.IsNullOrWhiteSpace(note) ? "Plano rejeitado" : "Alterações solicitadas no plano");
         }
 
         public void RespondToTasks(string serverUrl, string token, int sessionId, string toolUseId, bool approved)
         {
-            if (sessionId <= 0) { _session.AddError("session not set — cannot respond to tasks"); return; }
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/tasks-response";
-                    var body = new JObject { ["approved"] = approved };
-                    if (!string.IsNullOrEmpty(toolUseId)) body["tool_use_id"] = toolUseId;
-                    using var req = new HttpRequestMessage(HttpMethod.Post, url)
-                    {
-                        Content = new StringContent(body.ToString(FormattingNs.None), Encoding.UTF8, "application/json"),
-                    };
-                    if (!string.IsNullOrEmpty(token))
-                        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                    using var resp = await Http.SendAsync(req);
-                    var bodyText = await resp.Content.ReadAsStringAsync();
-                    await MainThreadDispatcher.RunAsync(() =>
-                    {
-                        _session.ClearPendingTasks();
-                        if (resp.IsSuccessStatusCode)
-                            _session.AddSystemNote($"tasks {(approved ? "approved" : "rejected")}");
-                        else
-                            _session.AddError($"tasks response failed: HTTP {(int)resp.StatusCode} — {bodyText}");
-                    });
-                }
-                catch (Exception e)
-                {
-                    Debug.LogException(e);
-                    await MainThreadDispatcher.RunAsync(() => _session.AddError($"tasks response error: {e.Message}"));
-                }
-            });
+            var key = "tasks:" + (toolUseId ?? "");
+            var body = new JObject { ["approved"] = approved };
+            if (!string.IsNullOrEmpty(toolUseId)) body["tool_use_id"] = toolUseId;
+            _ = PostInteractionAsync(serverUrl, token, sessionId, "tasks-response", key, body,
+                approved ? "Tarefas aprovadas" : "Tarefas rejeitadas");
         }
 
         /// Quick connectivity probe: GETs /api/projects and reports the HTTP
@@ -457,9 +437,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         /// pointing at a reachable D:\MCP instance.
         public void TestConnection(string serverUrl, string token)
         {
-            if (IsRunning) { _session.AddSystemNote("a request is already in flight — cancel it first"); return; }
-            _cts = new CancellationTokenSource();
-            var ct = _cts.Token;
+            if (!TryBeginForegroundOperation(out var operationCts))
+            {
+                _session.AddSystemNote("a request is already in flight — cancel it first");
+                return;
+            }
+            var ct = operationCts.Token;
             _ = Task.Run(async () =>
             {
                 try
@@ -487,7 +470,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     await MainThreadDispatcher.RunAsync(() => _session.AddError(
                         $"test connection error: {e.GetType().Name}: {e.Message}"));
                 }
-                finally { _cts = null; }
+                finally { CompleteForegroundOperation(operationCts); }
             });
         }
 
@@ -657,9 +640,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         /// the window dropdowns refresh.
         public void RefreshProviders(string serverUrl, string token)
         {
-            if (IsRunning) { _session.AddSystemNote("a request is already in flight — cancel it first"); return; }
-            _cts = new CancellationTokenSource();
-            var ct = _cts.Token;
+            if (Volatile.Read(ref _disposed) != 0) return;
+            var ct = _lifetimeCts.Token;
             _ = Task.Run(async () =>
             {
                 try
@@ -701,6 +683,11 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                                     Mode = (string)m["mode"],
                                     ContextWindow = (int?)m["context_window"],
                                     DefaultMaxTokens = (int?)m["default_max_tokens"],
+                                    CanReason = (bool?)m["can_reason"] ?? false,
+                                    DefaultReasoningLevel = (string)m["default_reasoning_level"],
+                                    SupportedReasoningLevels = (m["supported_reasoning_levels"] as JArray)?
+                                        .Values<string>().Where(value => !string.IsNullOrEmpty(value)).ToList()
+                                        ?? new List<string>(),
                                 });
                             }
                         }
@@ -716,13 +703,13 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                             $"{list.Sum(p => p.Models.Count)} model(s) total");
                     });
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
                 catch (Exception e)
                 {
                     Debug.LogException(e);
                     await MainThreadDispatcher.RunAsync(() => _session.AddError(
                         $"refresh providers error: {e.GetType().Name}: {e.Message}"));
                 }
-                finally { _cts = null; }
             });
         }
 
@@ -830,7 +817,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             }
             finally
             {
-                _cts = null;
+                try
+                {
+                    var drainTarget = Interlocked.Read(ref _enqueuedStreamEvents);
+                    await WaitForStreamDrainAsync(drainTarget, _lifetimeCts.Token);
+                }
+                catch (OperationCanceledException) { }
                 await MainThreadDispatcher.RunAsync(() => _session.FinishAssistant());
             }
         }
@@ -840,6 +832,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             string eventType = null;
             var dataBuilder = new StringBuilder();
             string lastId = null;
+            var terminalSeen = false;
 
             while (!ct.IsCancellationRequested)
             {
@@ -851,9 +844,14 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     if (dataBuilder.Length > 0)
                     {
                         var data = dataBuilder.ToString();
-                        var type = eventType ?? "message";
-                        await MainThreadDispatcher.RunAsync(() => DispatchEvent(type, data, lastId));
-                        if (type == "done") break;
+                        var streamEvent = CoderStreamEvent.Create(eventType ?? "message", data, lastId);
+                        EnqueueStreamEvent(streamEvent);
+                        if (streamEvent.IsTerminal)
+                        {
+                            terminalSeen = true;
+                            dataBuilder.Clear();
+                            break;
+                        }
                     }
                     eventType = null;
                     dataBuilder.Clear();
@@ -868,6 +866,66 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     if (dataBuilder.Length > 0) dataBuilder.Append('\n');
                     dataBuilder.Append(line.Substring(5).TrimStart());
                 }
+            }
+
+            if (!terminalSeen && dataBuilder.Length > 0)
+                EnqueueStreamEvent(CoderStreamEvent.Create(eventType ?? "message", dataBuilder.ToString(), lastId));
+
+            var drainTarget = Interlocked.Read(ref _enqueuedStreamEvents);
+            await WaitForStreamDrainAsync(drainTarget, _lifetimeCts.Token);
+        }
+
+        private void EnqueueStreamEvent(CoderStreamEvent streamEvent)
+        {
+            if (streamEvent == null || _lifetimeCts.IsCancellationRequested) return;
+            _streamEvents.Enqueue(streamEvent);
+            Interlocked.Increment(ref _enqueuedStreamEvents);
+            ScheduleStreamDrain();
+        }
+
+        private void ScheduleStreamDrain()
+        {
+            if (_lifetimeCts.IsCancellationRequested) return;
+            if (Interlocked.CompareExchange(ref _streamDrainScheduled, 1, 0) != 0) return;
+            _ = MainThreadDispatcher.RunAsync(DrainStreamEvents, _lifetimeCts.Token).ContinueWith(task =>
+            {
+                if (task.IsFaulted && task.Exception != null)
+                    Debug.LogException(task.Exception.GetBaseException());
+            }, TaskScheduler.Default);
+        }
+
+        private void DrainStreamEvents()
+        {
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            var rawEvents = new List<CoderStreamEvent>(MaxEventsPerDrain);
+            while (rawEvents.Count < MaxEventsPerDrain
+                && started.Elapsed.TotalMilliseconds < MaxDrainMilliseconds
+                && _streamEvents.TryDequeue(out var streamEvent))
+            {
+                rawEvents.Add(streamEvent);
+            }
+
+            if (rawEvents.Count > 0)
+            {
+                var events = CoderStreamEvent.CoalesceAdjacentText(rawEvents);
+                _session.ApplyBatch(() =>
+                {
+                    foreach (var streamEvent in events) DispatchEvent(streamEvent);
+                });
+                Interlocked.Add(ref _appliedStreamEvents, rawEvents.Count);
+            }
+
+            Interlocked.Exchange(ref _streamDrainScheduled, 0);
+            if (!_streamEvents.IsEmpty) ScheduleStreamDrain();
+        }
+
+        private async Task WaitForStreamDrainAsync(long target, CancellationToken ct)
+        {
+            while (Interlocked.Read(ref _appliedStreamEvents) < target)
+            {
+                ct.ThrowIfCancellationRequested();
+                ScheduleStreamDrain();
+                await Task.Delay(8, ct);
             }
         }
 
@@ -916,38 +974,44 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
         /// Options on a question can be plain strings or objects with
         /// `{label, value}` (or similar). Pick the most human-readable label.
-        private static string OptionLabel(JToken t)
+        private static string OptionLabel(JToken token)
         {
-            if (t == null) return "";
-            if (t.Type == JTokenType.String) return (string)t;
-            if (t is JObject o)
+            if (token == null) return "";
+            if (token.Type == JTokenType.String) return (string)token;
+            if (token is JObject option)
             {
-                var lbl = AsString(o["label"]) ?? AsString(o["text"]) ?? AsString(o["value"]) ?? AsString(o["id"]);
-                if (!string.IsNullOrEmpty(lbl)) return lbl;
+                var label = AsString(option["label"]) ?? AsString(option["text"])
+                    ?? AsString(option["value"]) ?? AsString(option["id"]);
+                if (!string.IsNullOrEmpty(label)) return label;
             }
-            return AsString(t) ?? "";
+            return AsString(token) ?? "";
         }
 
-        private void DispatchEvent(string type, string data, string lastId)
+        private static string OptionValue(JToken token)
         {
-            if (!string.IsNullOrEmpty(lastId)) _session.LastEventId = lastId;
+            if (token == null) return "";
+            if (token.Type == JTokenType.String) return (string)token;
+            if (token is JObject option)
+                return AsString(option["value"]) ?? AsString(option["id"])
+                    ?? AsString(option["label"]) ?? AsString(option["text"]) ?? "";
+            return AsString(token) ?? "";
+        }
 
-            JToken payload = null;
-            try { payload = string.IsNullOrEmpty(data) ? null : JToken.Parse(data); }
-            catch { /* keep raw */ }
+        private void DispatchEvent(CoderStreamEvent streamEvent)
+        {
+            if (streamEvent == null) return;
+            if (!string.IsNullOrEmpty(streamEvent.LastEventId)) _session.LastEventId = streamEvent.LastEventId;
 
             try
             {
-                DispatchEventInner(type, data, payload);
+                DispatchEventInner(streamEvent.Type, streamEvent.Data, streamEvent.Payload);
             }
-            catch (Exception e)
+            catch (Exception exception)
             {
-                // Don't let a malformed/unexpected event abort the entire SSE
-                // stream parser. Log it and surface as a system note so the dev
-                // can investigate without losing the rest of the conversation.
-                Debug.LogException(e);
+                Debug.LogException(exception);
+                var data = streamEvent.Data;
                 _session.AddSystemNote(
-                    $"(skipped malformed `{type}` event: {e.GetType().Name}: {e.Message}; raw: " +
+                    $"(evento `{streamEvent.Type}` ignorado: {exception.GetType().Name}: {exception.Message}; bruto: " +
                     (data?.Length > 200 ? data.Substring(0, 200) + "…" : data) + ")");
             }
         }
@@ -960,8 +1024,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     _session.AppendAssistantText(AsString(payload?["text"]) ?? data ?? "");
                     break;
                 case "thinking":
-                    // Thinking is meta — surface as a faint system note rather than the main text.
-                    _session.AddSystemNote("(thinking)");
+                    _session.AppendAssistantThinking(AsString(payload?["text"]) ?? data ?? "");
                     break;
                 case "tool_call_start":
                     _session.AddToolCall(
@@ -1007,14 +1070,19 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     {
                         Id = AsString(payload?["id"]),
                         Question = AsString(payload?["question"]) ?? data,
-                        AllowFreeform = AsBool(payload?["allowFreeform"]) ?? true,
+                        AllowFreeform = AsBool(payload?["allowFreeform"] ?? payload?["allow_freeform"]) ?? true,
                     };
                     if (payload?["options"] is JArray optsArr)
                     {
-                        foreach (var o in optsArr)
+                        foreach (var optionToken in optsArr)
                         {
-                            var lbl = OptionLabel(o);
-                            if (!string.IsNullOrEmpty(lbl)) q.Options.Add(lbl);
+                            var label = OptionLabel(optionToken);
+                            var value = OptionValue(optionToken);
+                            if (string.IsNullOrEmpty(label) && string.IsNullOrEmpty(value)) continue;
+                            if (string.IsNullOrEmpty(label)) label = value;
+                            if (string.IsNullOrEmpty(value)) value = label;
+                            q.Options.Add(label);
+                            q.Choices.Add(new PendingOption { Label = label, Value = value });
                         }
                     }
                     _session.SetPendingQuestion(q);

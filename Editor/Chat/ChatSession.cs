@@ -1,141 +1,416 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Maicon.SceneAnalyzer.Editor.Chat
 {
-    public sealed class PendingQuestion
+    public enum PendingInteractionState
+    {
+        Pending,
+        Submitting,
+        Failed,
+    }
+
+    public enum PendingInteractionKind
+    {
+        Question,
+        Plan,
+        Tasks,
+    }
+
+    public sealed class PendingOption
+    {
+        public string Label;
+        public string Value;
+
+        public override string ToString() => string.IsNullOrEmpty(Label) ? Value ?? "Opção" : Label;
+    }
+
+    public abstract class PendingInteraction
+    {
+        public string Key;
+        public PendingInteractionKind Kind;
+        public PendingInteractionState State;
+        public string Error;
+        public string ResponseDraft;
+        public DateTime CreatedAt = DateTime.Now;
+    }
+
+    public sealed class PendingQuestion : PendingInteraction
     {
         public string Id;
         public string Question;
+        public readonly List<PendingOption> Choices = new();
         public List<string> Options = new();
         public bool AllowFreeform = true;
+
+        public PendingQuestion() { Kind = PendingInteractionKind.Question; }
     }
 
-    public sealed class PendingPlan
+    public sealed class PendingPlan : PendingInteraction
     {
         public string Id;
         public string Plan;
+
+        public PendingPlan() { Kind = PendingInteractionKind.Plan; }
     }
 
-    public sealed class PendingTasks
+    public sealed class PendingTasks : PendingInteraction
     {
         public string ToolUseId;
         public string Summary;
+
+        public PendingTasks() { Kind = PendingInteractionKind.Tasks; }
     }
 
-    /// In-memory message history for the embedded chat panel. Mirrors the
-    /// transcript the dashboard would show, but lives in the editor so the
-    /// dev never leaves Unity. Persistence across editor restarts is left to
-    /// the server-side session (sessionId is stored in EditorPrefs).
+    public enum ChatConnectionState
+    {
+        Offline,
+        Connecting,
+        Syncing,
+        Idle,
+        Running,
+        WaitingForApproval,
+        Error,
+    }
+
     public sealed class ChatSession
     {
         public readonly List<ChatMessage> Messages = new();
+        public readonly List<PendingInteraction> Interactions = new();
         public ChatMessage StreamingAssistant;
         public string LastEventId;
         public bool IsRunning;
         public string LastError;
+        public ChatConnectionState ConnectionState = ChatConnectionState.Offline;
+        public string ConnectionDetail;
+        public CoderSessionInfo RemoteSession;
+        public long LastRemoteMessageId;
+        public int Revision { get; private set; }
 
-        // Pending interactive prompts from the agent. Set by the SSE handler
-        // when an `ask_user` / `submit_plan` / `submit_tasks` tool call arrives.
-        // Cleared after the dev responds.
-        public PendingQuestion CurrentQuestion;
-        public PendingPlan CurrentPlan;
-        public PendingTasks CurrentTasks;
+        public PendingQuestion CurrentQuestion => Interactions.OfType<PendingQuestion>().FirstOrDefault();
+        public PendingPlan CurrentPlan => Interactions.OfType<PendingPlan>().FirstOrDefault();
+        public PendingTasks CurrentTasks => Interactions.OfType<PendingTasks>().FirstOrDefault();
 
         public event Action OnChanged;
 
-        public void AddUser(string text)
+        private int _batchDepth;
+        private bool _changedInBatch;
+
+        public IDisposable BeginBatch()
         {
-            Messages.Add(new ChatMessage { Role = ChatRole.User, Text = text });
-            Notify();
+            _batchDepth++;
+            return new BatchScope(this);
+        }
+
+        public void ApplyBatch(Action action)
+        {
+            using (BeginBatch()) action?.Invoke();
+        }
+
+        public void AddUser(string text, IEnumerable<ChatReference> references = null)
+        {
+            var message = new ChatMessage { Role = ChatRole.User, Text = text ?? "" };
+            if (references != null) message.References.AddRange(references.Where(reference => reference != null));
+            Messages.Add(message);
+            MarkChanged();
         }
 
         public void StartAssistant()
         {
+            if (StreamingAssistant != null)
+            {
+                IsRunning = true;
+                SetConnectionState(ChatConnectionState.Running, "Recebendo resposta");
+                return;
+            }
             StreamingAssistant = new ChatMessage { Role = ChatRole.Assistant, Streaming = true };
             Messages.Add(StreamingAssistant);
             IsRunning = true;
-            Notify();
+            LastError = null;
+            ConnectionState = ChatConnectionState.Running;
+            ConnectionDetail = "Recebendo resposta";
+            MarkChanged();
         }
 
         public void AppendAssistantText(string delta)
         {
+            if (string.IsNullOrEmpty(delta)) return;
             if (StreamingAssistant == null) StartAssistant();
             StreamingAssistant.Text += delta;
-            Notify();
+            StreamingAssistant.Touch();
+            MarkChanged();
+        }
+
+        public void AppendAssistantThinking(string delta)
+        {
+            if (string.IsNullOrEmpty(delta)) return;
+            if (StreamingAssistant == null) StartAssistant();
+            StreamingAssistant.ThinkingText += delta;
+            StreamingAssistant.Touch();
+            MarkChanged();
         }
 
         public void AddToolCall(string id, string name, string inputJson)
         {
             if (StreamingAssistant == null) StartAssistant();
-            StreamingAssistant.ToolCalls.Add(new ChatToolCall
+            var existing = StreamingAssistant.ToolCalls.Find(call => call.Id == id);
+            if (existing == null)
             {
-                Id = id,
-                Name = name,
-                InputJson = inputJson,
-            });
-            Notify();
+                StreamingAssistant.ToolCalls.Add(new ChatToolCall
+                {
+                    Id = id,
+                    Name = name,
+                    InputJson = inputJson,
+                });
+            }
+            else
+            {
+                existing.Name = name;
+                existing.InputJson = inputJson;
+            }
+            StreamingAssistant.Touch();
+            MarkChanged();
         }
 
         public void CompleteToolCall(string id, string resultText, double durationMs)
         {
             if (StreamingAssistant == null) return;
-            var call = StreamingAssistant.ToolCalls.Find(c => c.Id == id);
-            if (call != null)
-            {
-                call.ResultText = resultText;
-                call.DurationMs = durationMs;
-                call.Completed = true;
-            }
-            Notify();
+            var call = StreamingAssistant.ToolCalls.Find(candidate => candidate.Id == id);
+            if (call == null) return;
+            call.ResultText = resultText;
+            call.DurationMs = durationMs;
+            call.Completed = true;
+            StreamingAssistant.Touch();
+            MarkChanged();
         }
 
         public void AddSystemNote(string text)
         {
+            if (string.IsNullOrWhiteSpace(text)) return;
             Messages.Add(new ChatMessage { Role = ChatRole.System, Text = text });
-            Notify();
+            MarkChanged();
         }
 
         public void AddError(string text)
         {
             LastError = text;
-            Messages.Add(new ChatMessage { Role = ChatRole.Error, Text = text });
+            Messages.Add(new ChatMessage { Role = ChatRole.Error, Text = text ?? "Erro desconhecido" });
             IsRunning = false;
-            Notify();
+            ConnectionState = ChatConnectionState.Error;
+            ConnectionDetail = text;
+            MarkChanged();
         }
 
         public void FinishAssistant()
         {
-            if (StreamingAssistant != null) StreamingAssistant.Streaming = false;
+            if (StreamingAssistant != null)
+            {
+                StreamingAssistant.Streaming = false;
+                StreamingAssistant.Touch();
+            }
             StreamingAssistant = null;
             IsRunning = false;
-            Notify();
+            ConnectionState = Interactions.Count > 0 ? ChatConnectionState.WaitingForApproval : ChatConnectionState.Idle;
+            ConnectionDetail = Interactions.Count > 0 ? "Aguardando sua resposta" : "Pronto";
+            MarkChanged();
         }
 
-        public void Reset()
+        public void SetConnectionState(ChatConnectionState state, string detail = null)
         {
-            Messages.Clear();
+            if (ConnectionState == state && ConnectionDetail == detail) return;
+            ConnectionState = state;
+            ConnectionDetail = detail;
+            MarkChanged();
+        }
+
+        public void Reset(bool keepSystemNotes = false)
+        {
+            if (keepSystemNotes) Messages.RemoveAll(message => message.Role != ChatRole.System && message.Role != ChatRole.Error);
+            else Messages.Clear();
             StreamingAssistant = null;
             LastEventId = null;
             IsRunning = false;
             LastError = null;
-            CurrentQuestion = null;
-            CurrentPlan = null;
-            CurrentTasks = null;
+            Interactions.Clear();
+            RemoteSession = null;
+            LastRemoteMessageId = 0;
+            ConnectionState = ChatConnectionState.Offline;
+            ConnectionDetail = null;
+            MarkChanged();
+        }
+
+        public void MergeRemoteSnapshot(CoderSessionSnapshot snapshot, bool replaceConversation = false)
+        {
+            if (snapshot == null) return;
+            using (BeginBatch())
+            {
+                RemoteSession = snapshot.Session;
+                if (replaceConversation)
+                    Messages.RemoveAll(message => message.Role != ChatRole.System && message.Role != ChatRole.Error);
+
+                foreach (var remote in snapshot.Messages)
+                {
+                    foreach (var reference in remote.References) reference?.Validate();
+                    var existing = remote.RemoteId > 0
+                        ? Messages.Find(message => message.RemoteId == remote.RemoteId && message.RemoteSessionId == remote.RemoteSessionId)
+                        : null;
+                    if (existing == null) existing = FindEquivalentLocal(remote);
+                    if (existing != null) existing.CopyRemoteContentFrom(remote);
+                    else Messages.Add(remote);
+                }
+                LastRemoteMessageId = Math.Max(LastRemoteMessageId, snapshot.LastMessageId);
+                if (!IsRunning)
+                {
+                    ConnectionState = Interactions.Count > 0 ? ChatConnectionState.WaitingForApproval : ChatConnectionState.Idle;
+                    ConnectionDetail = Interactions.Count > 0 ? "Aguardando sua resposta" : "Sincronizado";
+                }
+                MarkChanged();
+            }
+        }
+
+        public void SetPendingQuestion(PendingQuestion question)
+        {
+            if (question == null) return;
+            if (question.Choices.Count == 0 && question.Options != null)
+                foreach (var option in question.Options) question.Choices.Add(new PendingOption { Label = option, Value = option });
+            question.Key = string.IsNullOrEmpty(question.Key) ? "question:" + (question.Id ?? Guid.NewGuid().ToString("N")) : question.Key;
+            UpsertInteraction(question);
+        }
+
+        public void ClearPendingQuestion() => RemoveInteraction(CurrentQuestion?.Key);
+
+        public void SetPendingPlan(PendingPlan plan)
+        {
+            if (plan == null) return;
+            plan.Key = string.IsNullOrEmpty(plan.Key) ? "plan:" + (plan.Id ?? Guid.NewGuid().ToString("N")) : plan.Key;
+            UpsertInteraction(plan);
+        }
+
+        public void ClearPendingPlan() => RemoveInteraction(CurrentPlan?.Key);
+
+        public void SetPendingTasks(PendingTasks tasks)
+        {
+            if (tasks == null) return;
+            tasks.Key = string.IsNullOrEmpty(tasks.Key) ? "tasks:" + (tasks.ToolUseId ?? Guid.NewGuid().ToString("N")) : tasks.Key;
+            UpsertInteraction(tasks);
+        }
+
+        public void ClearPendingTasks() => RemoveInteraction(CurrentTasks?.Key);
+
+        public void SetInteractionSubmitting(string key)
+        {
+            var interaction = FindInteraction(key);
+            if (interaction == null) return;
+            interaction.State = PendingInteractionState.Submitting;
+            interaction.Error = null;
+            MarkChanged();
+        }
+
+        public void SetInteractionFailed(string key, string error)
+        {
+            var interaction = FindInteraction(key);
+            if (interaction == null) return;
+            interaction.State = PendingInteractionState.Failed;
+            interaction.Error = error;
+            MarkChanged();
+        }
+
+        public void CompleteInteraction(string key) => RemoveInteraction(key);
+
+        public PendingInteraction FindInteraction(string key)
+        {
+            return string.IsNullOrEmpty(key) ? null : Interactions.Find(item => item.Key == key);
+        }
+
+        private void UpsertInteraction(PendingInteraction interaction)
+        {
+            var existingIndex = Interactions.FindIndex(item => item.Key == interaction.Key);
+            if (existingIndex >= 0) Interactions[existingIndex] = interaction;
+            else Interactions.Add(interaction);
+            ConnectionState = ChatConnectionState.WaitingForApproval;
+            ConnectionDetail = "Aguardando sua resposta";
+            MarkChanged();
+        }
+
+        private void RemoveInteraction(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            if (Interactions.RemoveAll(item => item.Key == key) == 0) return;
+            if (Interactions.Count == 0 && !IsRunning)
+            {
+                ConnectionState = ChatConnectionState.Idle;
+                ConnectionDetail = "Pronto";
+            }
+            MarkChanged();
+        }
+
+        private ChatMessage FindEquivalentLocal(ChatMessage remote)
+        {
+            for (var index = Messages.Count - 1; index >= 0; index--)
+            {
+                var local = Messages[index];
+                if (local.IsRemote || local.RemoteId != 0 || local.Role != remote.Role) continue;
+                if (EquivalentText(local.Text, remote.Text) && EquivalentToolCalls(local.ToolCalls, remote.ToolCalls)) return local;
+            }
+            return null;
+        }
+
+        private static bool EquivalentText(string local, string remote)
+        {
+            local = local ?? "";
+            remote = remote ?? "";
+            if (local == remote) return true;
+            return local.Length > 0 && remote.EndsWith(local, StringComparison.Ordinal);
+        }
+
+        private static bool EquivalentToolCalls(List<ChatToolCall> local, List<ChatToolCall> remote)
+        {
+            if (local.Count == 0 || remote.Count == 0) return local.Count == remote.Count;
+            if (local.Count != remote.Count) return false;
+            for (var index = 0; index < local.Count; index++)
+                if (!string.Equals(local[index].Id, remote[index].Id, StringComparison.Ordinal)) return false;
+            return true;
+        }
+
+        private void MarkChanged()
+        {
+            Revision++;
+            if (_batchDepth > 0)
+            {
+                _changedInBatch = true;
+                return;
+            }
             Notify();
         }
 
-        public void SetPendingQuestion(PendingQuestion q) { CurrentQuestion = q; Notify(); }
-        public void ClearPendingQuestion() { CurrentQuestion = null; Notify(); }
-        public void SetPendingPlan(PendingPlan p) { CurrentPlan = p; Notify(); }
-        public void ClearPendingPlan() { CurrentPlan = null; Notify(); }
-        public void SetPendingTasks(PendingTasks t) { CurrentTasks = t; Notify(); }
-        public void ClearPendingTasks() { CurrentTasks = null; Notify(); }
+        private void EndBatch()
+        {
+            if (_batchDepth == 0) return;
+            _batchDepth--;
+            if (_batchDepth != 0 || !_changedInBatch) return;
+            _changedInBatch = false;
+            Notify();
+        }
 
         private void Notify()
         {
             try { OnChanged?.Invoke(); }
-            catch (Exception e) { UnityEngine.Debug.LogException(e); }
+            catch (Exception exception) { UnityEngine.Debug.LogException(exception); }
+        }
+
+        private sealed class BatchScope : IDisposable
+        {
+            private ChatSession _owner;
+
+            public BatchScope(ChatSession owner) { _owner = owner; }
+
+            public void Dispose()
+            {
+                var owner = _owner;
+                _owner = null;
+                owner?.EndBatch();
+            }
         }
     }
 }
