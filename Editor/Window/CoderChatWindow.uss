@@ -25,9 +25,10 @@
 }
 
 .connection-bar {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    flex-shrink: 0;
+    align-items: stretch;
+    justify-content: flex-start;
     min-height: 56px;
     padding: 8px 10px;
     background-color: var(--surface);
@@ -50,10 +51,11 @@
     align-items: center;
 }
 
-.connection-summary { flex-grow: 1; min-width: 140px; }
-.connection-copy { flex-grow: 1; margin-left: 8px; }
-.connection-actions { flex-shrink: 1; justify-content: flex-end; }
-.connection-actions > * { margin-left: 5px; }
+.connection-summary { flex-grow: 0; flex-shrink: 0; min-width: 0; width: 100%; }
+.connection-copy { flex-grow: 1; min-width: 0; margin-left: 8px; }
+.connection-actions { flex-shrink: 0; justify-content: flex-start; flex-wrap: wrap; margin-top: 5px; }
+.connection-actions > * { flex-shrink: 0; margin-right: 5px; margin-top: 3px; }
+.connection-actions > .agent-field { flex-grow: 1; min-width: 180px; max-width: 300px; }
 
 .status-dot {
     width: 9px;
@@ -96,7 +98,7 @@
 
 .transcript-shell { flex-grow: 1; position: relative; min-height: 160px; }
 .transcript-list { flex-grow: 1; background-color: var(--chat-bg); border-width: 0; }
-.transcript-list .unity-collection-view__item { padding: 0; }
+.transcript-list .unity-collection-view__item { padding: 5px 10px; }
 .new-messages-button {
     position: absolute;
     right: 16px;
@@ -181,9 +183,10 @@
 .interaction-error { margin-top: 5px; color: var(--danger); white-space: normal; }
 
 .composer-panel {
+    flex-shrink: 0;
     margin: 8px 10px 10px 10px;
     padding: 8px;
-    min-height: 116px;
+    min-height: 148px;
     background-color: var(--surface);
     border-width: 1px;
     border-color: var(--border-strong);
@@ -191,12 +194,18 @@
 }
 .reference-chips { flex-wrap: wrap; }
 .composer-caption { font-size: 10px; color: var(--text-muted); margin-bottom: 3px; }
-.composer-input { min-height: 66px; max-height: 180px; }
+.composer-input { flex-shrink: 0; min-height: 66px; max-height: 180px; }
 .composer-input .unity-text-input { white-space: normal; }
 .composer-feedback { margin-top: 4px; color: var(--danger); white-space: normal; }
-.composer-toolbar { margin-top: 7px; justify-content: space-between; flex-wrap: wrap; }
-.composer-left { flex-grow: 1; flex-wrap: wrap; }
-.composer-right { justify-content: flex-end; }
+.composer-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    margin-top: 7px;
+}
+.composer-left { flex-grow: 0; flex-shrink: 0; width: 100%; flex-wrap: wrap; }
+.composer-right { flex-shrink: 0; width: 100%; justify-content: flex-end; margin-top: 3px; }
 .composer-left > *,
 .composer-right > * { margin-right: 5px; margin-top: 3px; }
 .agent-field { min-width: 135px; max-width: 220px; }
