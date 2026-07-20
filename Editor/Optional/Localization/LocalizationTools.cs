@@ -98,7 +98,7 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.Localization
 
         public ToolResult Execute(JObject arguments)
         {
-            var path = ((string)arguments["assetPath"] ?? string.Empty).Replace('\', '/');
+            var path = ((string)arguments["assetPath"] ?? string.Empty).Replace('\\', '/');
             if (!path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) || !path.EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
                 return ToolResult.Error("BAD_ASSET_PATH", "assetPath must be an Assets/*.asset path");
             if (AssetDatabase.LoadMainAssetAtPath(path) != null) return ToolResult.Error("ASSET_EXISTS", path);
@@ -108,7 +108,7 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.Localization
             Locale locale = null;
             try
             {
-                var folder = System.IO.Path.GetDirectoryName(path)?.Replace('\', '/');
+                var folder = System.IO.Path.GetDirectoryName(path)?.Replace('\\', '/');
                 if (!string.IsNullOrEmpty(folder) && !AssetDatabase.IsValidFolder(folder))
                     return ToolResult.Error("FOLDER_NOT_FOUND", folder);
                 locale = Locale.CreateLocale(code);

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Maicon.SceneAnalyzer.Editor.Authoring;
 using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Jobs;
@@ -150,7 +151,7 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.Addressables
         {
             var settings = AddressablesToolSupport.Settings;
             if (settings == null) return ToolResult.Error("ADDRESSABLES_SETTINGS_NOT_FOUND", "Create Addressables settings first");
-            var path = ((string)arguments["assetPath"] ?? string.Empty).Replace('\', '/');
+            var path = ((string)arguments["assetPath"] ?? string.Empty).Replace('\\', '/');
             if (!path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
                 return ToolResult.Error("BAD_ASSET_PATH", "assetPath must be under Assets/");
             var guid = AssetDatabase.AssetPathToGUID(path);

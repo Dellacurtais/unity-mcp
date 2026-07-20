@@ -2,14 +2,15 @@
   "name": "com.maicon.scene-analyzer.Editor.Tests",
   "rootNamespace": "Maicon.SceneAnalyzer.Editor.Tests",
   "references": [
-    "com.maicon.scene-analyzer.Editor",
-    "Unity.Newtonsoft.Json"
+    "com.maicon.scene-analyzer.Editor"
   ],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
-  "overrideReferences": false,
-  "precompiledReferences": [],
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "Newtonsoft.Json.dll"
+  ],
   "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
