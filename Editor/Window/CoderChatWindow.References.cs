@@ -168,7 +168,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private void ScheduleReferenceSearch()
         {
             _referenceDebounce?.Pause();
-            _referenceDebounce = _referencePicker?.schedule.Execute(StartReferenceSearch).ExecuteLater(160);
+            _referenceDebounce = _referencePicker?.schedule.Execute(StartReferenceSearch);
+            _referenceDebounce?.ExecuteLater(160);
         }
 
         private void StartReferenceSearch()

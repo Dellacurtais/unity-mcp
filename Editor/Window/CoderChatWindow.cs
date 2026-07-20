@@ -636,12 +636,12 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             if (_transcriptList == null) return;
             _transcriptScroll = _transcriptList.Q<ScrollView>();
             if (_transcriptScroll == null) return;
-            _transcriptScroll.verticalScroller.RegisterValueChangedCallback(_ =>
+            _transcriptScroll.verticalScroller.valueChanged += _ =>
             {
                 var scroller = _transcriptScroll.verticalScroller;
                 _userAtBottom = scroller.highValue - scroller.value < 24f;
                 if (_userAtBottom) SetDisplayed(_newMessagesButton, false);
-            });
+            };
         }
 
         private void WireNewMessagesButton()
