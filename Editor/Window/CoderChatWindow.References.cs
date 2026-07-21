@@ -385,11 +385,15 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             try { _referenceSearchEnumerator?.Dispose(); }
             catch (Exception exception) { Debug.LogException(exception); }
             _referenceSearchEnumerator = null;
+            var searchInFlight = _referenceSearchList?.pending == true;
             _referenceSearchList = null;
 
             var context = _referenceSearchContext;
             _referenceSearchContext = null;
-            if (context == null) return;
+            // Disposing a context whose async search is still running leaves a disposed
+            // SearchContext tracked by the Search module, which NREs in OnBeforeSerialize
+            // during domain reload / layout serialization. Let it finish and become garbage.
+            if (context == null || searchInFlight) return;
             try { context.Dispose(); }
             catch (Exception exception) { Debug.LogException(exception); }
         }
