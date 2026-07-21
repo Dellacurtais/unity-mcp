@@ -18,6 +18,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private const int MaxReferenceResults = 240;
         private const int SearchItemsPerBatch = 160;
         private const double SearchBatchBudgetMs = 3.0;
+        private const double SearchTimeoutSeconds = 10.0;
 
         private readonly List<ReferenceSearchResult> _referenceResults = new();
         private readonly HashSet<string> _referenceResultKeys = new(StringComparer.Ordinal);
@@ -36,6 +37,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private string _sceneSearchQuery = "";
         private int _referenceSearchGeneration;
         private bool _referenceSearchPending;
+        private double _referenceSearchStartTime;
 
         internal static void AttachObjects(IEnumerable<Object> objects)
         {
@@ -190,12 +192,13 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _sceneSearchQuery = providerId == "scene" ? query ?? "" : "";
             var providerQuery = providerId == "scene" ? "" : query ?? "";
             SetReferenceStatus(providerId == "scene" ? "Buscando na cena…" : "Buscando assets e pastas…");
+            _referenceSearchStartTime = EditorApplication.timeSinceStartup;
 
             try
             {
                 _referenceSearchContext = SearchService.CreateContext(providerId, providerQuery, SearchFlags.Sorted);
                 _referenceSearchList = SearchService.Request(_referenceSearchContext, SearchFlags.Sorted);
-                _referenceSearchEnumerator = _referenceSearchList?.GetEnumerator();
+                _referenceSearchEnumerator = _referenceSearchList?.Fetch().GetEnumerator();
                 _referenceSearchPending = generation == _referenceSearchGeneration
                     && _referenceSearchEnumerator != null;
                 if (!_referenceSearchPending)
@@ -245,7 +248,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             }
 
             _referenceResultsList?.RefreshItems();
-            if (_referenceResults.Count >= MaxReferenceResults || completed)
+            var timedOut = EditorApplication.timeSinceStartup - _referenceSearchStartTime > SearchTimeoutSeconds;
+            if (_referenceResults.Count >= MaxReferenceResults || completed || timedOut)
             {
                 var source = _referenceMode == "scene" ? "Cena" : "Assets";
                 SetReferenceStatus(ResultStatus(source));
