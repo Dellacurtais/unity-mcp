@@ -763,23 +763,35 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             }
         }
 
+        public static JObject BuildMessageBody(string content, string profile, string agent, bool thinking)
+        {
+            var body = new JObject { ["content"] = content ?? "" };
+            if (!string.IsNullOrWhiteSpace(agent))
+                body["agent"] = agent.Trim();
+            else
+                body["profile"] = NormalizeProfile(profile);
+            if (thinking) body["thinking"] = true;
+            return body;
+        }
+
+        private static string NormalizeProfile(string profile)
+        {
+            switch ((profile ?? "").Trim().ToLowerInvariant())
+            {
+                case "bootstrap": return "bootstrap";
+                case "navigate": return "navigate";
+                case "full": return "full";
+                default: return "auto";
+            }
+        }
+
         private async Task SendAsync(string serverUrl, string token, int sessionId, string content,
             string profile, string agent, bool thinking, CancellationToken ct)
         {
             try
             {
                 var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/messages";
-                var body = new JObject
-                {
-                    ["content"] = content,
-                    ["profile"] = profile,
-                    ["agent"] = agent,
-                };
-                // THINK MODE — provider-agnostic boolean. The D:\MCP coder maps
-                // it server-side to Anthropic budget_tokens, OpenAI
-                // reasoning_effort, or Gemini thinkingConfig depending on the
-                // active provider.
-                if (thinking) body["thinking"] = true;
+                var body = BuildMessageBody(content, profile, agent, thinking);
 
                 using var req = new HttpRequestMessage(HttpMethod.Post, url)
                 {

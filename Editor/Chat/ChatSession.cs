@@ -245,10 +245,14 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (snapshot == null) return;
             using (BeginBatch())
             {
-                RemoteSession = snapshot.Session;
-                if (replaceConversation)
-                    Messages.RemoveAll(message => message.Role != ChatRole.System && message.Role != ChatRole.Error);
+                var changed = RemoteSession == null
+                    ? snapshot.Session != null
+                    : !RemoteSession.SemanticallyEquals(snapshot.Session);
+                if (changed) RemoteSession = snapshot.Session;
 
+                var reconciled = replaceConversation
+                    ? new List<ChatMessage>(snapshot.Messages.Count)
+                    : null;
                 foreach (var remote in snapshot.Messages)
                 {
                     foreach (var reference in remote.References) reference?.Validate();
@@ -256,16 +260,61 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                         ? Messages.Find(message => message.RemoteId == remote.RemoteId && message.RemoteSessionId == remote.RemoteSessionId)
                         : null;
                     if (existing == null) existing = FindEquivalentLocal(remote);
-                    if (existing != null) existing.CopyRemoteContentFrom(remote);
-                    else Messages.Add(remote);
+                    if (existing != null && reconciled != null && reconciled.Contains(existing)) existing = null;
+                    if (existing != null)
+                    {
+                        changed |= existing.CopyRemoteContentFrom(remote);
+                        reconciled?.Add(existing);
+                    }
+                    else if (reconciled != null)
+                    {
+                        reconciled.Add(remote);
+                        changed = true;
+                    }
+                    else
+                    {
+                        Messages.Add(remote);
+                        changed = true;
+                    }
                 }
-                LastRemoteMessageId = Math.Max(LastRemoteMessageId, snapshot.LastMessageId);
+
+                if (reconciled != null)
+                {
+                    var targetMessages = Messages
+                        .Where(message => (message.Role == ChatRole.System || message.Role == ChatRole.Error)
+                            && !reconciled.Contains(message))
+                        .Concat(reconciled)
+                        .ToList();
+                    if (!Messages.SequenceEqual(targetMessages))
+                    {
+                        Messages.Clear();
+                        Messages.AddRange(targetMessages);
+                        changed = true;
+                    }
+                }
+
+                var nextLastRemoteMessageId = Math.Max(LastRemoteMessageId, snapshot.LastMessageId);
+                if (LastRemoteMessageId != nextLastRemoteMessageId)
+                {
+                    LastRemoteMessageId = nextLastRemoteMessageId;
+                    changed = true;
+                }
+
                 if (!IsRunning)
                 {
-                    ConnectionState = Interactions.Count > 0 ? ChatConnectionState.WaitingForApproval : ChatConnectionState.Idle;
-                    ConnectionDetail = Interactions.Count > 0 ? "Aguardando sua resposta" : "Sincronizado";
+                    var nextState = Interactions.Count > 0
+                        ? ChatConnectionState.WaitingForApproval
+                        : ChatConnectionState.Idle;
+                    var nextDetail = Interactions.Count > 0 ? "Aguardando sua resposta" : "Sincronizado";
+                    if (ConnectionState != nextState || !string.Equals(ConnectionDetail, nextDetail, StringComparison.Ordinal))
+                    {
+                        ConnectionState = nextState;
+                        ConnectionDetail = nextDetail;
+                        changed = true;
+                    }
                 }
-                MarkChanged();
+
+                if (changed) MarkChanged();
             }
         }
 

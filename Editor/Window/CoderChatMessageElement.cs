@@ -51,6 +51,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
             _thinking = new Foldout { text = "Raciocínio", value = false };
             _thinking.AddToClassList("message-thinking");
+            _thinking.RegisterValueChangedCallback(evt =>
+            {
+                if (BoundMessage != null) BoundMessage.ThinkingExpanded = evt.newValue;
+            });
             _thinkingText = new Label();
             _thinkingText.AddToClassList("message-body");
             _thinking.Add(_thinkingText);
@@ -93,6 +97,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             SetDisplayed(_streaming, message.Streaming);
 
             var hasThinking = !string.IsNullOrEmpty(message.ThinkingText);
+            _thinking.SetValueWithoutNotify(message.ThinkingExpanded);
             _thinkingText.text = message.ThinkingText ?? "";
             SetDisplayed(_thinking, hasThinking);
 
@@ -110,9 +115,11 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             var card = new Foldout
             {
                 text = string.IsNullOrEmpty(call?.Name) ? "Ferramenta" : call.Name,
-                value = false,
+                value = call?.Expanded == true,
             };
             card.AddToClassList("tool-card");
+            if (call != null)
+                card.RegisterValueChangedCallback(evt => call.Expanded = evt.newValue);
             if (call?.Failed == true) card.AddToClassList("failed");
 
             var status = call == null

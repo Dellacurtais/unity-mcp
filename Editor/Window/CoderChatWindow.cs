@@ -269,7 +269,6 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 if (!_agentByLabel.TryGetValue(evt.newValue, out var selected)) return;
                 Settings.CoderAgent = selected.Id;
-                if (!string.IsNullOrEmpty(selected.Profile)) Settings.CoderProfile = selected.Profile;
                 _agentField.tooltip = selected.Description ?? selected.Label;
             });
             _composerLeft.Add(_agentField);
@@ -582,7 +581,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 _agentField.SetValueWithoutNotify(selected.Key);
                 _agentField.tooltip = selected.Value.Description ?? selected.Value.Label;
-                if (string.IsNullOrEmpty(Settings.CoderAgent)) Settings.CoderAgent = selected.Value.Id;
+                if (!string.Equals(Settings.CoderAgent, selected.Value.Id, StringComparison.Ordinal))
+                    Settings.CoderAgent = selected.Value.Id;
             }
         }
 

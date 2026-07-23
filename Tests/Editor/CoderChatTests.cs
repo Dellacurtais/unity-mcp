@@ -1,8 +1,11 @@
+using System;
 using System.Collections.Generic;
+using System.Reflection;
 using Maicon.SceneAnalyzer.Editor.Chat;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
+using UnityEngine.UIElements;
 
 namespace Maicon.SceneAnalyzer.Editor.Tests
 {
@@ -187,6 +190,155 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(snapshot.Messages[0].ToolCalls, Has.Count.EqualTo(1));
             Assert.That(snapshot.Messages[0].ToolCalls[0].Completed, Is.True);
             Assert.That(snapshot.Messages[0].ToolCalls[0].ResultText, Is.EqualTo("ok"));
+        }
+
+        [Test]
+        public void SessionSnapshot_RepeatedEquivalentMergeDoesNotNotifyOrRevise()
+        {
+            var root = new JObject
+            {
+                ["session"] = new JObject
+                {
+                    ["id"] = 17,
+                    ["project_id"] = 3,
+                    ["status"] = "idle",
+                    ["agent"] = "plan",
+                    ["updated_at"] = "2026-07-23T12:00:00Z",
+                },
+                ["message_rows"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["id"] = 1,
+                        ["session_id"] = 17,
+                        ["role"] = "assistant",
+                        ["created_at"] = "2026-07-23T12:00:00Z",
+                        ["content_json"] = new JArray
+                        {
+                            new JObject { ["type"] = "thinking", ["text"] = "Analisando" },
+                            new JObject { ["type"] = "text", ["text"] = "Pronto" },
+                            new JObject
+                            {
+                                ["type"] = "tool_use",
+                                ["id"] = "tool-1",
+                                ["name"] = "read_file",
+                                ["input"] = new JObject { ["path"] = "Assets/Test.cs" },
+                            },
+                        }.ToString(Formatting.None),
+                    },
+                    new JObject
+                    {
+                        ["id"] = 2,
+                        ["session_id"] = 17,
+                        ["role"] = "tool",
+                        ["created_at"] = "2026-07-23T12:00:01Z",
+                        ["content_json"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["type"] = "tool_result",
+                                ["tool_use_id"] = "tool-1",
+                                ["content"] = "ok",
+                            },
+                        }.ToString(Formatting.None),
+                    },
+                },
+            };
+            var session = new ChatSession();
+            var notifications = 0;
+            session.OnChanged += () => notifications++;
+
+            session.MergeRemoteSnapshot(
+                CoderSessionSnapshot.FromJson((JObject)root.DeepClone()),
+                replaceConversation: true);
+            session.Messages[0].ThinkingExpanded = true;
+            session.Messages[0].ToolCalls[0].Expanded = true;
+            var sessionRevision = session.Revision;
+            var messageRevision = session.Messages[0].Revision;
+            notifications = 0;
+
+            session.MergeRemoteSnapshot(
+                CoderSessionSnapshot.FromJson((JObject)root.DeepClone()),
+                replaceConversation: true);
+
+            Assert.That(notifications, Is.Zero);
+            Assert.That(session.Revision, Is.EqualTo(sessionRevision));
+            Assert.That(session.Messages[0].Revision, Is.EqualTo(messageRevision));
+            Assert.That(session.Messages[0].ThinkingExpanded, Is.True);
+            Assert.That(session.Messages[0].ToolCalls[0].Expanded, Is.True);
+        }
+
+        [Test]
+        public void MessageElement_RebindPreservesExpandedThinkingAndToolCards()
+        {
+            var message = new ChatMessage
+            {
+                Role = ChatRole.Assistant,
+                ThinkingText = "Raciocínio detalhado",
+                ThinkingExpanded = true,
+            };
+            message.ToolCalls.Add(new ChatToolCall
+            {
+                Id = "tool-1",
+                Name = "read_file",
+                InputJson = "{}",
+                Expanded = true,
+            });
+
+            var elementType = typeof(CoderApiClient).Assembly.GetType(
+                "Maicon.SceneAnalyzer.Editor.Window.CoderChatMessageElement", true);
+            var element = (VisualElement)Activator.CreateInstance(elementType);
+            var bind = elementType.GetMethod("Bind", BindingFlags.Instance | BindingFlags.Public);
+            Assert.That(bind, Is.Not.Null);
+
+            bind.Invoke(element, new object[] { message });
+            AssertExpandedFoldouts(element);
+
+            var remote = new ChatMessage
+            {
+                Role = ChatRole.Assistant,
+                ThinkingText = "Raciocínio detalhado",
+                IsRemote = true,
+            };
+            remote.ToolCalls.Add(new ChatToolCall
+            {
+                Id = "tool-1",
+                Name = "read_file",
+                InputJson = "{}",
+                ResultText = "ok",
+                Completed = true,
+            });
+
+            Assert.That(message.CopyRemoteContentFrom(remote), Is.True);
+            Assert.That(message.ThinkingExpanded, Is.True);
+            Assert.That(message.ToolCalls[0].Expanded, Is.True);
+
+            bind.Invoke(element, new object[] { message });
+            AssertExpandedFoldouts(element);
+        }
+
+        [Test]
+        public void MessageBody_AgentOwnsProfileAndLegacyFallbackIsNormalized()
+        {
+            var agentBody = CoderApiClient.BuildMessageBody("Olá", "bootstrap", "plan", true);
+
+            Assert.That((string)agentBody["agent"], Is.EqualTo("plan"));
+            Assert.That(agentBody["profile"], Is.Null);
+            Assert.That((bool?)agentBody["thinking"], Is.True);
+
+            var fallbackBody = CoderApiClient.BuildMessageBody("Olá", "review", null, false);
+            Assert.That(fallbackBody["agent"], Is.Null);
+            Assert.That((string)fallbackBody["profile"], Is.EqualTo("auto"));
+            Assert.That(fallbackBody["thinking"], Is.Null);
+        }
+
+        private static void AssertExpandedFoldouts(VisualElement element)
+        {
+            var foldouts = new List<Foldout>();
+            element.Query<Foldout>().ForEach(foldouts.Add);
+            Assert.That(foldouts, Has.Count.EqualTo(2));
+            Assert.That(foldouts[0].value, Is.True);
+            Assert.That(foldouts[1].value, Is.True);
         }
 
         [Test]

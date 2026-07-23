@@ -75,7 +75,11 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             if (session == null || session.Id <= 0) return;
             var index = CoderSessions.FindIndex(item => item.Id == session.Id);
-            if (index >= 0) CoderSessions[index] = session;
+            if (index >= 0)
+            {
+                if (CoderSessions[index].SemanticallyEquals(session)) return;
+                CoderSessions[index] = session;
+            }
             else CoderSessions.Insert(0, session);
             NotifyCoderSessionsChanged();
         }

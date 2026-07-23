@@ -43,6 +43,24 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             };
         }
 
+        public bool SemanticallyEquals(CoderSessionInfo other)
+        {
+            return other != null
+                && Id == other.Id
+                && ProjectId == other.ProjectId
+                && string.Equals(Title, other.Title, StringComparison.Ordinal)
+                && string.Equals(Provider, other.Provider, StringComparison.Ordinal)
+                && string.Equals(Model, other.Model, StringComparison.Ordinal)
+                && string.Equals(Status, other.Status, StringComparison.Ordinal)
+                && string.Equals(Agent, other.Agent, StringComparison.Ordinal)
+                && string.Equals(ToolPermissionMode, other.ToolPermissionMode, StringComparison.Ordinal)
+                && ThinkingEnabled == other.ThinkingEnabled
+                && Nullable.Equals(CreatedAt, other.CreatedAt)
+                && Nullable.Equals(UpdatedAt, other.UpdatedAt)
+                && TotalInputTokens == other.TotalInputTokens
+                && TotalOutputTokens == other.TotalOutputTokens;
+        }
+
         private static DateTime? ParseDate(string value)
         {
             return DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsed)
