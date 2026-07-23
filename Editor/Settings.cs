@@ -252,7 +252,7 @@ namespace Maicon.SceneAnalyzer.Editor
 
         /// Optional override for the auto-injected preamble. When empty, the
         /// plugin builds a default that mentions the Unity workdir, the
-        /// `ext_unity_editor__*` MCP tools, and the unity-scene-audit /
+        /// `ext_unity__*` MCP tools, and the unity-scene-audit /
         /// unity-scene-author skills. When set, this string is used verbatim.
         public static string CoderCustomPreamble
         {

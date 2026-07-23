@@ -220,7 +220,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             return
                 "[unity-context — auto-injected by the Unity Scene Analyzer plugin on the first message of this session]\n\n" +
                 $"You're connected to the Unity Editor running at `{unityRoot ?? "<unknown>"}` via the Model Context Protocol. " +
-                "The plugin `com.maicon.scene-analyzer` exposes scene tools prefixed `ext_unity_editor__`:\n" +
+                "The plugin `com.maicon.scene-analyzer` exposes scene tools through the registered MCP server `unity`, prefixed `ext_unity__`:\n" +
                 "- **Read / inspect**: `read_hierarchy`, `read_scene`, `read_component`, `get_project_meta`, `screenshot_scene_view`.\n" +
                 "- **Analyze**: `analyze_performance`, `validate_scene`.\n" +
                 "- **Discover assets & types**: `list_assets`, `search_assets`, `read_asset_metadata`, `find_references_to_asset`, " +
@@ -299,7 +299,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "get_skills_list({namespace?}) — sem args dá overview compacto; com namespace retorna lista filtrada ordenada por id; namespace inválido retorna erro instrutivo com lista de namespaces válidos\n" +
                 "get_skill_content({skill_id})\n\n" +
                 "Use when the user asks to create, modify, decorate, or stylize the scene.\n\n" +
-                "Typical pattern: when the user's request matches one of those skills, call `invoke_skill` with the matching `skill_id` and the user's intent as `input` — then follow the skill's instructions, which include calling `ext_unity_editor__*` tools. If unsure which skill applies (or you need details), `get_skill_content` first.\n\n" +
+                "Typical pattern: when the user's request matches one of those skills, call `invoke_skill` with the matching `skill_id` and the user's intent as `input` — then follow the skill's instructions, which include calling `ext_unity__*` tools. If unsure which skill applies (or you need details), `get_skill_content` first.\n\n" +
                 "Subsequent messages in this session don't need this preamble — the agent should remember. Now respond to the user message that follows.";
         }
 

@@ -342,6 +342,15 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void DefaultPreamble_UsesRegisteredUnityMcpPrefix()
+        {
+            var preamble = CoderApiClient.BuildDefaultPreamble("C:/UnityProject");
+
+            StringAssert.Contains("ext_unity__", preamble);
+            StringAssert.DoesNotContain("ext_unity_editor__", preamble);
+        }
+
+        [Test]
         public void AgentInfo_PreservesRuntimeLabelsAndCapabilities()
         {
             var agent = CoderAgentInfo.FromJson(new JObject

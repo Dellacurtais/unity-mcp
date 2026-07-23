@@ -126,7 +126,7 @@ Copy this directory under the Unity project's `Packages/` directory. If it is co
 1. Open **Window → Scene Analyzer**.
 2. Generate or paste a bearer token.
 3. Start the MCP server.
-4. Register transport `streamable_http`, URL `http://127.0.0.1:8765/mcp`, and the same bearer token in the MCP client.
+4. Register server ID `unity` with transport `streamable_http`, URL `http://127.0.0.1:8765/mcp/`, and the same bearer token in the MCP client. The coder runtime exposes these tools as `ext_unity__*`.
 5. Call `get_server_health`, then `self_test`.
 6. Use `get_tool_inventory` to discover the exact tool surface for the installed packages.
 

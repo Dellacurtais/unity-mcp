@@ -1,11 +1,18 @@
 using System;
+using System.Collections;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Net.Sockets;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
+using UnityEngine.TestTools;
 
 namespace Maicon.SceneAnalyzer.Editor.Tests
 {
@@ -100,6 +107,86 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.DoesNotThrow(() => lease.Dispose());
             Assert.ThrowsAsync<ObjectDisposedException>(async () =>
                 await coordinator.BeginAsync("after-dispose", false, CancellationToken.None, TimeSpan.FromSeconds(1)));
+        }
+
+        [UnityTest]
+        public IEnumerator HttpServer_ListsAndCallsToolsWithoutEditorPrefsThreadErrors()
+        {
+            var registry = new McpToolRegistry();
+            registry.Register(new StubTool("thread_probe"));
+            var server = new HttpMcpServer(registry);
+            var port = FindFreePort();
+            var token = Guid.NewGuid().ToString("N");
+
+            try
+            {
+                server.Start(port, token);
+
+                var initializeTask = PostMcpAsync(port, token, 1, "initialize", new JObject
+                {
+                    ["protocolVersion"] = McpProtocolNegotiator.Preferred,
+                    ["capabilities"] = new JObject(),
+                    ["clientInfo"] = new JObject { ["name"] = "unity-editmode-test", ["version"] = "1.0.0" },
+                });
+                while (!initializeTask.IsCompleted) yield return null;
+                Assert.That(initializeTask.IsFaulted, Is.False, initializeTask.Exception?.ToString());
+                var initializeResponse = initializeTask.Result;
+                Assert.That(initializeResponse["error"], Is.Null, initializeResponse.ToString());
+                Assert.That((string)initializeResponse["result"]?["protocolVersion"],
+                    Is.EqualTo(McpProtocolNegotiator.Preferred));
+
+                var listTask = PostMcpAsync(port, token, 2, "tools/list", new JObject());
+                while (!listTask.IsCompleted) yield return null;
+                Assert.That(listTask.IsFaulted, Is.False, listTask.Exception?.ToString());
+                var listResponse = listTask.Result;
+                Assert.That(listResponse["error"], Is.Null, listResponse.ToString());
+                Assert.That((int?)listResponse["result"]?["_meta"]?["registryCount"], Is.EqualTo(1));
+                Assert.That((string)listResponse["result"]?["tools"]?[0]?["name"], Is.EqualTo("thread_probe"));
+
+                var callTask = PostMcpAsync(port, token, 3, "tools/call", new JObject
+                {
+                    ["name"] = "thread_probe",
+                    ["arguments"] = new JObject(),
+                });
+                while (!callTask.IsCompleted) yield return null;
+                Assert.That(callTask.IsFaulted, Is.False, callTask.Exception?.ToString());
+                var callResponse = callTask.Result;
+                Assert.That(callResponse["error"], Is.Null, callResponse.ToString());
+                Assert.That(callResponse["result"], Is.Not.Null, callResponse.ToString());
+            }
+            finally
+            {
+                server.Dispose();
+            }
+        }
+
+        private static int FindFreePort()
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
+            finally { listener.Stop(); }
+        }
+
+        private static async Task<JObject> PostMcpAsync(
+            int port, string token, int id, string method, JObject parameters)
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/mcp/");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.TryAddWithoutValidation("MCP-Protocol-Version", McpProtocolNegotiator.Preferred);
+            request.Content = new StringContent(new JObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = id,
+                ["method"] = method,
+                ["params"] = parameters ?? new JObject(),
+            }.ToString(Newtonsoft.Json.Formatting.None), Encoding.UTF8, "application/json");
+            using var response = await client.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+            response.EnsureSuccessStatusCode();
+            return JObject.Parse(body);
         }
 
         [Test]

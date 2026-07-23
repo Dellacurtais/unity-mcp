@@ -293,7 +293,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     case "ping":
                         return notification ? null : ParseObject(OkResp(id, new JObject()));
                     case "tools/list":
-                        return notification ? null : ParseObject(OkResp(id, ListTools()));
+                        return notification
+                            ? null
+                            : ParseObject(OkResp(id, await MainThreadDispatcher.RunAsync(ListTools, serverToken)));
                     case "tools/call":
                         if (notification)
                         {
@@ -403,25 +405,46 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             var executionArguments = (JObject)arguments.DeepClone();
             var confirmationToken = (string)executionArguments[ConfirmationArgument];
             executionArguments.Remove(ConfirmationArgument);
-            if (executionArguments["target"] != null && tool.InputSchema?["properties"]?["instanceId"] != null)
+
+            ToolDescriptor descriptor = null;
+            var requiresConfirmation = false;
+            string preparationCode = null;
+            string preparationMessage = null;
+            var prepared = await MainThreadDispatcher.RunAsync(() =>
             {
-                var target = ToolTargetResolver.Resolve(ToolTargetRef.FromJson(executionArguments["target"]), out var targetError);
-                if (target == null) return OkResp(id, ToolErrorBody("TARGET_NOT_FOUND", targetError));
-                var gameObject = target as GameObject ?? (target as Component)?.gameObject;
-                executionArguments["instanceId"] = gameObject != null ? gameObject.GetInstanceID() : target.GetInstanceID();
-                executionArguments.Remove("target");
-            }
-            if (!ToolSchemaValidator.ValidateArguments(executionArguments, tool.InputSchema, out var argumentError))
-                return OkResp(id, ToolErrorBody("BAD_ARGS", argumentError));
+                var inputSchema = tool.InputSchema ?? new JObject { ["type"] = "object" };
+                if (executionArguments["target"] != null && inputSchema["properties"]?["instanceId"] != null)
+                {
+                    var target = ToolTargetResolver.Resolve(
+                        ToolTargetRef.FromJson(executionArguments["target"]), out var targetError);
+                    if (target == null)
+                    {
+                        preparationCode = "TARGET_NOT_FOUND";
+                        preparationMessage = targetError;
+                        return false;
+                    }
+                    var gameObject = target as GameObject ?? (target as Component)?.gameObject;
+                    executionArguments["instanceId"] = gameObject != null
+                        ? gameObject.GetInstanceID()
+                        : target.GetInstanceID();
+                    executionArguments.Remove("target");
+                }
+                if (!ToolSchemaValidator.ValidateArguments(executionArguments, inputSchema, out var argumentError))
+                {
+                    preparationCode = "BAD_ARGS";
+                    preparationMessage = argumentError;
+                    return false;
+                }
 
-            var descriptor = _registry.GetDescriptor(name) ?? ToolDescriptor.Infer(tool);
-            string authCode = null;
-            string authMessage = null;
-            var authorized = await MainThreadDispatcher.RunAsync(() =>
-                ToolAuthorization.TryAuthorize(tool, descriptor, out authCode, out authMessage), serverToken);
-            if (!authorized) return OkResp(id, ToolErrorBody(authCode, authMessage));
+                descriptor = _registry.GetDescriptor(name) ?? ToolDescriptor.Infer(tool);
+                if (!ToolAuthorization.TryAuthorize(
+                    tool, descriptor, out preparationCode, out preparationMessage)) return false;
+                requiresConfirmation = ToolAuthorization.RequiresConfirmation(descriptor);
+                return true;
+            }, serverToken);
+            if (!prepared) return OkResp(id, ToolErrorBody(preparationCode, preparationMessage));
 
-            if (ToolAuthorization.RequiresConfirmation(descriptor))
+            if (requiresConfirmation)
             {
                 var projectKey = Bootstrap.UnityProjectRoot ?? string.Empty;
                 if (!_confirmations.TryConsume(confirmationToken, name, executionArguments, projectKey))
