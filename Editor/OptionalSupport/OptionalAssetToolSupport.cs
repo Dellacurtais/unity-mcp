@@ -7,6 +7,7 @@ using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Maicon.SceneAnalyzer.Editor.Optional
 {
@@ -34,6 +35,121 @@ namespace Maicon.SceneAnalyzer.Editor.Optional
                 .OrderBy(asset => AssetDatabase.GetAssetPath(asset), StringComparer.Ordinal)
                 .ThenBy(asset => asset.name, StringComparer.Ordinal)
                 .ToArray();
+        }
+
+        public static ToolResult ValidateRenderPipelineSetup(
+            string pipelineId,
+            string packageId,
+            string[] pipelineAssetTypes,
+            string missingAssetCode,
+            string notCurrentCode)
+        {
+            var expectedType = OptionalToolSupport.ResolveType(pipelineAssetTypes);
+            var projectAssets = FindAssets(pipelineAssetTypes)
+                .Where(asset => AssetDatabase.GetAssetPath(asset).StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            var current = GraphicsSettings.currentRenderPipeline;
+            var defaultPipeline = GraphicsSettings.defaultRenderPipeline;
+            var activeQualityIndex = QualitySettings.GetQualityLevel();
+            var activeQualityOverride = QualitySettings.renderPipeline;
+            var issues = new JArray();
+            var hasProjectAsset = projectAssets.Length > 0;
+            var currentMatches = MatchesPipeline(current, expectedType, pipelineAssetTypes);
+            var allQualityLevelsMatch = true;
+
+            if (!hasProjectAsset)
+                issues.Add(new JObject
+                {
+                    ["severity"] = "error",
+                    ["code"] = missingAssetCode,
+                    ["message"] = $"No {pipelineId.ToUpperInvariant()} pipeline asset exists under Assets/.",
+                });
+            if (!currentMatches)
+                issues.Add(new JObject
+                {
+                    ["severity"] = "warning",
+                    ["code"] = notCurrentCode,
+                    ["current"] = PipelineJson(current),
+                });
+
+            var qualityLevels = new JArray();
+            for (var index = 0; index < QualitySettings.names.Length; index++)
+            {
+                var qualityOverride = QualitySettings.GetRenderPipelineAssetAt(index);
+                var effective = qualityOverride != null ? qualityOverride : defaultPipeline;
+                var matches = MatchesPipeline(effective, expectedType, pipelineAssetTypes);
+                allQualityLevelsMatch &= matches;
+                qualityLevels.Add(new JObject
+                {
+                    ["index"] = index,
+                    ["name"] = QualitySettings.names[index],
+                    ["active"] = index == activeQualityIndex,
+                    ["matches"] = matches,
+                    ["override"] = PipelineJson(qualityOverride),
+                    ["effective"] = PipelineJson(effective),
+                });
+                if (!matches)
+                    issues.Add(new JObject
+                    {
+                        ["severity"] = "warning",
+                        ["code"] = pipelineId.ToUpperInvariant() + "_NOT_EFFECTIVE_FOR_QUALITY",
+                        ["qualityIndex"] = index,
+                        ["qualityName"] = QualitySettings.names[index],
+                        ["effective"] = PipelineJson(effective),
+                    });
+            }
+
+            return ToolResult.Ok($"{issues.Count} {pipelineId.ToUpperInvariant()} issue(s)", new JObject
+            {
+                ["pipelineId"] = pipelineId,
+                ["package"] = OptionalToolSupport.PackageJson(packageId),
+                ["expectedType"] = expectedType?.FullName ?? pipelineAssetTypes?.FirstOrDefault(),
+                ["hasProjectAsset"] = hasProjectAsset,
+                ["currentMatches"] = currentMatches,
+                ["allQualityLevelsMatch"] = allQualityLevelsMatch,
+                ["assignmentsValid"] = allQualityLevelsMatch,
+                ["valid"] = hasProjectAsset && allQualityLevelsMatch,
+                ["current"] = PipelineJson(current),
+                ["default"] = PipelineJson(defaultPipeline),
+                ["activeQuality"] = new JObject
+                {
+                    ["index"] = activeQualityIndex,
+                    ["name"] = QualitySettings.names.ElementAtOrDefault(activeQualityIndex),
+                    ["override"] = PipelineJson(activeQualityOverride),
+                    ["effective"] = PipelineJson(activeQualityOverride != null ? activeQualityOverride : defaultPipeline),
+                },
+                ["qualityLevels"] = qualityLevels,
+                ["projectAssets"] = new JArray(projectAssets.Select(OptionalToolSupport.AssetJson)),
+                ["issues"] = issues,
+            });
+        }
+
+        private static bool MatchesPipeline(
+            RenderPipelineAsset asset,
+            Type expectedType,
+            IEnumerable<string> expectedTypeNames)
+        {
+            if (asset == null) return false;
+            if (expectedType != null) return expectedType.IsAssignableFrom(asset.GetType());
+            var fullName = asset.GetType().FullName;
+            return (expectedTypeNames ?? Array.Empty<string>())
+                .Any(name => string.Equals(name, fullName, StringComparison.Ordinal));
+        }
+
+        private static JObject PipelineJson(RenderPipelineAsset asset)
+        {
+            if (asset == null)
+                return new JObject
+                {
+                    ["assigned"] = false,
+                    ["name"] = null,
+                    ["type"] = null,
+                    ["assetPath"] = null,
+                    ["target"] = null,
+                };
+            var json = OptionalToolSupport.AssetJson(asset);
+            json["assigned"] = true;
+            return json;
         }
 
         public static ToolResult ListAssets(string packageId, params string[][] typeGroups)

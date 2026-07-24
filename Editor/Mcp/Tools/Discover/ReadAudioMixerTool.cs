@@ -17,13 +17,28 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
                 ["mixerGuidOrPath"] = new JObject { ["type"] = "string" },
                 ["mixerInstanceId"] = new JObject { ["type"] = "integer" },
             },
+            ["oneOf"] = new JArray
+            {
+                new JObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JObject { ["mixerGuidOrPath"] = new JObject { ["type"] = "string" } },
+                    ["required"] = new JArray { "mixerGuidOrPath" },
+                },
+                new JObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JObject { ["mixerInstanceId"] = new JObject { ["type"] = "integer" } },
+                    ["required"] = new JArray { "mixerInstanceId" },
+                },
+            },
             ["additionalProperties"] = false,
         };
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
             var r = AudioAuthor.ReadMixer(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            return r.Ok ? ToolResult.Ok(r.Summary, r.Data) : ToolResult.Error("OP_FAILED", r.Error);
         }
     }
 }

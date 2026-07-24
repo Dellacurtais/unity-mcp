@@ -130,6 +130,14 @@ Copy this directory under the Unity project's `Packages/` directory. If it is co
 5. Call `get_server_health`, then `self_test`.
 6. Use `get_tool_inventory` to discover the exact tool surface for the installed packages.
 
+### Multiple open Unity projects
+
+All open projects share one client endpoint (port and bearer token), but only one Unity process owns the listener at a time. Instances discover each other through a per-user coordination directory outside the MCP port; the token itself is never written there.
+
+When another project owns the server, **Window → Scene Analyzer** shows that project's name/path and the actual endpoint. Click **Bring here**, review the confirmation, and the current owner will stop cooperatively before this project starts on the same port with the same token. MCP calls in flight may receive HTTP `503`; retry them after the transfer status reports completion. Do not change the MCP client URL or token.
+
+This release provides handover, not simultaneous multi-project routing. A single MCP endpoint serving several projects concurrently would require an external broker that keeps per-project Unity connections, registries, main-thread dispatch, authentication, and explicit project/session routing; an MCP server embedded in one Editor cannot directly execute Unity APIs in another Editor process.
+
 ## Embedded chat panel
 
 Open **Window → Coder Chat (Scene Analyzer)**, configure the coder runtime URL/token, select the desired coder agent/profile, and send a message. Tool calls appear inline and execute through the authenticated Scene Analyzer MCP server; the chat panel does not bypass MCP authorization.
@@ -144,6 +152,7 @@ For runtime gameplay handlers, see [`Runtime/Bridge/README.md`](Runtime/Bridge/R
 | Package is installed but module is `available_not_loaded` | `self_test` and Unity Console | Wait for compilation/domain reload; resolve any assembly errors. |
 | `JObject` accessibility/compiler errors | Newtonsoft package | Install `com.unity.nuget.newtonsoft-json` 3.x through UPM. |
 | Request rejected | Server health, token, Origin, headers, protocol version | Match the configured token and use Streamable HTTP POST with JSON and a supported MCP protocol header. |
+| Server is active in another project | **Window → Scene Analyzer** owner/path | Use **Bring here** to move the same endpoint cooperatively; do not start a second listener or change the client configuration. |
 | Confirmation required | Tool error metadata | Repeat the exact call with the returned `_confirmationToken` before it expires. |
 | Target no longer resolves | Refresh the read result | Prefer the returned `target.globalObjectId`; use `instanceId` only inside the current editor session. |
 | Changes are not on disk | Dirty scenes/assets | This is intentional. Call explicit save tools after review. |

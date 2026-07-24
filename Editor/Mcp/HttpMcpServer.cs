@@ -394,6 +394,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             return schema;
         }
 
+        internal static bool RequiresLegacyMutationFinalization(ToolDescriptor descriptor) =>
+            descriptor != null && (descriptor.Capabilities & McpCapability.SceneWrite) != 0;
+
         private async Task<string> CallToolAsync(
             JToken id, JObject parameters, string protocolVersion, string origin, CancellationToken serverToken)
         {
@@ -494,15 +497,18 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                             () => EnrichStableTargets(result.Json, 0), lease.CancellationToken);
                     if (descriptor.IsWrite && !result.IsError)
                     {
-                        var resultInstanceId = result.Json is JObject resultObject
-                            ? (int?)resultObject["instanceId"] ?? 0
-                            : 0;
-                        var mutationMeta = await MainThreadDispatcher.RunAsync(
-                            () => MutationScope.FinalizeLegacyMutation(
-                                executionArguments, resultInstanceId, preMutationScenes),
-                            lease.CancellationToken);
-                        if (result.Metadata == null) result.Metadata = new JObject();
-                        result.Metadata["mutation"] = mutationMeta;
+                        if (RequiresLegacyMutationFinalization(descriptor))
+                        {
+                            var resultInstanceId = result.Json is JObject resultObject
+                                ? (int?)resultObject["instanceId"] ?? 0
+                                : 0;
+                            var mutationMeta = await MainThreadDispatcher.RunAsync(
+                                () => MutationScope.FinalizeLegacyMutation(
+                                    executionArguments, resultInstanceId, preMutationScenes),
+                                lease.CancellationToken);
+                            if (result.Metadata == null) result.Metadata = new JObject();
+                            result.Metadata["mutation"] = mutationMeta;
+                        }
                         await MainThreadDispatcher.RunAsync(Bootstrap.NotifyWriteCompleted, lease.CancellationToken);
                     }
                 }

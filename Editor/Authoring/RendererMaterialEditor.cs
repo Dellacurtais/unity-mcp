@@ -1,4 +1,5 @@
 using System;
+using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -26,14 +27,29 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
             if (mat == null) return OpResult.Fail($"material asset not found: {matRef}");
 
-            Undo.RecordObject(renderer, "Set Material");
             var mats = renderer.sharedMaterials;
             if (slot < 0 || slot >= mats.Length)
                 return OpResult.Fail($"slotIndex {slot} out of range (renderer has {mats.Length} slots)");
-            mats[slot] = mat;
-            renderer.sharedMaterials = mats;
 
-            return OpResult.Success(id, $"set material on slot {slot} to '{mat.name}'");
+            using (var mutation = new MutationScope("Set Material"))
+            {
+                mutation.Record(renderer);
+                mats[slot] = mat;
+                renderer.sharedMaterials = mats;
+                if (PrefabUtility.IsPartOfPrefabInstance(renderer))
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
+                mutation.Complete();
+            }
+
+            var result = OpResult.Success(id, $"set material on slot {slot} to '{mat.name}'");
+            result.Data = new JObject
+            {
+                ["instanceId"] = id,
+                ["rendererInstanceId"] = renderer.GetInstanceID(),
+                ["slotIndex"] = slot,
+                ["material"] = ToolTargetRef.Capture(mat)?.ToJson(),
+            };
+            return result;
         }
     }
 }

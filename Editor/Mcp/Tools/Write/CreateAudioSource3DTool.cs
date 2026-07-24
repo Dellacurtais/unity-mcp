@@ -24,19 +24,19 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
                 ["instanceId"] = new JObject { ["type"] = "integer" },
                 ["name"] = new JObject { ["type"] = "string" },
                 ["parent"] = new JObject { ["type"] = "integer" },
-                ["position"] = SchemaHelpers.Vec3Schema,
+                ["position"] = SchemaHelpers.StrictVec3Schema,
                 ["clipGuidOrPath"] = new JObject { ["type"] = "string" },
                 ["loop"] = new JObject { ["type"] = "boolean", ["default"] = true },
                 ["playOnAwake"] = new JObject { ["type"] = "boolean", ["default"] = true },
-                ["volume"] = new JObject { ["type"] = "number", ["default"] = 1.0 },
-                ["pitch"] = new JObject { ["type"] = "number", ["default"] = 1.0 },
-                ["minDistance"] = new JObject { ["type"] = "number", ["default"] = 1.0 },
-                ["maxDistance"] = new JObject { ["type"] = "number", ["default"] = 50.0 },
+                ["volume"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1, ["default"] = 1.0 },
+                ["pitch"] = new JObject { ["type"] = "number", ["minimum"] = -3, ["maximum"] = 3, ["default"] = 1.0 },
+                ["minDistance"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 1.0 },
+                ["maxDistance"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 50.0 },
                 ["rolloffMode"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Logarithmic", "Linear", "Custom" } },
-                ["dopplerLevel"] = new JObject { ["type"] = "number", ["default"] = 1.0 },
-                ["spread"] = new JObject { ["type"] = "number" },
-                ["priority"] = new JObject { ["type"] = "integer", ["default"] = 128 },
-                ["reverbZoneMix"] = new JObject { ["type"] = "number", ["default"] = 1.0 },
+                ["dopplerLevel"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 5, ["default"] = 1.0 },
+                ["spread"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 360 },
+                ["priority"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = 256, ["default"] = 128 },
+                ["reverbZoneMix"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1.1, ["default"] = 1.0 },
                 ["mixerGroup"] = new JObject { ["type"] = "string" },
                 ["mixerGuidOrPath"] = new JObject { ["type"] = "string" },
             },
@@ -47,7 +47,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         {
             var r = AudioAuthor.Create3DSource(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary, new JObject { ["instanceId"] = r.InstanceID });
+            return ToolResult.Ok(r.Summary, r.Data ?? new JObject { ["instanceId"] = r.InstanceID });
         }
     }
 }

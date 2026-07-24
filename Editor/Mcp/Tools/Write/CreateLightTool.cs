@@ -1,7 +1,5 @@
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Newtonsoft.Json.Linq;
-using UnityEditor.SceneManagement;
-using UnityEngine.SceneManagement;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
 {
@@ -9,21 +7,42 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
     {
         public string Name => "create_light";
         public string Description =>
-            "Creates a Light GameObject in the active scene. Type is one of Directional, Point, Spot, Area, Disc. Registers a single Undo step. NOTES: (1) Area and Disc are baking-only — they have no realtime effect, only contribute to lightmaps. (2) intensity scale differs across pipelines: Built-in uses an arbitrary 0..8 scale, URP uses lumens for Point/Spot (1000+ is normal), HDRP uses physical units. Check `get_project_meta` and pick a value that suits the active pipeline.";
+            "Creates a Unity 6000.3 Light with validated type-specific settings and one Undo step. Public types are Spot, Directional, Point, Rectangle, Disc, Pyramid, Box, and Tube; rendering support and physical intensity units depend on the active pipeline, so inspect get_render_pipeline_context first.";
 
         public JObject InputSchema => new JObject
         {
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["type"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Directional", "Point", "Spot", "Area", "Disc" } },
-                ["name"] = new JObject { ["type"] = "string" },
-                ["intensity"] = new JObject { ["type"] = "number", ["default"] = 1.0 },
-                ["range"] = new JObject { ["type"] = "number", ["default"] = 10.0 },
+                ["type"] = new JObject { ["type"] = "string", ["enum"] = new JArray(LightFactory.SupportedTypeNames), ["default"] = "Directional" },
+                ["name"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["intensity"] = new JObject { ["type"] = "number", ["minimum"] = 0.0, ["default"] = 1.0 },
+                ["range"] = new JObject { ["type"] = "number", ["minimum"] = 0.0, ["default"] = 10.0, ["description"] = "Light influence range; directional lights ignore it." },
+                ["spotAngle"] = new JObject { ["type"] = "number", ["minimum"] = 1.0, ["maximum"] = 179.0, ["description"] = "Outer cone angle for Spot and Pyramid lights." },
+                ["innerSpotAngle"] = new JObject { ["type"] = "number", ["minimum"] = 0.0, ["maximum"] = 179.0, ["description"] = "Inner cone angle for Spot and Pyramid; must not exceed spotAngle." },
+                ["areaSize"] = new JObject
+                {
+                    ["description"] = "Rectangle size [x,y], Disc radius in x, or Tube length in x.",
+                    ["oneOf"] = new JArray
+                    {
+                        new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "number", ["exclusiveMinimum"] = 0.0 }, ["minItems"] = 2, ["maxItems"] = 2 },
+                        new JObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JObject
+                            {
+                                ["x"] = new JObject { ["type"] = "number", ["exclusiveMinimum"] = 0.0 },
+                                ["y"] = new JObject { ["type"] = "number", ["exclusiveMinimum"] = 0.0 },
+                            },
+                            ["required"] = new JArray { "x", "y" },
+                            ["additionalProperties"] = false,
+                        },
+                    },
+                },
                 ["color"] = SchemaHelpers.ColorSchema,
-                ["shadows"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "None", "Hard", "Soft" } },
+                ["shadows"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "None", "Hard", "Soft" }, ["default"] = "Soft" },
                 ["mode"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Realtime", "Mixed", "Baked" } },
-                ["parent"] = new JObject { ["type"] = "integer" },
+                ["parent"] = new JObject { ["type"] = "integer", ["description"] = "Existing parent GameObject instanceId." },
                 ["position"] = SchemaHelpers.Vec3Schema,
                 ["rotation"] = SchemaHelpers.RotSchema,
             },
@@ -36,11 +55,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         {
             var result = LightFactory.Create(args);
             if (!result.Ok) return ToolResult.Error("OP_FAILED", result.Error);
-
-            return ToolResult.Ok(result.Summary, new JObject
-            {
-                ["instanceId"] = result.InstanceID,
-            });
+            return ToolResult.Ok(result.Summary, result.Data);
         }
     }
 }

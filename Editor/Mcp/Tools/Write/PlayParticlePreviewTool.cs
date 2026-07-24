@@ -9,7 +9,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         public string Description =>
             "Drives the editor preview of a ParticleSystem without entering Play Mode. action: " +
             "`play` (start), `stop` (stop emission, let live particles die), `pause`, `clear` (kill all live particles), " +
-            "`restart` (stop+clear+play), `simulate` (advance to time=N seconds and freeze). " +
+            "`restart` (stop+clear+play), `simulate` (advance to time=N seconds and freeze; missing or non-positive time defaults to 1 second). " +
             "withChildren=true (default) cascades to child ParticleSystems. Useful to visually verify a freshly-created emitter.";
 
         public JObject InputSchema => new JObject
@@ -19,7 +19,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             {
                 ["instanceId"] = new JObject { ["type"] = "integer" },
                 ["action"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "play", "stop", "pause", "clear", "restart", "simulate" }, ["default"] = "play" },
-                ["time"] = new JObject { ["type"] = "number", ["description"] = "Seconds to advance for `simulate`. Ignored otherwise." },
+                ["time"] = new JObject { ["type"] = "number", ["default"] = 1, ["description"] = "Seconds to advance for `simulate`; non-positive values also use 1 second. Ignored otherwise." },
                 ["withChildren"] = new JObject { ["type"] = "boolean", ["default"] = true },
             },
             ["required"] = new JArray { "instanceId" },

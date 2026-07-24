@@ -1,3 +1,5 @@
+using Newtonsoft.Json.Linq;
+
 namespace Maicon.SceneAnalyzer.Editor.Authoring
 {
     public sealed class OpResult
@@ -6,6 +8,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public string Error;
         public int InstanceID;
         public string Summary;
+        public JToken Data;
 
         public string ExceptionType;
         public string StackTrace;

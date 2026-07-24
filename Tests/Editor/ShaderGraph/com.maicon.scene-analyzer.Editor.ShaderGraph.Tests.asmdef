@@ -1,0 +1,24 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.ShaderGraph.Tests",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.ShaderGraph.Tests",
+  "references": [
+    "com.maicon.scene-analyzer.Editor",
+    "com.maicon.scene-analyzer.Editor.Optional.ShaderGraph"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": ["Newtonsoft.Json.dll"],
+  "autoReferenced": false,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_SHADER_GRAPH"],
+  "versionDefines": [
+    {
+      "name": "com.unity.shadergraph",
+      "expression": "17.0.0",
+      "define": "SCENE_ANALYZER_HAS_SHADER_GRAPH"
+    }
+  ],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "noEngineReferences": false
+}

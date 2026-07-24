@@ -20,16 +20,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             ["properties"] = new JObject
             {
                 ["instanceId"] = new JObject { ["type"] = "integer" },
-                ["volume"] = new JObject { ["type"] = "number" },
-                ["pitch"] = new JObject { ["type"] = "number" },
+                ["volume"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1 },
+                ["pitch"] = new JObject { ["type"] = "number", ["minimum"] = -3, ["maximum"] = 3 },
                 ["spatialBlend"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1 },
-                ["minDistance"] = new JObject { ["type"] = "number" },
-                ["maxDistance"] = new JObject { ["type"] = "number" },
-                ["dopplerLevel"] = new JObject { ["type"] = "number" },
-                ["spread"] = new JObject { ["type"] = "number" },
+                ["minDistance"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                ["maxDistance"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                ["dopplerLevel"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 5 },
+                ["spread"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 360 },
                 ["panStereo"] = new JObject { ["type"] = "number", ["minimum"] = -1, ["maximum"] = 1 },
-                ["reverbZoneMix"] = new JObject { ["type"] = "number" },
-                ["priority"] = new JObject { ["type"] = "integer" },
+                ["reverbZoneMix"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1.1 },
+                ["priority"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = 256 },
                 ["mute"] = new JObject { ["type"] = "boolean" },
                 ["loop"] = new JObject { ["type"] = "boolean" },
                 ["playOnAwake"] = new JObject { ["type"] = "boolean" },
@@ -47,7 +47,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         {
             var r = AudioAuthor.SetSourceProps(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary);
+            return ToolResult.Ok(r.Summary, r.Data);
         }
     }
 }

@@ -6,30 +6,43 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
     public sealed class AddBlendTreeMotionTool : IMcpTool
     {
         public string Name => "add_blend_tree_motion";
-        public string Description =>
-            "Adds a motion (AnimationClip) to a state's BlendTree. For 1D trees pass `threshold` (the parameter value at which this motion plays). For 2D trees pass `position: [x, y]`. State must already be a blend tree (via create_blend_tree).";
+        public string Description => "Adds an AnimationClip child using exactly one tree-compatible coordinate: threshold (1D), position (2D), or directBlendParameter (Direct).";
+        public JObject InputSchema => Schema();
+        public bool IsWrite => true;
+        public ToolDescriptor Descriptor => AnimationToolContracts.AssetWriteDescriptor(Name);
+        public ToolResult Execute(JObject args) => AnimationToolContracts.Result(AnimationAuthor.AddBlendTreeMotion(args));
 
-        public JObject InputSchema => new JObject
+        private static JObject Schema()
         {
-            ["type"] = "object",
-            ["properties"] = new JObject
+            var schema = AnimationToolContracts.ControllerInputSchema(new JObject
             {
-                ["controllerGuidOrPath"] = new JObject { ["type"] = "string" },
-                ["controllerInstanceId"] = new JObject { ["type"] = "integer" },
-                ["state"] = new JObject { ["type"] = "string" },
-                ["layer"] = new JObject { ["type"] = "integer", ["default"] = 0 },
-                ["clipGuidOrPath"] = new JObject { ["type"] = "string" },
+                ["state"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["layer"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["default"] = 0 },
+                ["clipGuidOrPath"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
                 ["threshold"] = new JObject { ["type"] = "number" },
                 ["position"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "number" }, ["minItems"] = 2, ["maxItems"] = 2 },
-            },
-            ["required"] = new JArray { "state", "clipGuidOrPath" },
-            ["additionalProperties"] = false,
-        };
-        public bool IsWrite => true;
-        public ToolResult Execute(JObject args)
-        {
-            var r = AnimationAuthor.AddBlendTreeMotion(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+                ["directBlendParameter"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+            }, "state", "clipGuidOrPath");
+            schema["allOf"] = new JArray
+            {
+                new JObject
+                {
+                    ["oneOf"] = new JArray
+                    {
+                        Shape("threshold", new JObject { ["type"] = "number" }),
+                        Shape("position", new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "number" }, ["minItems"] = 2, ["maxItems"] = 2 }),
+                        Shape("directBlendParameter", new JObject { ["type"] = "string", ["minLength"] = 1 }),
+                    },
+                },
+            };
+            return schema;
         }
+
+        private static JObject Shape(string name, JObject propertySchema) => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject { [name] = propertySchema },
+            ["required"] = new JArray { name },
+        };
     }
 }

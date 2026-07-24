@@ -24,6 +24,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private void OnEnable()
         {
             Bootstrap.OnIssuesChanged += Repaint;
+            Bootstrap.OnServerCoordinationChanged += Repaint;
             Bootstrap.OnServerLog += OnLog;
             _portBuffer = Settings.Port.ToString();
         }
@@ -31,6 +32,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private void OnDisable()
         {
             Bootstrap.OnIssuesChanged -= Repaint;
+            Bootstrap.OnServerCoordinationChanged -= Repaint;
             Bootstrap.OnServerLog -= OnLog;
         }
 
@@ -57,10 +59,14 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             EditorGUILayout.LabelField("MCP Server", EditorStyles.boldLabel);
 
             var server = Bootstrap.Server;
+            var instanceState = Bootstrap.ServerInstanceState;
+            bool running = server != null && server.IsRunning;
+            bool remoteOwner = instanceState.HasRemoteOwner;
+            bool transitioning = instanceState.IsTransitioning;
+
             using (new EditorGUILayout.HorizontalScope())
             {
-                bool running = server != null && server.IsRunning;
-                using (new EditorGUI.DisabledScope(running))
+                using (new EditorGUI.DisabledScope(running || remoteOwner || transitioning))
                 {
                     if (GUILayout.Button("Start"))
                     {
@@ -73,13 +79,32 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 {
                     if (GUILayout.Button("Stop")) Bootstrap.StopServer();
                 }
-                GUILayout.Label(running ? $"running · http://127.0.0.1:{server.Port}/mcp/" : "stopped");
+                using (new EditorGUI.DisabledScope(!instanceState.CanBringHere))
+                {
+                    if (GUILayout.Button("Bring here", GUILayout.Width(90)))
+                        ConfirmBringServerHere(instanceState);
+                }
             }
+
+            EditorGUILayout.LabelField(ServerStatus(server, instanceState), EditorStyles.miniLabel);
+            if (!string.IsNullOrEmpty(instanceState.OwnerProjectPath) && remoteOwner)
+                EditorGUILayout.SelectableLabel(instanceState.OwnerProjectPath, EditorStyles.miniLabel,
+                    GUILayout.Height(EditorGUIUtility.singleLineHeight));
+            if (transitioning && !string.IsNullOrEmpty(instanceState.HandoverMessage))
+                EditorGUILayout.HelpBox(instanceState.HandoverMessage, MessageType.Info);
+            else if (string.Equals(instanceState.HandoverStatus, "failed", StringComparison.Ordinal)
+                     && !string.IsNullOrEmpty(instanceState.HandoverMessage))
+                EditorGUILayout.HelpBox(instanceState.HandoverMessage, MessageType.Warning);
+
+            var coordinationError = instanceState.Error ?? Bootstrap.ServerCoordinationError;
+            if (!string.IsNullOrEmpty(coordinationError))
+                EditorGUILayout.HelpBox($"Multi-project coordination unavailable: {coordinationError}", MessageType.Warning);
 
             using (new EditorGUILayout.HorizontalScope())
             {
                 GUILayout.Label("Port", GUILayout.Width(40));
-                _portBuffer = EditorGUILayout.TextField(_portBuffer, GUILayout.Width(80));
+                using (new EditorGUI.DisabledScope(running || remoteOwner || transitioning))
+                    _portBuffer = EditorGUILayout.TextField(_portBuffer, GUILayout.Width(80));
                 GUILayout.FlexibleSpace();
                 Settings.AutoStartServer = GUILayout.Toggle(Settings.AutoStartServer, " Auto-start on load");
             }
@@ -102,17 +127,46 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     EditorGUIUtility.systemCopyBuffer = Settings.Token ?? "";
                     Bootstrap.RecordEntry("token copied to clipboard");
                 }
-                if (GUILayout.Button("Regenerate", GUILayout.Width(90)))
+                using (new EditorGUI.DisabledScope(remoteOwner || transitioning))
                 {
-                    Settings.Token = Settings.GenerateToken();
-                    Bootstrap.RecordEntry("token regenerated");
-                    if (Bootstrap.Server.IsRunning)
+                    if (GUILayout.Button("Regenerate", GUILayout.Width(90)))
                     {
-                        Bootstrap.StopServer();
-                        Bootstrap.StartServer();
+                        Settings.Token = Settings.GenerateToken();
+                        Bootstrap.RecordEntry("token regenerated");
+                        if (Bootstrap.Server.IsRunning)
+                            Bootstrap.RestartServer();
                     }
                 }
             }
+        }
+
+        private static string ServerStatus(Mcp.HttpMcpServer server, Mcp.McpServerInstanceSnapshot instanceState)
+        {
+            if (server != null && server.IsRunning)
+                return $"running here · http://127.0.0.1:{server.Port}/mcp/";
+            if (instanceState.HasRemoteOwner)
+                return $"running in {instanceState.OwnerProjectName} · http://127.0.0.1:{instanceState.Port}/mcp/";
+            if (instanceState.IsTransitioning)
+                return $"transferring · http://127.0.0.1:{instanceState.Port}/mcp/";
+            return "stopped";
+        }
+
+        private static void ConfirmBringServerHere(Mcp.McpServerInstanceSnapshot instanceState)
+        {
+            var source = string.IsNullOrEmpty(instanceState.OwnerProjectName)
+                ? instanceState.OwnerProjectPath
+                : instanceState.OwnerProjectName;
+            var confirmed = EditorUtility.DisplayDialog(
+                "Bring MCP server here?",
+                $"Move the MCP server from '{source}' to this Unity project?\n\n" +
+                $"Port {instanceState.Port} and the current token will be preserved. " +
+                "Requests in flight may receive HTTP 503 and should be retried.",
+                "Bring here",
+                "Cancel");
+            if (!confirmed) return;
+
+            try { Bootstrap.BringServerHere(); }
+            catch (Exception e) { EditorUtility.DisplayDialog("Transfer failed", e.Message, "OK"); }
         }
 
         private void DrawSettingsSection()

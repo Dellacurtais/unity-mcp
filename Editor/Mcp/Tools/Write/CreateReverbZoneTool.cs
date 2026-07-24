@@ -21,10 +21,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             {
                 ["name"] = new JObject { ["type"] = "string" },
                 ["parent"] = new JObject { ["type"] = "integer" },
-                ["position"] = SchemaHelpers.Vec3Schema,
-                ["minDistance"] = new JObject { ["type"] = "number", ["default"] = 10 },
-                ["maxDistance"] = new JObject { ["type"] = "number", ["default"] = 15 },
-                ["preset"] = new JObject { ["type"] = "string" },
+                ["position"] = SchemaHelpers.StrictVec3Schema,
+                ["minDistance"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 10 },
+                ["maxDistance"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 15 },
+                ["preset"] = new JObject
+                {
+                    ["type"] = "string",
+                    ["enum"] = new JArray { "Off", "Generic", "PaddedCell", "Room", "Bathroom", "Livingroom", "Stoneroom", "Auditorium", "ConcertHall", "Cave", "Arena", "Hangar", "CarpetedHallway", "Hallway", "StoneCorridor", "Alley", "Forest", "City", "Mountains", "Quarry", "Plain", "ParkingLot", "SewerPipe", "Underwater", "Drugged", "Dizzy", "Psychotic", "User" },
+                },
             },
             ["additionalProperties"] = false,
         };
@@ -33,7 +37,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         {
             var r = AudioAuthor.CreateReverbZone(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary, new JObject { ["instanceId"] = r.InstanceID });
+            return ToolResult.Ok(r.Summary, r.Data ?? new JObject { ["instanceId"] = r.InstanceID });
         }
     }
 }

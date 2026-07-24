@@ -17,10 +17,26 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             ["properties"] = new JObject
             {
                 ["instanceId"] = new JObject { ["type"] = "integer" },
-                ["materialGuid"] = new JObject { ["type"] = "string" },
+                ["materialGuid"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["material"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
                 ["slotIndex"] = new JObject { ["type"] = "integer", ["default"] = 0, ["minimum"] = 0 },
             },
-            ["required"] = new JArray { "instanceId", "materialGuid" },
+            ["required"] = new JArray { "instanceId" },
+            ["oneOf"] = new JArray
+            {
+                new JObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JObject { ["materialGuid"] = new JObject { ["type"] = "string" } },
+                    ["required"] = new JArray { "materialGuid" },
+                },
+                new JObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JObject { ["material"] = new JObject { ["type"] = "string" } },
+                    ["required"] = new JArray { "material" },
+                },
+            },
             ["additionalProperties"] = false,
         };
 
@@ -30,7 +46,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         {
             var r = RendererMaterialEditor.SetMaterial(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary);
+            return ToolResult.Ok(r.Summary, r.Data);
         }
     }
 }

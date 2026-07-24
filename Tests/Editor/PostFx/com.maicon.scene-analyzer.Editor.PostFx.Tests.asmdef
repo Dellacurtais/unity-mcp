@@ -1,0 +1,27 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.PostFx.Tests",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.PostFx.Tests",
+  "references": [
+    "com.maicon.scene-analyzer.Editor",
+    "com.maicon.scene-analyzer.Editor.PostFx",
+    "Unity.RenderPipelines.Core.Runtime"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": ["Newtonsoft.Json.dll"],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "SCENE_ANALYZER_HAS_SRP_CORE"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.render-pipelines.core",
+      "expression": "10.0.0",
+      "define": "SCENE_ANALYZER_HAS_SRP_CORE"
+    }
+  ],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "noEngineReferences": false
+}

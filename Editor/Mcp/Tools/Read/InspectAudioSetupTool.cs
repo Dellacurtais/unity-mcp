@@ -19,7 +19,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
         public ToolResult Execute(JObject args)
         {
             var r = AudioAuthor.InspectAudioSetup(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            return r.Ok ? ToolResult.Ok(r.Summary, r.Data) : ToolResult.Error("OP_FAILED", r.Error);
         }
     }
 }

@@ -8,7 +8,7 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx.Tools
     {
         public string Name => "list_post_effects";
         public string Description =>
-            "Two modes. With `volumeInstanceId`: lists effects currently on that Volume's profile (with active-override count per effect). With `available: true` (no volume needed): enumerates every VolumeComponent type loaded in the editor across URP/HDRP/SRP-Core — discovery before add_post_effect.";
+            "Two modes. With volumeInstanceId, returns structured components on that Volume's shared profile. With available:true, returns fully-qualified VolumeComponent types compatible with the active render pipeline.";
 
         public JObject InputSchema => new JObject
         {
@@ -44,7 +44,7 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx.Tools
                     "either pass available:true or volumeInstanceId");
             var r = PostEffectEditor.ListEffects(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary);
+            return ToolResult.Ok(r.Summary, r.Data);
         }
     }
 }

@@ -14,10 +14,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             "Color fields accept hex string, [r,g,b,a], {min,max}, or {gradient:[{time,color}]}. " +
             "Examples: " +
             "main → {duration, loop, startLifetime, startSpeed, startSize, startColor, startRotation, gravityModifier, maxParticles, simulationSpeed, simulationSpace}; " +
-            "emission → {enabled, rateOverTime, rateOverDistance, bursts:[{time,count}]}; " +
+            "emission → {enabled, rateOverTime, rateOverDistance, bursts:[{time,count|min/max,cycles,interval,probability}]}; " +
             "shape → {shapeType (Cone/Sphere/Box/SingleSidedEdge/Hemisphere/etc), angle, radius, scale, position, rotation}; " +
+            "sizeOverLifetime → {enabled, size, separateAxes, x, y, z}; velocityOverLifetime → {enabled, x, y, z, orbitalX/Y/Z, orbitalOffsetX/Y/Z, radial, speedModifier, space}; rotationOverLifetime → {enabled, separateAxes, x, y, z}; " +
             "trails → {enabled, lifetime, ratio, dieWithParticles, widthOverTrail, colorOverLifetime}; " +
-            "renderer → {renderMode, sortingOrder, sortingLayerName, material (GUID or path)}.";
+            "renderer → {renderMode, alignment, sortingOrder, sortingLayerName, minParticleSize, maxParticleSize, material, trailMaterial, mesh}; asset fields accept GUID or Assets/ path.";
 
         public JObject InputSchema => new JObject
         {

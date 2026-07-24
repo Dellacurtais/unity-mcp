@@ -1,7 +1,5 @@
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Newtonsoft.Json.Linq;
-using UnityEditor.SceneManagement;
-using UnityEngine.SceneManagement;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
 {
@@ -9,7 +7,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
     {
         public string Name => "apply_color_grading";
         public string Description =>
-            "Convenience: ensures a ColorAdjustments override exists on the Volume and sets the most common knobs (postExposure stops, contrast %, saturation %, hueShift degrees, colorFilter as color). Pass only the fields you want changed. Equivalent to add_post_effect+set_post_effect_property loop, but cheaper to call.";
+            "Ensures a pipeline-compatible ColorAdjustments override exists and atomically applies one or more common parameters. Validates all values before creating or mutating the profile.";
 
         public JObject InputSchema => new JObject
         {
@@ -21,9 +19,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
                 ["contrast"] = new JObject { ["type"] = "number", ["description"] = "-100..100." },
                 ["saturation"] = new JObject { ["type"] = "number", ["description"] = "-100..100." },
                 ["hueShift"] = new JObject { ["type"] = "number", ["description"] = "-180..180 degrees." },
-                ["colorFilter"] = new JObject { ["description"] = "Color tint multiplied over the image." },
+                ["colorFilter"] = SchemaHelpers.ColorSchema,
             },
             ["required"] = new JArray { "volumeInstanceId" },
+            ["minProperties"] = 2,
             ["additionalProperties"] = false,
         };
 
@@ -33,7 +32,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         {
             var r = PostEffectEditor.ApplyColorGrading(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary);
+            return ToolResult.Ok(r.Summary, r.Data);
         }
     }
 }

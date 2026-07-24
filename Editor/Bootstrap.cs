@@ -35,6 +35,10 @@ namespace Maicon.SceneAnalyzer.Editor
         public static ChangeWatcher Watcher { get; private set; }
         public static McpToolRegistry ToolRegistry { get; private set; }
         public static HttpMcpServer Server { get; private set; }
+        internal static McpServerInstanceCoordinator ServerCoordinator { get; private set; }
+        internal static McpServerInstanceSnapshot ServerInstanceState
+            => ServerCoordinator?.Snapshot ?? McpServerInstanceSnapshot.Empty;
+        internal static string ServerCoordinationError { get; private set; }
         public static DateTimeOffset DomainLoadedUtc { get; } = DateTimeOffset.UtcNow;
 
         // Coder chat state (Model B — chat panel inside Unity).
@@ -85,6 +89,7 @@ namespace Maicon.SceneAnalyzer.Editor
         }
 
         public static event Action OnIssuesChanged;
+        public static event Action OnServerCoordinationChanged;
         public static event Action<string> OnServerLog;
 
         /// Called by HttpMcpServer after a write tool succeeds, and by the
@@ -384,6 +389,18 @@ namespace Maicon.SceneAnalyzer.Editor
 
                 Server = new HttpMcpServer(ToolRegistry);
                 Server.OnLog += msg => RecordEntry($"[server] {msg}");
+                try
+                {
+                    ServerCoordinator = McpServerInstanceCoordinator.CreateForCurrentProject(
+                        UnityProjectRoot, SceneAnalyzerVersion.Current);
+                    ServerCoordinator.StateChanged += OnServerCoordinatorStateChanged;
+                    ServerCoordinator.CommandRequested += OnServerCoordinatorCommand;
+                }
+                catch (Exception e)
+                {
+                    ServerCoordinationError = e.Message;
+                    Debug.LogWarning($"[scene-analyzer] MCP instance coordination unavailable: {e.Message}");
+                }
 
                 ChatSession = new ChatSession();
                 ChatClient = new CoderApiClient(ChatSession);
@@ -392,25 +409,30 @@ namespace Maicon.SceneAnalyzer.Editor
                 AssemblyReloadEvents.afterAssemblyReload += OnAfterReload;
                 EditorApplication.quitting += OnQuitting;
 
-                // Auto-start: if EITHER user toggled AutoStartServer once OR
-                // the sticky flag is set (meaning they clicked Start at some
-                // point in this project — survives domain reload). Sticky is
-                // the main resilience mechanism — survives Unity's frequent
-                // post-script-change reloads without forcing the dev to click
-                // Start every time.
+                // Sticky remains global so every project shares one client endpoint;
+                // the coordinator decides which Unity process may bind it.
                 bool wantAutoStart = Settings.AutoStartServer || Settings.ServerStickyRunning;
                 if (wantAutoStart && !string.IsNullOrEmpty(Settings.Token))
                 {
                     try
                     {
-                        Server.Start(Settings.Port, Settings.Token);
-                        NotifyServerState($"online at port {Settings.Port}");
+                        TryStartServer(
+                            Settings.Port,
+                            Settings.Token,
+                            null,
+                            false,
+                            $"online at port {Settings.Port}",
+                            false);
                     }
                     catch (Exception e)
                     {
                         Debug.LogError($"[scene-analyzer] auto-start failed: {e.Message}");
                     }
                 }
+
+                // Re-poll after handlers are subscribed so a handover that crossed an
+                // assembly reload is resumed immediately instead of waiting for a tick.
+                ServerCoordinator?.PollNow();
             }
             catch (Exception e)
             {
@@ -434,20 +456,174 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             if (string.IsNullOrEmpty(Settings.Token))
                 Settings.Token = Settings.GenerateToken();
-            Server.Start(Settings.Port, Settings.Token);
-            // Mark sticky so subsequent assembly reloads auto-restart without
-            // the dev clicking Start again.
-            Settings.ServerStickyRunning = true;
-            NotifyServerState($"started at port {Settings.Port}");
+            TryStartServer(
+                Settings.Port,
+                Settings.Token,
+                null,
+                true,
+                $"started at port {Settings.Port}",
+                true);
         }
 
         public static void StopServer()
         {
             Server.Stop();
-            // Explicit user-initiated stop clears sticky — they don't want it
-            // coming back automatically.
+            try { ServerCoordinator?.ReleaseExplicit(); }
+            catch (Exception e) { Debug.LogWarning($"[scene-analyzer] failed to release MCP lease: {e.Message}"); }
             Settings.ServerStickyRunning = false;
             NotifyServerState("stopped (sticky cleared)");
+        }
+
+        public static void RestartServer()
+        {
+            if (string.IsNullOrEmpty(Settings.Token))
+                Settings.Token = Settings.GenerateToken();
+            var port = Server != null && Server.IsRunning ? Server.Port : Settings.Port;
+            Server?.Stop("MCP server settings changed — retry shortly");
+            TryStartServer(
+                port,
+                Settings.Token,
+                null,
+                true,
+                $"restarted at port {port}",
+                true);
+        }
+
+        public static void BringServerHere()
+        {
+            if (ServerCoordinator == null)
+                throw new InvalidOperationException(ServerCoordinationError ?? "MCP instance coordination is unavailable.");
+            var requestId = ServerCoordinator.RequestHandover();
+            RecordEntry($"[server] transfer requested for this project ({requestId.Substring(0, 8)})");
+            NotifyServerState("transfer requested for this project");
+        }
+
+        private static bool TryStartServer(
+            int port,
+            string token,
+            string handoverRequestId,
+            bool markSticky,
+            string successState,
+            bool throwWhenUnavailable)
+        {
+            if (Server == null) throw new InvalidOperationException("MCP server is not initialized.");
+            if (Server.IsRunning) return true;
+
+            var reservation = ServerCoordinator == null
+                ? McpServerAcquireResult.Rejected(
+                    port,
+                    ServerCoordinationError ?? "MCP instance coordination is unavailable; refusing an uncoordinated port bind.")
+                : string.IsNullOrEmpty(handoverRequestId)
+                    ? ServerCoordinator.TryAcquire(port, token)
+                    : ServerCoordinator.TryAcquireHandover(handoverRequestId, token);
+
+            if (!reservation.Acquired)
+            {
+                if (throwWhenUnavailable) throw new InvalidOperationException(reservation.Message);
+                RecordEntry($"[server] {reservation.Message}");
+                return false;
+            }
+
+            Settings.Port = reservation.Port;
+            try
+            {
+                Server.Start(reservation.Port, token);
+                ServerCoordinator?.MarkRunning(reservation.LeaseId, handoverRequestId);
+                if (markSticky) Settings.ServerStickyRunning = true;
+                NotifyServerState(successState);
+                return true;
+            }
+            catch (Exception e)
+            {
+                try
+                {
+                    if (Server.IsRunning)
+                        Server.Stop("MCP coordination failed during startup");
+                }
+                catch (Exception stopError)
+                {
+                    Debug.LogWarning($"[scene-analyzer] failed to stop partially started MCP server: {stopError.Message}");
+                }
+
+                try { ServerCoordinator?.FailStart(reservation.LeaseId, e.Message, handoverRequestId); }
+                catch (Exception coordinationError)
+                {
+                    Debug.LogWarning($"[scene-analyzer] failed to roll back MCP lease: {coordinationError.Message}");
+                }
+                throw;
+            }
+        }
+
+        private static void OnServerCoordinatorStateChanged(McpServerInstanceSnapshot _)
+        {
+            try { OnServerCoordinationChanged?.Invoke(); }
+            catch (Exception e) { Debug.LogException(e); }
+        }
+
+        private static void OnServerCoordinatorCommand(McpServerCoordinationCommand command)
+        {
+            try
+            {
+                switch (command.Kind)
+                {
+                    case McpServerCoordinationCommandKind.ReleaseForHandover:
+                        Server?.Stop($"MCP server moving to {command.DestinationProjectName}; retry shortly");
+                        ServerCoordinator.ReleaseForHandover(command.RequestId);
+                        NotifyServerState($"moved to {command.DestinationProjectName} (port {command.Port})");
+                        break;
+
+                    case McpServerCoordinationCommandKind.AcquireAfterHandover:
+                        TryStartServer(
+                            command.Port,
+                            Settings.Token,
+                            command.RequestId,
+                            true,
+                            $"moved here from {command.SourceProjectName} at port {command.Port}",
+                            true);
+                        break;
+
+                    case McpServerCoordinationCommandKind.RestoreAfterFailedHandover:
+                        TryStartServer(
+                            command.Port,
+                            Settings.Token,
+                            null,
+                            true,
+                            $"restored at port {command.Port} after failed transfer",
+                            true);
+                        break;
+                }
+            }
+            catch (Exception e)
+            {
+                try { ServerCoordinator?.FailHandover(command.RequestId, e.Message); }
+                catch (Exception coordinationError)
+                {
+                    Debug.LogWarning($"[scene-analyzer] failed to mark MCP transfer failure: {coordinationError.Message}");
+                }
+
+                if (command.Kind == McpServerCoordinationCommandKind.ReleaseForHandover
+                    && Server != null
+                    && !Server.IsRunning)
+                {
+                    try
+                    {
+                        TryStartServer(
+                            command.Port,
+                            Settings.Token,
+                            null,
+                            true,
+                            $"restored at port {command.Port} after failed transfer release",
+                            true);
+                    }
+                    catch (Exception restoreError)
+                    {
+                        Debug.LogError($"[scene-analyzer] failed to restore MCP server after transfer release failure: {restoreError.Message}");
+                    }
+                }
+
+                RecordEntry($"[server] transfer failed: {e.Message}");
+                NotifyServerState($"transfer failed: {e.Message}");
+            }
         }
 
         private static void OnAfterReload()
@@ -471,9 +647,14 @@ namespace Maicon.SceneAnalyzer.Editor
 
         private static void OnBeforeReload()
         {
+            try { ChatClient?.Dispose(); }
+            catch (Exception e) { Debug.LogException(e); }
+
+            try { ServerCoordinator?.PrepareForReload(); }
+            catch (Exception e) { Debug.LogException(e); }
+
             try
             {
-                ChatClient?.Dispose();
                 // Pass a reason so HttpMcpServer writes 503 to in-flight tool
                 // calls before the AppDomain is torn down. Without this, the
                 // MCP client hangs on the dead socket until its 60s request
@@ -481,16 +662,28 @@ namespace Maicon.SceneAnalyzer.Editor
                 Server?.Stop("Unity assembly reload — server restarting; retry in ~5s");
             }
             catch (Exception e) { Debug.LogException(e); }
+            finally
+            {
+                try { ServerCoordinator?.Dispose(); }
+                catch (Exception e) { Debug.LogException(e); }
+            }
         }
 
         private static void OnQuitting()
         {
-            try
-            {
-                ChatClient?.Dispose();
-                Server?.Stop("Unity Editor is quitting");
-            }
+            try { ChatClient?.Dispose(); }
             catch (Exception e) { Debug.LogException(e); }
+
+            try { Server?.Stop("Unity Editor is quitting"); }
+            catch (Exception e) { Debug.LogException(e); }
+
+            try { ServerCoordinator?.ReleaseForShutdown(); }
+            catch (Exception e) { Debug.LogException(e); }
+            finally
+            {
+                try { ServerCoordinator?.Dispose(); }
+                catch (Exception e) { Debug.LogException(e); }
+            }
         }
     }
 }

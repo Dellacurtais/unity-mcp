@@ -5,6 +5,23 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.8] - 2026-07-24
+
+### Added
+
+- Cross-process MCP instance discovery for multiple open Unity projects. A versioned per-user file coordinator publishes project/PID presence, serializes ownership with an exclusive lease, and recovers stale owners without scanning ports or exposing the bearer token.
+- **Bring here** in **Window → Scene Analyzer** transfers the active MCP listener cooperatively to the current project while preserving its port and token. Requests in flight receive the existing retryable `503` shutdown response.
+- EditMode coverage for exclusive/concurrent acquisition, same-endpoint HTTP handover, changed-token rollback, live-owner timeout, stale-owner recovery, and corrupt-state quarantine.
+
+### Fixed
+
+- Opening a second Unity project no longer inherits the global sticky flag and blindly binds the port already owned by the first project. The inactive window now identifies the owning project and endpoint instead.
+- Assembly reload in the former owner no longer steals the listener back after a completed handover.
+
+### Changed
+
+- Port, bearer token, and sticky auto-start remain global by design so registered MCP clients keep one stable endpoint; listener ownership is now isolated by the coordinator. This release still serves one project at a time—simultaneous multi-project service requires a future external broker/router.
+
 ## [0.15.7] - 2026-07-18
 
 ### Changed

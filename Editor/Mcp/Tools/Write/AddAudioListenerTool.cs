@@ -24,11 +24,21 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public ToolDescriptor Descriptor => new ToolDescriptor
+        {
+            Name = Name,
+            Category = "audio",
+            Capabilities = McpCapability.SceneWrite | McpCapability.Destructive,
+            Risk = McpRiskLevel.High,
+            ConfirmationPolicy = McpConfirmationPolicy.Required,
+            EditorMode = McpEditorMode.EditModeOnly,
+            IsIdempotent = true,
+        };
         public ToolResult Execute(JObject args)
         {
             var r = AudioAuthor.AddListener(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary);
+            return ToolResult.Ok(r.Summary, r.Data);
         }
     }
 }

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -41,19 +40,12 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.HDRP
         private sealed class ValidateHdrpSetupTool : IMcpTool
         {
             public string Name => "validate_hdrp_setup";
-            public string Description => "Validates HDRP package assets and active pipeline assignment.";
+            public string Description => "Validates local HDRP 17.x project assets plus current, default, and every quality-level pipeline assignment.";
             public JObject InputSchema => OptionalToolSupport.EmptySchema();
             public bool IsWrite => false;
-            public ToolResult Execute(JObject arguments)
-            {
-                var assets = OptionalAssetToolSupport.FindAssets(PipelineAssets);
-                var current = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
-                var issues = new JArray();
-                if (assets.Length == 0) issues.Add(new JObject { ["severity"] = "error", ["code"] = "NO_HDRP_PIPELINE_ASSET" });
-                if (current == null || current.GetType().FullName != PipelineAssets[0])
-                    issues.Add(new JObject { ["severity"] = "warning", ["code"] = "HDRP_NOT_CURRENT_PIPELINE", ["current"] = current != null ? current.GetType().FullName : "BuiltIn" });
-                return ToolResult.Ok($"{issues.Count} HDRP issue(s)", new JObject { ["valid"] = !issues.Any(token => (string)token["severity"] == "error"), ["issues"] = issues });
-            }
+            public ToolResult Execute(JObject arguments) =>
+                OptionalAssetToolSupport.ValidateRenderPipelineSetup(
+                    "hdrp", PackageId, PipelineAssets, "NO_HDRP_PIPELINE_ASSET", "HDRP_NOT_CURRENT_PIPELINE");
         }
     }
 }

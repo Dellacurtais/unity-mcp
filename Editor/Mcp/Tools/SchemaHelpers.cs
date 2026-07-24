@@ -18,6 +18,27 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools
             },
         };
 
+        public static JObject StrictVec3Schema => new JObject
+        {
+            ["description"] = "Vector3 as [x,y,z] or {x,y,z}; object form requires all three coordinates.",
+            ["oneOf"] = new JArray
+            {
+                new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "number" }, ["minItems"] = 3, ["maxItems"] = 3 },
+                new JObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JObject
+                    {
+                        ["x"] = new JObject { ["type"] = "number" },
+                        ["y"] = new JObject { ["type"] = "number" },
+                        ["z"] = new JObject { ["type"] = "number" },
+                    },
+                    ["required"] = new JArray { "x", "y", "z" },
+                    ["additionalProperties"] = false,
+                },
+            },
+        };
+
         public static JObject TargetRefSchema => new JObject
         {
             ["type"] = "object",

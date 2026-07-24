@@ -24,7 +24,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var ps = go.GetComponent<ParticleSystem>();
             if (ps == null) return OpResult.Fail("no ParticleSystem on this GameObject");
 
-            Undo.RecordObject(ps, "Set Particle Module");
+            Undo.RegisterCompleteObjectUndo(ps, "Set Particle Module");
 
             var changes = new List<string>();
             switch (moduleName)
@@ -45,6 +45,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 case "collision": SetCollision(ps, fields, changes); break;
                 default: return OpResult.Fail($"unknown module '{moduleName}'. Known: main, emission, shape, colorOverLifetime, sizeOverLifetime, velocityOverLifetime, rotationOverLifetime, noise, trails, renderer, collision");
             }
+            PrefabUtility.RecordPrefabInstancePropertyModifications(ps);
             return OpResult.Success(id, $"set {moduleName}: {string.Join(", ", changes)}");
         }
 
@@ -53,6 +54,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var id = (int?)args["instanceId"] ?? 0;
             var action = ((string)args["action"] ?? "play").ToLowerInvariant();
             var time = (float?)args["time"] ?? 0f;
+            var simulatedTime = time > 0f ? time : 1f;
             var withChildren = (bool?)args["withChildren"] ?? true;
 
             var go = EditorUtility.InstanceIDToObject(id) as GameObject;
@@ -68,12 +70,12 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 case "clear": ps.Clear(withChildren); break;
                 case "restart": ps.Stop(withChildren); ps.Clear(withChildren); ps.Play(withChildren); break;
                 case "simulate":
-                    ps.Simulate(time > 0 ? time : 1f, withChildren, restart: true);
+                    ps.Simulate(simulatedTime, withChildren, restart: true);
                     break;
                 default:
                     return OpResult.Fail($"unknown action '{action}' (use play/stop/pause/clear/restart/simulate)");
             }
-            return OpResult.Success(id, action == "simulate" ? $"simulate {time}s" : action);
+            return OpResult.Success(id, action == "simulate" ? $"simulate {simulatedTime}s" : action);
         }
 
         // ---- module setters ----
@@ -109,9 +111,23 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 {
                     if (bo is JObject b)
                     {
-                        bursts.Add(new ParticleSystem.Burst(
-                            (float?)b["time"] ?? 0f,
-                            (short)((int?)b["count"] ?? 10)));
+                        var fallbackCount = (int?)b["count"] ?? 10;
+                        var minCount = (short)Mathf.Clamp((int?)(b["min"] ?? b["minCount"]) ?? fallbackCount, 0, short.MaxValue);
+                        var maxCount = (short)Mathf.Clamp((int?)(b["max"] ?? b["maxCount"]) ?? fallbackCount, 0, short.MaxValue);
+                        if (maxCount < minCount)
+                        {
+                            var swap = minCount;
+                            minCount = maxCount;
+                            maxCount = swap;
+                        }
+                        var cycleCount = Mathf.Max(0, (int?)(b["cycles"] ?? b["cycleCount"]) ?? 1);
+                        var repeatInterval = Mathf.Max(0.01f, (float?)(b["interval"] ?? b["repeatInterval"]) ?? 0.01f);
+                        var burst = new ParticleSystem.Burst(
+                            (float?)b["time"] ?? 0f, minCount, maxCount, cycleCount, repeatInterval)
+                        {
+                            probability = Mathf.Clamp01((float?)b["probability"] ?? 1f),
+                        };
+                        bursts.Add(burst);
                     }
                 }
                 em.SetBursts(bursts.ToArray());
@@ -147,7 +163,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var sz = ps.sizeOverLifetime;
             if (f["enabled"] != null) { sz.enabled = (bool)f["enabled"]; log.Add("enabled"); }
+            if (f["separateAxes"] != null) { sz.separateAxes = (bool)f["separateAxes"]; log.Add("separateAxes"); }
             if (f["size"] != null) { sz.size = ParseMinMax(f["size"]); log.Add("size"); }
+            if (f["x"] != null) { sz.x = ParseMinMax(f["x"]); log.Add("x"); }
+            if (f["y"] != null) { sz.y = ParseMinMax(f["y"]); log.Add("y"); }
+            if (f["z"] != null) { sz.z = ParseMinMax(f["z"]); log.Add("z"); }
         }
 
         private static void SetVelocityOverLifetime(ParticleSystem ps, JObject f, List<string> log)
@@ -157,6 +177,14 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (f["x"] != null) { v.x = ParseMinMax(f["x"]); log.Add("x"); }
             if (f["y"] != null) { v.y = ParseMinMax(f["y"]); log.Add("y"); }
             if (f["z"] != null) { v.z = ParseMinMax(f["z"]); log.Add("z"); }
+            if (f["orbitalX"] != null) { v.orbitalX = ParseMinMax(f["orbitalX"]); log.Add("orbitalX"); }
+            if (f["orbitalY"] != null) { v.orbitalY = ParseMinMax(f["orbitalY"]); log.Add("orbitalY"); }
+            if (f["orbitalZ"] != null) { v.orbitalZ = ParseMinMax(f["orbitalZ"]); log.Add("orbitalZ"); }
+            if (f["orbitalOffsetX"] != null) { v.orbitalOffsetX = ParseMinMax(f["orbitalOffsetX"]); log.Add("orbitalOffsetX"); }
+            if (f["orbitalOffsetY"] != null) { v.orbitalOffsetY = ParseMinMax(f["orbitalOffsetY"]); log.Add("orbitalOffsetY"); }
+            if (f["orbitalOffsetZ"] != null) { v.orbitalOffsetZ = ParseMinMax(f["orbitalOffsetZ"]); log.Add("orbitalOffsetZ"); }
+            if (f["radial"] != null) { v.radial = ParseMinMax(f["radial"]); log.Add("radial"); }
+            if (f["speedModifier"] != null) { v.speedModifier = ParseMinMax(f["speedModifier"]); log.Add("speedModifier"); }
             if (f["space"] != null && System.Enum.TryParse((string)f["space"], true, out ParticleSystemSimulationSpace ss)) { v.space = ss; log.Add("space"); }
         }
 
@@ -164,6 +192,9 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var r = ps.rotationOverLifetime;
             if (f["enabled"] != null) { r.enabled = (bool)f["enabled"]; log.Add("enabled"); }
+            if (f["separateAxes"] != null) { r.separateAxes = (bool)f["separateAxes"]; log.Add("separateAxes"); }
+            if (f["x"] != null) { r.x = ParseMinMax(f["x"]); log.Add("x"); }
+            if (f["y"] != null) { r.y = ParseMinMax(f["y"]); log.Add("y"); }
             if (f["z"] != null) { r.z = ParseMinMax(f["z"]); log.Add("z"); }
         }
 
@@ -193,20 +224,41 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var r = ps.GetComponent<ParticleSystemRenderer>();
             if (r == null) return false;
+            Undo.RecordObject(r, "Set Particle Renderer");
             if (f["renderMode"] != null && System.Enum.TryParse((string)f["renderMode"], true, out ParticleSystemRenderMode rm))
             { r.renderMode = rm; log.Add("renderMode"); }
             if (f["sortingOrder"] != null) { r.sortingOrder = (int)f["sortingOrder"]; log.Add("sortingOrder"); }
             if (f["sortingLayerName"] != null) { r.sortingLayerName = (string)f["sortingLayerName"]; log.Add("sortingLayerName"); }
+            if (f["alignment"] != null && System.Enum.TryParse((string)f["alignment"], true, out ParticleSystemRenderSpace alignment))
+            { r.alignment = alignment; log.Add("alignment"); }
+            if (f["minParticleSize"] != null) { r.minParticleSize = (float)f["minParticleSize"]; log.Add("minParticleSize"); }
+            if (f["maxParticleSize"] != null) { r.maxParticleSize = (float)f["maxParticleSize"]; log.Add("maxParticleSize"); }
             if (f["material"] != null)
             {
-                var matRef = (string)f["material"];
-                var path = matRef.StartsWith("Assets/", System.StringComparison.OrdinalIgnoreCase)
-                    ? matRef
-                    : AssetDatabase.GUIDToAssetPath(matRef);
-                var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+                var mat = LoadAssetReference<Material>((string)f["material"]);
                 if (mat != null) { r.sharedMaterial = mat; log.Add("material"); }
             }
+            if (f["trailMaterial"] != null)
+            {
+                var trailMaterial = LoadAssetReference<Material>((string)f["trailMaterial"]);
+                if (trailMaterial != null) { r.trailMaterial = trailMaterial; log.Add("trailMaterial"); }
+            }
+            if (f["mesh"] != null)
+            {
+                var mesh = LoadAssetReference<Mesh>((string)f["mesh"]);
+                if (mesh != null) { r.mesh = mesh; log.Add("mesh"); }
+            }
+            PrefabUtility.RecordPrefabInstancePropertyModifications(r);
             return true;
+        }
+
+        private static T LoadAssetReference<T>(string guidOrPath) where T : Object
+        {
+            if (string.IsNullOrEmpty(guidOrPath)) return null;
+            var path = guidOrPath.StartsWith("Assets/", System.StringComparison.OrdinalIgnoreCase)
+                ? guidOrPath
+                : AssetDatabase.GUIDToAssetPath(guidOrPath);
+            return AssetDatabase.LoadAssetAtPath<T>(path);
         }
 
         private static void SetCollision(ParticleSystem ps, JObject f, List<string> log)

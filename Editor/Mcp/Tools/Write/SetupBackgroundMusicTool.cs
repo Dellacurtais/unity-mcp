@@ -18,9 +18,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             ["properties"] = new JObject
             {
                 ["clipGuidOrPath"] = new JObject { ["type"] = "string" },
-                ["volume"] = new JObject { ["type"] = "number", ["default"] = 0.5 },
-                ["pitch"] = new JObject { ["type"] = "number", ["default"] = 1.0 },
+                ["volume"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1, ["default"] = 0.5 },
+                ["pitch"] = new JObject { ["type"] = "number", ["minimum"] = -3, ["maximum"] = 3, ["default"] = 1.0 },
                 ["mixerGroup"] = new JObject { ["type"] = "string" },
+                ["mixerGuidOrPath"] = new JObject { ["type"] = "string" },
                 ["replaceExisting"] = new JObject { ["type"] = "boolean", ["default"] = true },
             },
             ["required"] = new JArray { "clipGuidOrPath" },
@@ -31,7 +32,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         {
             var r = AudioAuthor.SetupBackgroundMusic(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary, new JObject { ["instanceId"] = r.InstanceID });
+            return ToolResult.Ok(r.Summary, r.Data ?? new JObject { ["instanceId"] = r.InstanceID });
         }
     }
 }

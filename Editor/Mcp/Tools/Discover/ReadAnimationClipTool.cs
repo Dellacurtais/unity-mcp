@@ -6,24 +6,15 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
     public sealed class ReadAnimationClipTool : IMcpTool
     {
         public string Name => "read_animation_clip";
-        public string Description =>
-            "Inspects an AnimationClip: length, frameRate, isLooping, loop/mirror settings, list of curve bindings (path/property/type — capped at 30 with overflow note), and animation events with their function/parameters.";
-
+        public string Description => "Returns structured AnimationClip metadata, settings, float/object-reference bindings and persistent AnimationEvents.";
         public JObject InputSchema => new JObject
         {
             ["type"] = "object",
-            ["properties"] = new JObject
-            {
-                ["clipGuidOrPath"] = new JObject { ["type"] = "string" },
-            },
+            ["properties"] = new JObject { ["clipGuidOrPath"] = new JObject { ["type"] = "string", ["minLength"] = 1 } },
             ["required"] = new JArray { "clipGuidOrPath" },
             ["additionalProperties"] = false,
         };
         public bool IsWrite => false;
-        public ToolResult Execute(JObject args)
-        {
-            var r = AnimationAuthor.ReadClip(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
-        }
+        public ToolResult Execute(JObject args) => AnimationToolContracts.Result(AnimationAuthor.ReadClip(args));
     }
 }

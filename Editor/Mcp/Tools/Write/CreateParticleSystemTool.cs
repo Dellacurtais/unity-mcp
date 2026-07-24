@@ -9,7 +9,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
     {
         public string Name => "create_particle_system";
         public string Description =>
-            "Creates a ParticleSystem from one of the built-in templates (smoke, fire, sparks, dust, trail). Override duration/startColor/startSize/startSpeed/startLifetime/emissionRate inline; use set_property for finer module controls (shape, velocityOverLifetime, etc.). NOTE on URP/HDRP: the default ParticleSystem renderer material is the legacy Standard Particle shader which appears pink under URP/HDRP — assign a pipeline-correct particle material via `set_material` on the ParticleSystemRenderer slot 0 afterwards.";
+            "Creates a ParticleSystem from one of the built-in templates (smoke, fire, sparks, dust, trail), or `default` for an unmodified Unity ParticleSystem. Override duration/startColor/startSize/startSpeed/startLifetime/emissionRate inline; use set_property for finer module controls (shape, velocityOverLifetime, etc.). NOTE on URP/HDRP: the default ParticleSystem renderer material is the legacy Standard Particle shader which appears pink under URP/HDRP — assign a pipeline-correct particle material via `set_material` on the ParticleSystemRenderer slot 0 afterwards.";
 
         public JObject InputSchema => new JObject
         {
@@ -19,7 +19,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
                 ["template"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "smoke", "fire", "sparks", "dust", "trail", "default" } },
                 ["name"] = new JObject { ["type"] = "string" },
                 ["duration"] = new JObject { ["type"] = "number" },
-                ["startColor"] = new JObject(),
+                ["startColor"] = SchemaHelpers.ColorSchema,
                 ["startSize"] = new JObject { ["type"] = "number" },
                 ["startSpeed"] = new JObject { ["type"] = "number" },
                 ["startLifetime"] = new JObject { ["type"] = "number" },

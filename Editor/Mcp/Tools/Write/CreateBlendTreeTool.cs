@@ -6,30 +6,60 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
     public sealed class CreateBlendTreeTool : IMcpTool
     {
         public string Name => "create_blend_tree";
-        public string Description =>
-            "Creates a state in the controller backed by a BlendTree. blendType: Simple1D, SimpleDirectional2D, FreeformDirectional2D, FreeformCartesian2D, Direct. blendParameter (and blendParameterY for 2D) reference parameters already added to the controller. Follow with add_blend_tree_motion to populate.";
-
-        public JObject InputSchema => new JObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JObject
-            {
-                ["controllerGuidOrPath"] = new JObject { ["type"] = "string" },
-                ["controllerInstanceId"] = new JObject { ["type"] = "integer" },
-                ["state"] = new JObject { ["type"] = "string" },
-                ["layer"] = new JObject { ["type"] = "integer", ["default"] = 0 },
-                ["blendType"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Simple1D", "SimpleDirectional2D", "FreeformDirectional2D", "FreeformCartesian2D", "Direct" }, ["default"] = "Simple1D" },
-                ["blendParameter"] = new JObject { ["type"] = "string" },
-                ["blendParameterY"] = new JObject { ["type"] = "string" },
-            },
-            ["required"] = new JArray { "state" },
-            ["additionalProperties"] = false,
-        };
+        public string Description => "Creates a unique BlendTree state after validating layer, blend type and required Float controller parameters.";
+        public JObject InputSchema => Schema();
         public bool IsWrite => true;
-        public ToolResult Execute(JObject args)
+        public ToolDescriptor Descriptor => AnimationToolContracts.AssetWriteDescriptor(Name);
+        public ToolResult Execute(JObject args) => AnimationToolContracts.Result(AnimationAuthor.CreateBlendTree(args));
+
+        private static JObject Schema()
         {
-            var r = AnimationAuthor.CreateBlendTree(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            var variants = new JArray();
+            foreach (var reference in new[] { "controllerGuidOrPath", "controllerInstanceId" })
+            {
+                variants.Add(Variant(reference, null, true, false));
+                variants.Add(Variant(reference, "Simple1D", true, false));
+                variants.Add(Variant(reference, "SimpleDirectional2D", true, true));
+                variants.Add(Variant(reference, "FreeformDirectional2D", true, true));
+                variants.Add(Variant(reference, "FreeformCartesian2D", true, true));
+                variants.Add(Variant(reference, "Direct", false, false));
+            }
+            return new JObject { ["type"] = "object", ["oneOf"] = variants };
+        }
+
+        private static JObject Variant(string reference, string blendType, bool requiresX, bool requiresY)
+        {
+            var properties = new JObject
+            {
+                [reference] = reference == "controllerInstanceId"
+                    ? new JObject { ["type"] = "integer" }
+                    : new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["state"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["layer"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["default"] = 0 },
+            };
+            var required = new JArray { reference, "state" };
+            if (blendType != null)
+            {
+                properties["blendType"] = new JObject { ["type"] = "string", ["enum"] = new JArray { blendType } };
+                required.Add("blendType");
+            }
+            if (requiresX)
+            {
+                properties["blendParameter"] = new JObject { ["type"] = "string", ["minLength"] = 1 };
+                required.Add("blendParameter");
+            }
+            if (requiresY)
+            {
+                properties["blendParameterY"] = new JObject { ["type"] = "string", ["minLength"] = 1 };
+                required.Add("blendParameterY");
+            }
+            return new JObject
+            {
+                ["type"] = "object",
+                ["properties"] = properties,
+                ["required"] = required,
+                ["additionalProperties"] = false,
+            };
         }
     }
 }

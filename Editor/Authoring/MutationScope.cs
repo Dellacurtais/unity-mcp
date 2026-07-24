@@ -83,8 +83,6 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (gameObject != null)
             {
                 TouchScene(gameObject.scene);
-                if (PrefabUtility.IsPartOfPrefabInstance(target))
-                    PrefabUtility.RecordPrefabInstancePropertyModifications(target);
             }
             else
             {
@@ -122,7 +120,15 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 if (scene.IsValid()) EditorSceneManager.MarkSceneDirty(scene);
             }
             foreach (var target in _objects)
-                if (target != null && !(target is GameObject) && !(target is Component)) EditorUtility.SetDirty(target);
+            {
+                if (target == null) continue;
+                if (target is GameObject || target is Component)
+                {
+                    if (PrefabUtility.IsPartOfPrefabInstance(target))
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(target);
+                }
+                else EditorUtility.SetDirty(target);
+            }
             Undo.CollapseUndoOperations(_undoGroup);
             _completed = true;
         }

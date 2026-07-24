@@ -6,48 +6,63 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
     public sealed class AddAnimatorTransitionTool : IMcpTool
     {
         public string Name => "add_animator_transition";
-        public string Description =>
-            "Adds a transition between states. `from` is the source state name, OR omit/use 'AnyState' / '*' for an any-state transition. `to` is required. " +
-            "`conditions` is an array of `{ parameter, mode, threshold }` where mode is Greater/Less/Equals/NotEqual/If/IfNot. " +
-            "Defaults: hasExitTime=false, duration=0.25, exitTime=0.85, offset=0.";
-
-        public JObject InputSchema => new JObject
+        public string Description => "Adds a validated state or AnyState transition with typed conditions, normalized/fixed duration controls and atomic Undo.";
+        public JObject InputSchema => AnimationToolContracts.ControllerInputSchema(new JObject
         {
-            ["type"] = "object",
-            ["properties"] = new JObject
+            ["from"] = new JObject { ["type"] = "string" },
+            ["to"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+            ["layer"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["default"] = 0 },
+            ["hasExitTime"] = new JObject { ["type"] = "boolean", ["default"] = false },
+            ["exitTime"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 0.85 },
+            ["duration"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 0.25 },
+            ["fixedDuration"] = new JObject { ["type"] = "boolean", ["default"] = false },
+            ["offset"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["maximum"] = 1, ["default"] = 0 },
+            ["conditions"] = new JObject
             {
-                ["controllerGuidOrPath"] = new JObject { ["type"] = "string" },
-                ["controllerInstanceId"] = new JObject { ["type"] = "integer" },
-                ["from"] = new JObject { ["type"] = "string" },
-                ["to"] = new JObject { ["type"] = "string" },
-                ["layer"] = new JObject { ["type"] = "integer", ["default"] = 0 },
-                ["hasExitTime"] = new JObject { ["type"] = "boolean", ["default"] = false },
-                ["exitTime"] = new JObject { ["type"] = "number" },
-                ["duration"] = new JObject { ["type"] = "number" },
-                ["offset"] = new JObject { ["type"] = "number" },
-                ["conditions"] = new JObject
-                {
-                    ["type"] = "array",
-                    ["items"] = new JObject
-                    {
-                        ["type"] = "object",
-                        ["properties"] = new JObject
-                        {
-                            ["parameter"] = new JObject { ["type"] = "string" },
-                            ["mode"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Greater", "Less", "Equals", "NotEqual", "If", "IfNot" } },
-                            ["threshold"] = new JObject { ["type"] = "number" },
-                        },
-                    },
-                },
+                ["type"] = "array", ["maxItems"] = 64,
+                ["items"] = ConditionSchema(),
             },
-            ["required"] = new JArray { "to" },
-            ["additionalProperties"] = false,
-        };
+        }, "to");
         public bool IsWrite => true;
-        public ToolResult Execute(JObject args)
+        public ToolDescriptor Descriptor => AnimationToolContracts.AssetWriteDescriptor(Name);
+        public ToolResult Execute(JObject args) => AnimationToolContracts.Result(AnimationAuthor.AddTransition(args));
+
+        private static JObject ConditionSchema()
         {
-            var r = AnimationAuthor.AddTransition(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            var properties = new JObject
+            {
+                ["parameter"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["mode"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Greater", "Less", "Equals", "NotEqual", "If", "IfNot" } },
+                ["threshold"] = new JObject { ["type"] = "number" },
+            };
+            return new JObject
+            {
+                ["type"] = "object",
+                ["properties"] = properties,
+                ["oneOf"] = new JArray
+                {
+                    ConditionVariant(new[] { "If", "IfNot" }, null),
+                    ConditionVariant(new[] { "Greater", "Less" }, new JObject { ["type"] = "number" }),
+                    ConditionVariant(new[] { "Equals", "NotEqual" }, new JObject { ["type"] = "integer" }),
+                },
+                ["additionalProperties"] = false,
+            };
+        }
+
+        private static JObject ConditionVariant(string[] modes, JObject thresholdSchema)
+        {
+            var properties = new JObject
+            {
+                ["parameter"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["mode"] = new JObject { ["type"] = "string", ["enum"] = new JArray(modes) },
+            };
+            var required = new JArray { "parameter", "mode" };
+            if (thresholdSchema != null)
+            {
+                properties["threshold"] = thresholdSchema;
+                required.Add("threshold");
+            }
+            return new JObject { ["type"] = "object", ["properties"] = properties, ["required"] = required, ["additionalProperties"] = false };
         }
     }
 }

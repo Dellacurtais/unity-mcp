@@ -96,12 +96,102 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
 
         public static JObject Vec3(Vector3 value) => new JObject { ["x"] = value.x, ["y"] = value.y, ["z"] = value.z };
         public static JObject Vec2(Vector2 value) => new JObject { ["x"] = value.x, ["y"] = value.y };
+
+        public static JObject ColorJson(Color value) => new JObject
+        {
+            ["r"] = value.r, ["g"] = value.g, ["b"] = value.b, ["a"] = value.a,
+        };
+
+        public static JArray VectorJson(Vector4 value) => new JArray(value.x, value.y, value.z, value.w);
+
+        public static bool TryFiniteNumber(JToken token, out float value)
+        {
+            value = 0f;
+            if (token == null || (token.Type != JTokenType.Integer && token.Type != JTokenType.Float)) return false;
+            value = (float)token;
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        public static bool TryColor(JToken token, out Color color, out string error)
+        {
+            color = default;
+            error = null;
+            if (token?.Type == JTokenType.String)
+            {
+                if (ColorUtility.TryParseHtmlString((string)token, out color)) return true;
+                error = "Color string must use a Unity HTML color such as #RRGGBB or #RRGGBBAA";
+                return false;
+            }
+            if (token is JArray array && (array.Count == 3 || array.Count == 4))
+            {
+                if (!TryFiniteNumber(array[0], out var r) || !TryFiniteNumber(array[1], out var g)
+                    || !TryFiniteNumber(array[2], out var b)
+                    || (array.Count == 4 && !TryFiniteNumber(array[3], out _)))
+                {
+                    error = "Color array values must be finite numbers";
+                    return false;
+                }
+                var alpha = array.Count == 4 ? (float)array[3] : 1f;
+                color = new Color(r, g, b, alpha);
+                return true;
+            }
+            if (token is JObject obj
+                && TryFiniteNumber(obj["r"], out var red)
+                && TryFiniteNumber(obj["g"], out var green)
+                && TryFiniteNumber(obj["b"], out var blue)
+                && (obj["a"] == null || TryFiniteNumber(obj["a"], out _)))
+            {
+                color = new Color(red, green, blue, obj["a"] != null ? (float)obj["a"] : 1f);
+                return true;
+            }
+            error = "Color requires #RRGGBB[AA], [r,g,b,a], or {r,g,b,a}";
+            return false;
+        }
+
+        public static JToken MaterialPropertyValue(Material material, Shader shader, int index)
+        {
+            var name = shader.GetPropertyName(index);
+            switch (shader.GetPropertyType(index))
+            {
+                case ShaderPropertyType.Color: return ColorJson(material.GetColor(name));
+                case ShaderPropertyType.Vector: return VectorJson(material.GetVector(name));
+                case ShaderPropertyType.Texture: return ObjectJson(material.GetTexture(name));
+                case ShaderPropertyType.Int: return material.GetInteger(name);
+                default: return material.GetFloat(name);
+            }
+        }
+
+        public static JObject MaterialPropertyJson(Material material, Shader shader, int index)
+        {
+            var name = shader.GetPropertyName(index);
+            var type = shader.GetPropertyType(index);
+            var property = new JObject
+            {
+                ["name"] = name,
+                ["description"] = shader.GetPropertyDescription(index),
+                ["type"] = type.ToString(),
+                ["flags"] = shader.GetPropertyFlags(index).ToString(),
+                ["value"] = MaterialPropertyValue(material, shader, index),
+            };
+            if (type == ShaderPropertyType.Range)
+            {
+                var limits = shader.GetPropertyRangeLimits(index);
+                property["rangeLimits"] = new JObject { ["min"] = limits.x, ["max"] = limits.y };
+            }
+            else if (type == ShaderPropertyType.Texture)
+            {
+                property["textureDimension"] = shader.GetPropertyTextureDimension(index).ToString();
+                property["scale"] = Vec2(material.GetTextureScale(name));
+                property["offset"] = Vec2(material.GetTextureOffset(name));
+            }
+            return property;
+        }
     }
 
     public sealed class GetRenderPipelineContextTool : IMcpTool
     {
         public string Name => "get_render_pipeline_context";
-        public string Description => "Reports Built-in/SRP context, active pipeline asset, quality override, color space, graphics API and rendering capabilities.";
+        public string Description => "Reports the effective/default render pipeline, every quality-level override, color space, graphics API, and rendering capabilities.";
         public JObject InputSchema => SystemToolSupport.EmptySchema();
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
@@ -109,14 +199,33 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             var current = GraphicsSettings.currentRenderPipeline;
             var defaultPipeline = GraphicsSettings.defaultRenderPipeline;
             var qualityPipeline = QualitySettings.renderPipeline;
+            var activeQuality = QualitySettings.GetQualityLevel();
+            var qualityNames = QualitySettings.names;
+            var qualityLevels = new JArray();
+            for (var index = 0; index < qualityNames.Length; index++)
+            {
+                var qualityOverride = QualitySettings.GetRenderPipelineAssetAt(index);
+                var effective = qualityOverride != null ? qualityOverride : defaultPipeline;
+                qualityLevels.Add(new JObject
+                {
+                    ["index"] = index,
+                    ["name"] = qualityNames[index],
+                    ["active"] = index == activeQuality,
+                    ["override"] = SystemToolSupport.ObjectJson(qualityOverride),
+                    ["pipeline"] = SystemToolSupport.ObjectJson(effective),
+                    ["pipelineType"] = effective == null ? "BuiltIn" : effective.GetType().FullName,
+                });
+            }
+
             return ToolResult.Ok(current == null ? "Built-in Render Pipeline" : current.GetType().Name, new JObject
             {
                 ["pipeline"] = current == null ? "BuiltIn" : current.GetType().FullName,
                 ["current"] = SystemToolSupport.ObjectJson(current),
                 ["default"] = SystemToolSupport.ObjectJson(defaultPipeline),
                 ["qualityOverride"] = SystemToolSupport.ObjectJson(qualityPipeline),
-                ["qualityLevel"] = QualitySettings.GetQualityLevel(),
-                ["qualityName"] = QualitySettings.names.ElementAtOrDefault(QualitySettings.GetQualityLevel()),
+                ["qualityLevel"] = activeQuality,
+                ["qualityName"] = qualityNames.ElementAtOrDefault(activeQuality),
+                ["qualityLevels"] = qualityLevels,
                 ["colorSpace"] = QualitySettings.activeColorSpace.ToString(),
                 ["graphicsDeviceType"] = SystemInfo.graphicsDeviceType.ToString(),
                 ["graphicsDeviceName"] = SystemInfo.graphicsDeviceName,
@@ -147,16 +256,26 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         public ToolResult Execute(JObject args)
         {
             var contains = (string)args["contains"] ?? string.Empty;
-            var paths = AssetDatabase.FindAssets("t:Shader").Select(AssetDatabase.GUIDToAssetPath)
-                .Where(path => path.IndexOf(contains, StringComparison.OrdinalIgnoreCase) >= 0)
-                .OrderBy(path => path, StringComparer.Ordinal).ToArray();
-            int offset = Math.Min((int?)args["offset"] ?? 0, paths.Length);
+            var shaders = AssetDatabase.FindAssets("t:Shader")
+                .Select(AssetDatabase.GUIDToAssetPath)
+                .Select(path => new { Path = path, Shader = AssetDatabase.LoadAssetAtPath<Shader>(path) })
+                .Where(entry => entry.Shader != null)
+                .Where(entry => entry.Shader.name.IndexOf(contains, StringComparison.OrdinalIgnoreCase) >= 0
+                    || entry.Path.IndexOf(contains, StringComparison.OrdinalIgnoreCase) >= 0)
+                .OrderBy(entry => entry.Path, StringComparer.Ordinal)
+                .ToArray();
+            int offset = Math.Min((int?)args["offset"] ?? 0, shaders.Length);
             int limit = (int?)args["limit"] ?? 200;
-            var items = new JArray(paths.Skip(offset).Take(limit).Select(path => SystemToolSupport.ObjectJson(AssetDatabase.LoadAssetAtPath<Shader>(path))));
-            return ToolResult.Ok($"{paths.Length} shader(s)", new JObject
+            var items = new JArray(shaders.Skip(offset).Take(limit).Select(entry =>
+            {
+                var item = SystemToolSupport.ObjectJson(entry.Shader);
+                item["supported"] = entry.Shader.isSupported;
+                return item;
+            }));
+            return ToolResult.Ok($"{shaders.Length} shader(s)", new JObject
             {
                 ["shaders"] = items, ["offset"] = offset, ["count"] = items.Count,
-                ["total"] = paths.Length, ["truncated"] = offset + items.Count < paths.Length,
+                ["total"] = shaders.Length, ["truncated"] = offset + items.Count < shaders.Length,
             });
         }
     }
@@ -179,36 +298,7 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             var properties = new JArray();
             var shader = material.shader;
             for (int index = 0; shader != null && index < shader.GetPropertyCount(); index++)
-            {
-                var name = shader.GetPropertyName(index);
-                var type = shader.GetPropertyType(index);
-                JToken value;
-                switch (type)
-                {
-                    case ShaderPropertyType.Color:
-                        var color = material.GetColor(name);
-                        value = new JObject { ["r"] = color.r, ["g"] = color.g, ["b"] = color.b, ["a"] = color.a };
-                        break;
-                    case ShaderPropertyType.Vector:
-                        var vector = material.GetVector(name);
-                        value = new JArray(vector.x, vector.y, vector.z, vector.w);
-                        break;
-                    case ShaderPropertyType.Texture:
-                        value = SystemToolSupport.ObjectJson(material.GetTexture(name));
-                        break;
-                    case ShaderPropertyType.Int:
-                        value = material.GetInteger(name);
-                        break;
-                    default:
-                        value = material.GetFloat(name);
-                        break;
-                }
-                properties.Add(new JObject
-                {
-                    ["name"] = name, ["description"] = shader.GetPropertyDescription(index),
-                    ["type"] = type.ToString(), ["value"] = value,
-                });
-            }
+                properties.Add(SystemToolSupport.MaterialPropertyJson(material, shader, index));
             return ToolResult.Ok($"material '{material.name}'", new JObject
             {
                 ["material"] = SystemToolSupport.ObjectJson(material),
@@ -224,7 +314,7 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
     public sealed class CreateMaterialTool : IMcpTool
     {
         public string Name => "create_material";
-        public string Description => "Creates a dirty Material asset for an exact Shader name without saving unrelated assets.";
+        public string Description => "Creates and persists a Material asset for an exact Shader name without saving unrelated assets.";
         public JObject InputSchema => new JObject
         {
             ["type"] = "object", ["properties"] = new JObject
@@ -247,9 +337,15 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
                 SystemToolSupport.EnsureFolder(path);
                 var material = new Material(shader) { name = Path.GetFileNameWithoutExtension(path) };
                 AssetDatabase.CreateAsset(material, path);
-                Undo.RegisterCreatedObjectUndo(material, "Create Material");
                 EditorUtility.SetDirty(material);
-                return ToolResult.Ok($"created material '{path}'", new JObject { ["material"] = SystemToolSupport.ObjectJson(material), ["savedAssets"] = false });
+                AssetDatabase.SaveAssetIfDirty(material);
+                return ToolResult.Ok($"created material '{path}'", new JObject
+                {
+                    ["material"] = SystemToolSupport.ObjectJson(material),
+                    ["assetCreated"] = true,
+                    ["savedAssets"] = true,
+                    ["undoRegistered"] = false,
+                });
             }
             catch (Exception exception) { return ToolResult.Error("CREATE_MATERIAL_FAILED", exception.Message); }
         }
@@ -258,13 +354,13 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
     public sealed class SetMaterialPropertyTypedTool : IMcpTool
     {
         public string Name => "set_material_property_typed";
-        public string Description => "Sets one Shader property on a Material asset with Undo and type validation; does not save the asset.";
+        public string Description => "Sets one Shader property on a Material asset under Assets/ with Undo and type validation; does not save the asset.";
         public JObject InputSchema => new JObject
         {
             ["type"] = "object", ["properties"] = new JObject
             {
-                ["assetPath"] = new JObject { ["type"] = "string" },
-                ["propertyName"] = new JObject { ["type"] = "string" },
+                ["assetPath"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["propertyName"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
                 ["value"] = new JObject(),
             },
             ["required"] = new JArray { "assetPath", "propertyName", "value" }, ["additionalProperties"] = false,
@@ -272,38 +368,87 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         public bool IsWrite => true;
         public ToolResult Execute(JObject args)
         {
-            var material = AssetDatabase.LoadAssetAtPath<Material>((string)args["assetPath"]);
+            if (!SystemToolSupport.TryAssetPath((string)args["assetPath"], ".mat", out var assetPath, out var pathError))
+                return ToolResult.Error("BAD_ASSET_PATH", pathError);
+            var material = AssetDatabase.LoadAssetAtPath<Material>(assetPath);
             if (material == null) return ToolResult.Error("MATERIAL_NOT_FOUND", "Material asset not found");
             var name = (string)args["propertyName"];
             if (!material.HasProperty(name)) return ToolResult.Error("PROPERTY_NOT_FOUND", name);
             int index = material.shader.FindPropertyIndex(name);
             var type = material.shader.GetPropertyType(index);
+            var token = args["value"];
+            Color color = default;
+            Vector4 vector = default;
+            Texture texture = null;
+            float number = 0f;
+            int integer = 0;
+            string validationError = null;
             try
             {
+                switch (type)
+                {
+                    case ShaderPropertyType.Color:
+                        if (!SystemToolSupport.TryColor(token, out color, out validationError))
+                            return ToolResult.Error("BAD_VALUE", validationError);
+                        break;
+                    case ShaderPropertyType.Vector:
+                        var array = token as JArray;
+                        if (array == null || array.Count != 4
+                            || !SystemToolSupport.TryFiniteNumber(array[0], out var x)
+                            || !SystemToolSupport.TryFiniteNumber(array[1], out var y)
+                            || !SystemToolSupport.TryFiniteNumber(array[2], out var z)
+                            || !SystemToolSupport.TryFiniteNumber(array[3], out var w))
+                            return ToolResult.Error("BAD_VALUE", "Vector requires exactly four finite numbers: [x,y,z,w]");
+                        vector = new Vector4(x, y, z, w);
+                        break;
+                    case ShaderPropertyType.Texture:
+                        if (token.Type != JTokenType.Null)
+                        {
+                            var reference = ToolTargetRef.FromJson(token);
+                            texture = ToolTargetResolver.Resolve(reference, out var resolveError) as Texture;
+                            if (texture == null && token.Type == JTokenType.String)
+                                texture = AssetDatabase.LoadAssetAtPath<Texture>((string)token);
+                            if (texture == null) return ToolResult.Error("BAD_VALUE", resolveError ?? "Texture not found");
+                        }
+                        break;
+                    case ShaderPropertyType.Int:
+                        if (token.Type != JTokenType.Integer)
+                            return ToolResult.Error("BAD_VALUE", "Integer property requires an integer JSON value");
+                        integer = (int)token;
+                        break;
+                    case ShaderPropertyType.Range:
+                        if (!SystemToolSupport.TryFiniteNumber(token, out number))
+                            return ToolResult.Error("BAD_VALUE", "Range property requires a finite number");
+                        var limits = material.shader.GetPropertyRangeLimits(index);
+                        if (number < limits.x || number > limits.y)
+                            return ToolResult.Error("BAD_VALUE", $"Range property requires a value between {limits.x} and {limits.y}");
+                        break;
+                    default:
+                        if (!SystemToolSupport.TryFiniteNumber(token, out number))
+                            return ToolResult.Error("BAD_VALUE", "Float property requires a finite number");
+                        break;
+                }
+
                 using (var mutation = new MutationScope("Set Material Property"))
                 {
                     mutation.Record(material);
                     switch (type)
-                {
-                    case ShaderPropertyType.Color: material.SetColor(name, JsonHelpers.ParseColor(args["value"])); break;
-                    case ShaderPropertyType.Vector:
-                        var array = args["value"] as JArray;
-                        if (array == null || array.Count < 4) throw new InvalidOperationException("Vector requires [x,y,z,w]");
-                        material.SetVector(name, new Vector4((float)array[0], (float)array[1], (float)array[2], (float)array[3])); break;
-                    case ShaderPropertyType.Texture:
-                        var reference = ToolTargetRef.FromJson(args["value"]);
-                        var texture = ToolTargetResolver.Resolve(reference, out var resolveError) as Texture;
-                        if (texture == null && args["value"].Type == JTokenType.String)
-                            texture = AssetDatabase.LoadAssetAtPath<Texture>((string)args["value"]);
-                        if (texture == null && args["value"].Type != JTokenType.Null) throw new InvalidOperationException(resolveError ?? "Texture not found");
-                        material.SetTexture(name, texture); break;
-                    case ShaderPropertyType.Int: material.SetInteger(name, (int)args["value"]); break;
-                    default: material.SetFloat(name, (float)args["value"]); break;
+                    {
+                        case ShaderPropertyType.Color: material.SetColor(name, color); break;
+                        case ShaderPropertyType.Vector: material.SetVector(name, vector); break;
+                        case ShaderPropertyType.Texture: material.SetTexture(name, texture); break;
+                        case ShaderPropertyType.Int: material.SetInteger(name, integer); break;
+                        default: material.SetFloat(name, number); break;
                     }
                     mutation.Complete();
                 }
-                EditorUtility.SetDirty(material);
-                return ToolResult.Ok($"set {name}", new JObject { ["material"] = SystemToolSupport.ObjectJson(material), ["propertyType"] = type.ToString(), ["savedAssets"] = false });
+                return ToolResult.Ok($"set {name}", new JObject
+                {
+                    ["material"] = SystemToolSupport.ObjectJson(material),
+                    ["propertyType"] = type.ToString(),
+                    ["effectiveValue"] = SystemToolSupport.MaterialPropertyValue(material, material.shader, index),
+                    ["savedAssets"] = false,
+                });
             }
             catch (Exception exception) { return ToolResult.Error("BAD_VALUE", exception.Message); }
         }
@@ -312,32 +457,101 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
     public sealed class GetLightingContextTool : IMcpTool
     {
         public string Name => "get_lighting_context";
-        public string Description => "Reports RenderSettings, loaded lights, reflection probes, light probe groups and current bake state.";
+        public string Description => "Reports active-scene RenderSettings plus loaded scene lights, reflection probes, light probe groups, and bake state.";
         public JObject InputSchema => SystemToolSupport.EmptySchema();
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
-            var lights = UnityEngine.Object.FindObjectsByType<Light>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-            var reflectionProbes = UnityEngine.Object.FindObjectsByType<ReflectionProbe>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-            var lightProbeGroups = UnityEngine.Object.FindObjectsByType<LightProbeGroup>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var activeScene = SceneManager.GetActiveScene();
+            var lights = UnityEngine.Object.FindObjectsByType<Light>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+                .Where(light => light.gameObject.scene.IsValid() && light.gameObject.scene.isLoaded)
+                .OrderBy(light => (int)light.gameObject.scene.handle)
+                .ThenBy(light => light.name, StringComparer.Ordinal)
+                .ToArray();
+            var reflectionProbes = UnityEngine.Object.FindObjectsByType<ReflectionProbe>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+                .Where(probe => probe.gameObject.scene.IsValid() && probe.gameObject.scene.isLoaded)
+                .OrderBy(probe => (int)probe.gameObject.scene.handle)
+                .ThenBy(probe => probe.name, StringComparer.Ordinal)
+                .ToArray();
+            var lightProbeGroups = UnityEngine.Object.FindObjectsByType<LightProbeGroup>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+                .Where(group => group.gameObject.scene.IsValid() && group.gameObject.scene.isLoaded)
+                .OrderBy(group => (int)group.gameObject.scene.handle)
+                .ThenBy(group => group.name, StringComparer.Ordinal)
+                .ToArray();
+
             return ToolResult.Ok($"{lights.Length} light(s)", new JObject
             {
-                ["ambientMode"] = RenderSettings.ambientMode.ToString(),
-                ["ambientIntensity"] = RenderSettings.ambientIntensity,
-                ["fog"] = RenderSettings.fog,
-                ["fogMode"] = RenderSettings.fogMode.ToString(),
+                ["activeScene"] = new JObject
+                {
+                    ["name"] = activeScene.name,
+                    ["path"] = activeScene.path,
+                    ["handle"] = (int)activeScene.handle,
+                    ["dirty"] = activeScene.isDirty,
+                },
+                ["ambient"] = new JObject
+                {
+                    ["mode"] = RenderSettings.ambientMode.ToString(),
+                    ["intensity"] = RenderSettings.ambientIntensity,
+                    ["light"] = new JObject { ["r"] = RenderSettings.ambientLight.r, ["g"] = RenderSettings.ambientLight.g, ["b"] = RenderSettings.ambientLight.b, ["a"] = RenderSettings.ambientLight.a },
+                    ["skyColor"] = new JObject { ["r"] = RenderSettings.ambientSkyColor.r, ["g"] = RenderSettings.ambientSkyColor.g, ["b"] = RenderSettings.ambientSkyColor.b, ["a"] = RenderSettings.ambientSkyColor.a },
+                    ["equatorColor"] = new JObject { ["r"] = RenderSettings.ambientEquatorColor.r, ["g"] = RenderSettings.ambientEquatorColor.g, ["b"] = RenderSettings.ambientEquatorColor.b, ["a"] = RenderSettings.ambientEquatorColor.a },
+                    ["groundColor"] = new JObject { ["r"] = RenderSettings.ambientGroundColor.r, ["g"] = RenderSettings.ambientGroundColor.g, ["b"] = RenderSettings.ambientGroundColor.b, ["a"] = RenderSettings.ambientGroundColor.a },
+                },
+                ["fog"] = new JObject
+                {
+                    ["enabled"] = RenderSettings.fog,
+                    ["mode"] = RenderSettings.fogMode.ToString(),
+                    ["color"] = new JObject { ["r"] = RenderSettings.fogColor.r, ["g"] = RenderSettings.fogColor.g, ["b"] = RenderSettings.fogColor.b, ["a"] = RenderSettings.fogColor.a },
+                    ["density"] = RenderSettings.fogDensity,
+                    ["startDistance"] = RenderSettings.fogStartDistance,
+                    ["endDistance"] = RenderSettings.fogEndDistance,
+                },
                 ["skybox"] = SystemToolSupport.ObjectJson(RenderSettings.skybox),
                 ["sun"] = SystemToolSupport.ObjectJson(RenderSettings.sun),
+                ["reflectionIntensity"] = RenderSettings.reflectionIntensity,
                 ["lightmappingRunning"] = Lightmapping.isRunning,
+                ["lightCount"] = lights.Length,
+                ["reflectionProbeCount"] = reflectionProbes.Length,
+                ["lightProbeGroupCount"] = lightProbeGroups.Length,
                 ["lights"] = new JArray(lights.Select(light => new JObject
                 {
-                    ["target"] = ToolTargetRef.Capture(light)?.ToJson(), ["type"] = light.type.ToString(),
-                    ["intensity"] = light.intensity, ["range"] = light.range, ["shadows"] = light.shadows.ToString(),
+                    ["target"] = ToolTargetRef.Capture(light)?.ToJson(),
+                    ["name"] = light.name,
+                    ["scene"] = light.gameObject.scene.name,
+                    ["enabled"] = light.enabled,
+                    ["activeInHierarchy"] = light.gameObject.activeInHierarchy,
+                    ["type"] = light.type.ToString(),
+                    ["color"] = new JObject { ["r"] = light.color.r, ["g"] = light.color.g, ["b"] = light.color.b, ["a"] = light.color.a },
+                    ["intensity"] = light.intensity,
+                    ["range"] = light.range,
+                    ["spotAngle"] = light.spotAngle,
+                    ["innerSpotAngle"] = light.innerSpotAngle,
+                    ["areaSize"] = SystemToolSupport.Vec2(light.areaSize),
+                    ["shadows"] = light.shadows.ToString(),
+                    ["mode"] = light.lightmapBakeType.ToString(),
+                    ["cullingMask"] = light.cullingMask,
+                    ["position"] = SystemToolSupport.Vec3(light.transform.position),
+                    ["rotationEuler"] = SystemToolSupport.Vec3(light.transform.eulerAngles),
                 })),
-                ["reflectionProbes"] = new JArray(reflectionProbes.Select(SystemToolSupport.ObjectJson)),
+                ["reflectionProbes"] = new JArray(reflectionProbes.Select(probe => new JObject
+                {
+                    ["target"] = ToolTargetRef.Capture(probe)?.ToJson(),
+                    ["name"] = probe.name,
+                    ["scene"] = probe.gameObject.scene.name,
+                    ["enabled"] = probe.enabled,
+                    ["mode"] = probe.mode.ToString(),
+                    ["refreshMode"] = probe.refreshMode.ToString(),
+                    ["resolution"] = probe.resolution,
+                    ["size"] = SystemToolSupport.Vec3(probe.size),
+                    ["blendDistance"] = probe.blendDistance,
+                })),
                 ["lightProbeGroups"] = new JArray(lightProbeGroups.Select(group => new JObject
                 {
-                    ["target"] = ToolTargetRef.Capture(group)?.ToJson(), ["probeCount"] = group.probePositions?.Length ?? 0,
+                    ["target"] = ToolTargetRef.Capture(group)?.ToJson(),
+                    ["name"] = group.name,
+                    ["scene"] = group.gameObject.scene.name,
+                    ["enabled"] = group.enabled,
+                    ["probeCount"] = group.probePositions?.Length ?? 0,
                 })),
             });
         }
@@ -942,40 +1156,73 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
     public sealed class CreateAnimationClipAssetTool : IMcpTool
     {
         public string Name => "create_animation_clip_asset";
-        public string Description => "Creates an empty AnimationClip asset with frame rate and wrap settings; no global save.";
+        public string Description => "Creates an empty standalone .anim asset under Assets/ with validated frame rate and WrapMode; no global save.";
         public JObject InputSchema => new JObject
         {
             ["type"] = "object", ["properties"] = new JObject
             {
-                ["assetPath"] = new JObject { ["type"] = "string" }, ["frameRate"] = new JObject { ["type"] = "number", ["minimum"] = 1, ["maximum"] = 240, ["default"] = 60 },
-                ["wrapMode"] = new JObject { ["type"] = "string", ["default"] = "Default" },
+                ["assetPath"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["frameRate"] = new JObject { ["type"] = "number", ["minimum"] = 1, ["maximum"] = 240, ["default"] = 60 },
+                ["wrapMode"] = new JObject
+                {
+                    ["type"] = "string",
+                    ["enum"] = new JArray { "Default", "Once", "Loop", "PingPong", "ClampForever" },
+                    ["default"] = "Default",
+                },
             }, ["required"] = new JArray { "assetPath" }, ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public ToolDescriptor Descriptor => AnimationToolContracts.AssetWriteDescriptor(Name);
         public ToolResult Execute(JObject args)
         {
-            if (!SystemToolSupport.TryAssetPath((string)args["assetPath"], ".anim", out var path, out var error)) return ToolResult.Error("BAD_ARGS", error);
+            if (!SystemToolSupport.TryAssetPath((string)args["assetPath"], ".anim", out var path, out var error))
+                return ToolResult.Error("BAD_ASSET_PATH", error);
             if (AssetDatabase.LoadMainAssetAtPath(path) != null) return ToolResult.Error("ASSET_EXISTS", path);
-            if (!Enum.TryParse((string)args["wrapMode"] ?? "Default", true, out WrapMode wrapMode)) return ToolResult.Error("BAD_WRAP_MODE", (string)args["wrapMode"]);
+
+            var frameRateToken = args["frameRate"];
+            var frameRate = frameRateToken == null ? 60d : (double)frameRateToken;
+            if (double.IsNaN(frameRate) || double.IsInfinity(frameRate) || frameRate < 1d || frameRate > 240d)
+                return ToolResult.Error("BAD_FRAME_RATE", "frameRate must be finite and between 1 and 240");
+            if (!Enum.TryParse((string)args["wrapMode"] ?? "Default", true, out WrapMode wrapMode)
+                || !Enum.IsDefined(typeof(WrapMode), wrapMode)
+                || wrapMode == WrapMode.Clamp)
+                return ToolResult.Error("BAD_WRAP_MODE", (string)args["wrapMode"] ?? "Default");
+
             SystemToolSupport.EnsureFolder(path);
-            var clip = new AnimationClip { name = Path.GetFileNameWithoutExtension(path), frameRate = (float?)args["frameRate"] ?? 60f, wrapMode = wrapMode };
-            AssetDatabase.CreateAsset(clip, path);
-            Undo.RegisterCreatedObjectUndo(clip, "Create AnimationClip");
-            EditorUtility.SetDirty(clip);
-            return ToolResult.Ok($"created AnimationClip '{path}'", new JObject { ["clip"] = SystemToolSupport.ObjectJson(clip), ["savedAssets"] = false });
+            var clip = new AnimationClip
+            {
+                name = Path.GetFileNameWithoutExtension(path),
+                frameRate = (float)frameRate,
+                wrapMode = wrapMode,
+            };
+            try { AssetDatabase.CreateAsset(clip, path); }
+            catch (Exception exception)
+            {
+                UnityEngine.Object.DestroyImmediate(clip);
+                return ToolResult.Error("CREATE_ASSET_FAILED", exception.Message);
+            }
+            return ToolResult.Ok($"created AnimationClip '{path}'", new JObject
+            {
+                ["clip"] = SystemToolSupport.ObjectJson(clip),
+                ["assetCreated"] = true,
+                ["savedAssets"] = false,
+                ["undoRegistered"] = false,
+            });
         }
     }
 
     public sealed class SetAnimationFloatCurveTool : IMcpTool
     {
         public string Name => "set_animation_float_curve";
-        public string Description => "Adds, replaces or removes one AnimationClip float curve via AnimationUtility.SetEditorCurve with Undo.";
+        public string Description => "Adds, replaces or removes one float curve on a standalone .anim asset after full key preflight, with Undo.";
         public JObject InputSchema => new JObject
         {
             ["type"] = "object", ["properties"] = new JObject
             {
-                ["clipPath"] = new JObject { ["type"] = "string" }, ["relativePath"] = new JObject { ["type"] = "string", ["default"] = "" },
-                ["componentType"] = new JObject { ["type"] = "string" }, ["propertyName"] = new JObject { ["type"] = "string" },
+                ["clipPath"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["relativePath"] = new JObject { ["type"] = "string", ["default"] = "" },
+                ["componentType"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["propertyName"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
                 ["keys"] = new JObject
                 {
                     ["type"] = "array", ["maxItems"] = 10000,
@@ -983,60 +1230,147 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
                     {
                         ["type"] = "object", ["properties"] = new JObject
                         {
-                            ["time"] = new JObject { ["type"] = "number" }, ["value"] = new JObject { ["type"] = "number" },
-                            ["inTangent"] = new JObject { ["type"] = "number", ["default"] = 0 }, ["outTangent"] = new JObject { ["type"] = "number", ["default"] = 0 },
+                            ["time"] = new JObject { ["type"] = "number" },
+                            ["value"] = new JObject { ["type"] = "number" },
+                            ["inTangent"] = new JObject { ["type"] = "number", ["default"] = 0 },
+                            ["outTangent"] = new JObject { ["type"] = "number", ["default"] = 0 },
                         }, ["required"] = new JArray { "time", "value" }, ["additionalProperties"] = false,
                     },
                 },
             }, ["required"] = new JArray { "clipPath", "componentType", "propertyName", "keys" }, ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public ToolDescriptor Descriptor => AnimationToolContracts.AssetWriteDescriptor(Name, true);
         public ToolResult Execute(JObject args)
         {
-            var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>((string)args["clipPath"]);
-            if (clip == null) return ToolResult.Error("CLIP_NOT_FOUND", (string)args["clipPath"]);
+            if (!SystemToolSupport.TryAssetPath((string)args["clipPath"], ".anim", out var clipPath, out var pathError))
+                return ToolResult.Error("BAD_ASSET_PATH", pathError);
+            var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(clipPath);
+            if (clip == null) return ToolResult.Error("CLIP_NOT_FOUND", clipPath);
+            if (AssetDatabase.LoadMainAssetAtPath(clipPath) != clip)
+                return ToolResult.Error("CLIP_NOT_EDITABLE", "clip must be the main asset of a standalone .anim file");
+
             var type = ComponentTypeInspector.ResolveType((string)args["componentType"]);
-            if (type == null || !typeof(Component).IsAssignableFrom(type)) return ToolResult.Error("COMPONENT_TYPE_NOT_FOUND", (string)args["componentType"]);
+            if (type == null || !typeof(Component).IsAssignableFrom(type))
+                return ToolResult.Error("COMPONENT_TYPE_NOT_FOUND", (string)args["componentType"]);
+            var propertyName = ((string)args["propertyName"] ?? string.Empty).Trim();
+            if (propertyName.Length == 0) return ToolResult.Error("BAD_ARGS", "propertyName is required");
+
             var keyTokens = (JArray)args["keys"];
-            AnimationCurve curve = null;
-            if (keyTokens.Count > 0)
+            var keys = new List<Keyframe>(keyTokens.Count);
+            for (var index = 0; index < keyTokens.Count; index++)
             {
-                var keys = keyTokens.Select(token => new Keyframe((float)token["time"], (float)token["value"], (float?)token["inTangent"] ?? 0f, (float?)token["outTangent"] ?? 0f)).ToArray();
-                curve = new AnimationCurve(keys);
+                var token = keyTokens[index];
+                if (!TryFinite(token["time"], out var time)
+                    || !TryFinite(token["value"], out var value)
+                    || !TryFinite(token["inTangent"], out var inTangent, 0f)
+                    || !TryFinite(token["outTangent"], out var outTangent, 0f))
+                    return ToolResult.Error("BAD_KEYFRAME", $"keys[{index}] values must be finite numbers");
+                keys.Add(new Keyframe(time, value, inTangent, outTangent));
             }
-            Undo.RecordObject(clip, "Set Animation Curve");
-            AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve((string)args["relativePath"] ?? string.Empty, type, (string)args["propertyName"]), curve);
-            EditorUtility.SetDirty(clip);
-            return ToolResult.Ok(curve == null ? "removed animation curve" : $"set {curve.length} key(s)", new JObject { ["clip"] = SystemToolSupport.ObjectJson(clip), ["savedAssets"] = false });
+
+            var binding = EditorCurveBinding.FloatCurve((string)args["relativePath"] ?? string.Empty, type, propertyName);
+            var curve = keys.Count == 0 ? null : new AnimationCurve(keys.OrderBy(key => key.time).ToArray());
+            using (var mutation = new MutationScope("Set Animation Float Curve"))
+            {
+                mutation.Record(clip, "Set Animation Float Curve");
+                AnimationUtility.SetEditorCurve(clip, binding, curve);
+                mutation.Complete();
+            }
+            return ToolResult.Ok(curve == null ? "removed animation curve" : $"set {curve.length} key(s)", new JObject
+            {
+                ["clip"] = SystemToolSupport.ObjectJson(clip),
+                ["binding"] = new JObject
+                {
+                    ["relativePath"] = binding.path,
+                    ["componentType"] = binding.type.FullName,
+                    ["propertyName"] = binding.propertyName,
+                },
+                ["keyCount"] = curve != null ? curve.length : 0,
+                ["removed"] = curve == null,
+                ["savedAssets"] = false,
+            });
+        }
+
+        private static bool TryFinite(JToken token, out float value, float fallback = 0f)
+        {
+            value = fallback;
+            if (token == null) return true;
+            if (token.Type != JTokenType.Integer && token.Type != JTokenType.Float) return false;
+            var number = (double)token;
+            if (double.IsNaN(number) || double.IsInfinity(number) || number < -float.MaxValue || number > float.MaxValue) return false;
+            value = (float)number;
+            return true;
         }
     }
 
     public sealed class CreateAvatarMaskTool : IMcpTool
     {
+        private static readonly string[] BodyPartNames = Enum.GetValues(typeof(AvatarMaskBodyPart))
+            .Cast<AvatarMaskBodyPart>()
+            .Where(part => part != AvatarMaskBodyPart.LastBodyPart)
+            .Select(part => part.ToString())
+            .ToArray();
+
         public string Name => "create_avatar_mask";
-        public string Description => "Creates an AvatarMask asset and optionally configures humanoid body-part activation.";
+        public string Description => "Creates an AvatarMask asset under Assets/ and optionally activates only the listed humanoid body parts; omitted means all parts active.";
         public JObject InputSchema => new JObject
         {
             ["type"] = "object", ["properties"] = new JObject
             {
-                ["assetPath"] = new JObject { ["type"] = "string" },
-                ["activeBodyParts"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" }, ["maxItems"] = 32 },
+                ["assetPath"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["activeBodyParts"] = new JObject
+                {
+                    ["type"] = "array",
+                    ["items"] = new JObject { ["type"] = "string", ["enum"] = new JArray(BodyPartNames) },
+                    ["maxItems"] = BodyPartNames.Length,
+                },
             }, ["required"] = new JArray { "assetPath" }, ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public ToolDescriptor Descriptor => AnimationToolContracts.AssetWriteDescriptor(Name);
         public ToolResult Execute(JObject args)
         {
-            if (!SystemToolSupport.TryAssetPath((string)args["assetPath"], ".mask", out var path, out var error)) return ToolResult.Error("BAD_ARGS", error);
+            if (!SystemToolSupport.TryAssetPath((string)args["assetPath"], ".mask", out var path, out var error))
+                return ToolResult.Error("BAD_ASSET_PATH", error);
             if (AssetDatabase.LoadMainAssetAtPath(path) != null) return ToolResult.Error("ASSET_EXISTS", path);
-            var active = new HashSet<string>(((JArray)args["activeBodyParts"] ?? new JArray()).Values<string>(), StringComparer.OrdinalIgnoreCase);
+
+            var requested = args["activeBodyParts"] as JArray;
+            var active = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (requested != null)
+            {
+                foreach (var token in requested)
+                {
+                    var name = (string)token;
+                    if (string.IsNullOrEmpty(name) || !BodyPartNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        return ToolResult.Error("BAD_BODY_PART", name ?? "null");
+                    active.Add(name);
+                }
+            }
+
             var mask = new AvatarMask { name = Path.GetFileNameWithoutExtension(path) };
             foreach (AvatarMaskBodyPart part in Enum.GetValues(typeof(AvatarMaskBodyPart)))
-                if (part != AvatarMaskBodyPart.LastBodyPart) mask.SetHumanoidBodyPartActive(part, active.Count == 0 || active.Contains(part.ToString()));
+                if (part != AvatarMaskBodyPart.LastBodyPart)
+                    mask.SetHumanoidBodyPartActive(part, requested == null || active.Contains(part.ToString()));
             SystemToolSupport.EnsureFolder(path);
-            AssetDatabase.CreateAsset(mask, path);
-            Undo.RegisterCreatedObjectUndo(mask, "Create AvatarMask");
-            EditorUtility.SetDirty(mask);
-            return ToolResult.Ok($"created AvatarMask '{path}'", new JObject { ["avatarMask"] = SystemToolSupport.ObjectJson(mask), ["savedAssets"] = false });
+            try { AssetDatabase.CreateAsset(mask, path); }
+            catch (Exception exception)
+            {
+                UnityEngine.Object.DestroyImmediate(mask);
+                return ToolResult.Error("CREATE_ASSET_FAILED", exception.Message);
+            }
+
+            var effective = new JArray();
+            foreach (AvatarMaskBodyPart part in Enum.GetValues(typeof(AvatarMaskBodyPart)))
+                if (part != AvatarMaskBodyPart.LastBodyPart && mask.GetHumanoidBodyPartActive(part)) effective.Add(part.ToString());
+            return ToolResult.Ok($"created AvatarMask '{path}'", new JObject
+            {
+                ["avatarMask"] = SystemToolSupport.ObjectJson(mask),
+                ["activeBodyParts"] = effective,
+                ["assetCreated"] = true,
+                ["savedAssets"] = false,
+                ["undoRegistered"] = false,
+            });
         }
     }
 

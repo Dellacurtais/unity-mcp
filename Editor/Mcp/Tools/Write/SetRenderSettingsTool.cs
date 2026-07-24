@@ -7,11 +7,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
     {
         public string Name => "set_render_settings";
         public string Description =>
-            "Tweaks scene-level rendering: ambient lighting (mode + colors + intensity), fog (on/off, color, density, distances, mode), skybox material (by GUID/path), reflection intensity. Pass only the keys you want changed. Note: RenderSettings is static; per-tweak undo is best-effort — the scene is marked dirty so the change persists with the scene save.";
+            "Atomically validates and updates the active scene's RenderSettings with Undo when Unity exposes the backing object. Trilight uses sky/equator/ground colors; Flat uses ambientLight. Exponential fog uses density, while Linear fog uses start/end distances.";
 
         public JObject InputSchema => new JObject
         {
             ["type"] = "object",
+            ["minProperties"] = 1,
             ["properties"] = new JObject
             {
                 ["ambientMode"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Skybox", "Trilight", "Flat", "Custom" } },
@@ -19,15 +20,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
                 ["ambientSkyColor"] = SchemaHelpers.ColorSchema,
                 ["ambientEquatorColor"] = SchemaHelpers.ColorSchema,
                 ["ambientGroundColor"] = SchemaHelpers.ColorSchema,
-                ["ambientIntensity"] = new JObject { ["type"] = "number" },
+                ["ambientIntensity"] = new JObject { ["type"] = "number", ["minimum"] = 0.0 },
                 ["fog"] = new JObject { ["type"] = "boolean" },
                 ["fogColor"] = SchemaHelpers.ColorSchema,
-                ["fogDensity"] = new JObject { ["type"] = "number" },
-                ["fogStartDistance"] = new JObject { ["type"] = "number" },
-                ["fogEndDistance"] = new JObject { ["type"] = "number" },
+                ["fogDensity"] = new JObject { ["type"] = "number", ["minimum"] = 0.0, ["description"] = "Used by Exponential and ExponentialSquared fog." },
+                ["fogStartDistance"] = new JObject { ["type"] = "number", ["minimum"] = 0.0, ["description"] = "Linear fog start distance." },
+                ["fogEndDistance"] = new JObject { ["type"] = "number", ["minimum"] = 0.0, ["description"] = "Linear fog end distance; must be >= start distance." },
                 ["fogMode"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "Linear", "Exponential", "ExponentialSquared" } },
-                ["skyboxGuid"] = new JObject { ["type"] = "string" },
-                ["reflectionIntensity"] = new JObject { ["type"] = "number" },
+                ["skybox"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["description"] = "Skybox Material path under Assets/ or GUID." },
+                ["skyboxGuid"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["description"] = "Legacy alias for a skybox Material GUID." },
+                ["reflectionIntensity"] = new JObject { ["type"] = "number", ["minimum"] = 0.0 },
             },
             ["additionalProperties"] = false,
         };
@@ -36,9 +38,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
 
         public ToolResult Execute(JObject args)
         {
-            var r = RenderSettingsEditor.Apply(args);
-            if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary);
+            var result = RenderSettingsEditor.Apply(args);
+            if (!result.Ok) return ToolResult.Error("OP_FAILED", result.Error);
+            return ToolResult.Ok(result.Summary, result.Data);
         }
     }
 }

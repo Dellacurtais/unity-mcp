@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -52,19 +51,12 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.URP
         private sealed class ValidateUrpSetupTool : IMcpTool
         {
             public string Name => "validate_urp_setup";
-            public string Description => "Validates URP package assets and active pipeline assignment.";
+            public string Description => "Validates local URP 17.x project assets plus current, default, and every quality-level pipeline assignment.";
             public JObject InputSchema => OptionalToolSupport.EmptySchema();
             public bool IsWrite => false;
-            public ToolResult Execute(JObject arguments)
-            {
-                var assets = OptionalAssetToolSupport.FindAssets(PipelineAssets);
-                var current = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
-                var issues = new JArray();
-                if (assets.Length == 0) issues.Add(new JObject { ["severity"] = "error", ["code"] = "NO_URP_PIPELINE_ASSET" });
-                if (current == null || current.GetType().FullName != PipelineAssets[0])
-                    issues.Add(new JObject { ["severity"] = "warning", ["code"] = "URP_NOT_CURRENT_PIPELINE", ["current"] = current != null ? current.GetType().FullName : "BuiltIn" });
-                return ToolResult.Ok($"{issues.Count} URP issue(s)", new JObject { ["valid"] = !issues.Any(token => (string)token["severity"] == "error"), ["issues"] = issues });
-            }
+            public ToolResult Execute(JObject arguments) =>
+                OptionalAssetToolSupport.ValidateRenderPipelineSetup(
+                    "urp", PackageId, PipelineAssets, "NO_URP_PIPELINE_ASSET", "URP_NOT_CURRENT_PIPELINE");
         }
     }
 }

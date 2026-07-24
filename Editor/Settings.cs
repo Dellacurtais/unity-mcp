@@ -3,9 +3,10 @@ using UnityEditor;
 
 namespace Maicon.SceneAnalyzer.Editor
 {
-    /// EditorPrefs-backed settings shared between the window, the bootstrap, and the
-    /// HTTP server. Keys are namespaced so they survive across projects on the same
-    /// machine without collisions.
+    /// EditorPrefs-backed settings shared by every Unity Editor process for this user.
+    /// The MCP port, token, and sticky flag are intentionally global so a coordinated
+    /// handover keeps the client endpoint stable; per-project ownership lives in the
+    /// MCP server instance coordinator rather than in these preferences.
     public static class Settings
     {
         private const string KAutoStart = "Maicon.SceneAnalyzer.AutoStart";
@@ -50,13 +51,10 @@ namespace Maicon.SceneAnalyzer.Editor
             set => EditorPrefs.SetBool(KAutoStart, value);
         }
 
-        /// "Sticky" auto-start. Set automatically by Bootstrap.StartServer on a
-        /// successful start, cleared by Bootstrap.StopServer on an explicit user
-        /// stop. Once true, the server auto-restarts after every assembly reload
-        /// regardless of AutoStartServer — so the dev clicks Start ONCE and the
-        /// server survives Unity's domain reloads (which destroy the AppDomain).
-        /// AutoStartServer kept as separate concept for "always start on first
-        /// editor open ever".
+        /// "Sticky" auto-start shared across projects. Set by a successful manual
+        /// Start and cleared by an explicit Stop. The instance coordinator ensures
+        /// only the owning Unity process restarts after an assembly reload; other
+        /// open projects detect that owner instead of binding the same port.
         public static bool ServerStickyRunning
         {
             get => EditorPrefs.GetBool(KStickyRunning, false);

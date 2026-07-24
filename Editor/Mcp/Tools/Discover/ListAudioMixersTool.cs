@@ -16,7 +16,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
             {
                 ["nameContains"] = new JObject { ["type"] = "string" },
                 ["folder"] = new JObject { ["type"] = "string" },
-                ["limit"] = new JObject { ["type"] = "integer", ["default"] = 100 },
+                ["limit"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 500, ["default"] = 100 },
             },
             ["additionalProperties"] = false,
         };
@@ -24,7 +24,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
         public ToolResult Execute(JObject args)
         {
             var r = AudioAuthor.ListMixers(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            return r.Ok ? ToolResult.Ok(r.Summary, r.Data) : ToolResult.Error("OP_FAILED", r.Error);
         }
     }
 }
