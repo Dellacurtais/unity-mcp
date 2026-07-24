@@ -21,10 +21,21 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             ["additionalProperties"] = false,
         };
         public bool IsWrite => false;
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["target"] = SchemaHelpers.TargetRefSchema,
+                ["recursive"] = new JObject { ["type"] = "boolean" },
+                ["bounds"] = new JObject { ["type"] = "object" },
+            },
+            ["required"] = new JArray { "target", "recursive", "bounds" },
+        };
         public ToolResult Execute(JObject args)
         {
             var r = PhysicsAuthor.ComputeBounds(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            return r.Ok ? ToolResult.Ok(r.Summary, r.Data) : ToolResult.Error("OP_FAILED", r.Error);
         }
     }
 }

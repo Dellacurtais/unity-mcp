@@ -18,20 +18,38 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             ["properties"] = new JObject
             {
                 ["instanceId"] = new JObject { ["type"] = "integer" },
-                ["originOffset"] = new JObject(),
-                ["down"] = new JObject(),
-                ["maxDistance"] = new JObject { ["type"] = "number", ["default"] = 100 },
-                ["layerMask"] = new JObject(),
-                ["hitTriggers"] = new JObject(),
+                ["originOffset"] = SchemaHelpers.StrictVec3Schema,
+                ["down"] = SchemaHelpers.StrictVec3Schema,
+                ["maxDistance"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 100 },
+                ["layerMask"] = SchemaHelpers.LayerMaskSchema,
+                ["hitTriggers"] = SchemaHelpers.TriggerInteractionSchema,
             },
             ["required"] = new JArray { "instanceId" },
             ["additionalProperties"] = false,
         };
         public bool IsWrite => false;
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["target"] = SchemaHelpers.TargetRefSchema,
+                ["grounded"] = new JObject { ["type"] = "boolean" },
+                ["hit"] = new JObject
+                {
+                    ["oneOf"] = new JArray
+                    {
+                        new JObject { ["type"] = "object" },
+                        new JObject { ["type"] = "null" },
+                    },
+                },
+            },
+            ["required"] = new JArray { "target", "grounded", "hit" },
+        };
         public ToolResult Execute(JObject args)
         {
             var r = PhysicsAuthor.CheckGround(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            return r.Ok ? ToolResult.Ok(r.Summary, r.Data) : ToolResult.Error("OP_FAILED", r.Error);
         }
     }
 }

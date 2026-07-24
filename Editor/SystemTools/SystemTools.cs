@@ -112,6 +112,28 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             return !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
+        public static bool TryFiniteVector2(JToken token, out Vector2 value)
+        {
+            value = Vector2.zero;
+            if (token is JArray array && array.Count == 2
+                && TryFiniteNumber(array[0], out var x)
+                && TryFiniteNumber(array[1], out var y))
+            {
+                value = new Vector2(x, y);
+                return true;
+            }
+            if (token is JObject obj
+                && obj.Count == 2
+                && obj["x"] != null && obj["y"] != null
+                && TryFiniteNumber(obj["x"], out x)
+                && TryFiniteNumber(obj["y"], out y))
+            {
+                value = new Vector2(x, y);
+                return true;
+            }
+            return false;
+        }
+
         public static bool TryColor(JToken token, out Color color, out string error)
         {
             color = default;
@@ -673,53 +695,217 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
     public sealed class Physics2DQueryTool : IMcpTool
     {
         public string Name => "physics2d_query";
-        public string Description => "Runs a read-only Physics2D raycast, overlap point, overlap circle or overlap box query.";
+        public string Description => "Runs a read-only Physics2D raycast, overlap point, overlap circle or overlap box query and returns every matching collider in deterministic order.";
         public JObject InputSchema => new JObject
         {
-            ["type"] = "object", ["properties"] = new JObject
+            ["oneOf"] = new JArray
             {
-                ["kind"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "raycast", "overlap_point", "overlap_circle", "overlap_box" } },
-                ["origin"] = SchemaHelpers.Vec3Schema,
-                ["direction"] = SchemaHelpers.Vec3Schema,
-                ["distance"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 1000 },
-                ["size"] = SchemaHelpers.Vec3Schema,
-                ["radius"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 1 },
-                ["angle"] = new JObject { ["type"] = "number", ["default"] = 0 },
-                ["layerMask"] = new JObject { ["type"] = "integer", ["default"] = -1 },
+                Variant("raycast", new JObject
+                {
+                    ["direction"] = SchemaHelpers.StrictVec2Schema,
+                    ["distance"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 1000 },
+                }, "direction"),
+                Variant("overlap_point", new JObject()),
+                Variant("overlap_circle", new JObject
+                {
+                    ["radius"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                }, "radius"),
+                Variant("overlap_box", new JObject
+                {
+                    ["size"] = SchemaHelpers.NonNegativeVec2Schema,
+                    ["angle"] = new JObject { ["type"] = "number", ["default"] = 0 },
+                }, "size"),
             },
-            ["required"] = new JArray { "kind", "origin" }, ["additionalProperties"] = false,
         };
         public bool IsWrite => false;
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["kind"] = new JObject { ["type"] = "string" },
+                ["count"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["hits"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            },
+            ["required"] = new JArray { "kind", "count", "hits" },
+        };
+
         public ToolResult Execute(JObject args)
         {
-            var kind = (string)args["kind"];
-            var origin3 = JsonHelpers.ParseVector3(args["origin"]);
-            var origin = new Vector2(origin3.x, origin3.y);
-            int mask = (int?)args["layerMask"] ?? Physics2D.AllLayers;
+            var kind = ((string)args["kind"] ?? string.Empty).Trim().ToLowerInvariant();
+            if (!SystemToolSupport.TryFiniteVector2(args["origin"], out var origin))
+                return ToolResult.Error("INVALID_ARGUMENT", "origin must be a finite Vector2 [x,y] or {x,y}");
+            if (!TryLayerMask(args["layerMask"], out var mask, out var maskError))
+                return ToolResult.Error("INVALID_ARGUMENT", maskError);
+
+            var filter = ContactFilter2D.noFilter;
+            filter.SetLayerMask(mask);
+            filter.useTriggers = Physics2D.queriesHitTriggers;
+            Physics2D.SyncTransforms();
+
             var hits = new JArray();
-            if (kind == "raycast")
+            switch (kind)
             {
-                var direction3 = JsonHelpers.ParseVector3(args["direction"], Vector3.right);
-                var hit = Physics2D.Raycast(origin, new Vector2(direction3.x, direction3.y), (float?)args["distance"] ?? 1000f, mask);
-                if (hit.collider != null) hits.Add(new JObject
-                {
-                    ["collider"] = SystemToolSupport.ObjectJson(hit.collider), ["point"] = SystemToolSupport.Vec2(hit.point),
-                    ["normal"] = SystemToolSupport.Vec2(hit.normal), ["distance"] = hit.distance, ["fraction"] = hit.fraction,
-                });
+                case "raycast":
+                    if (!SystemToolSupport.TryFiniteVector2(args["direction"], out var direction) || direction.sqrMagnitude <= 1e-12f)
+                        return ToolResult.Error("INVALID_ARGUMENT", "direction must be a finite non-zero Vector2");
+                    var distance = 1000f;
+                    if (args["distance"] != null
+                        && (!SystemToolSupport.TryFiniteNumber(args["distance"], out distance) || distance < 0f))
+                        return ToolResult.Error("INVALID_ARGUMENT", "distance must be a non-negative finite number");
+                    var rayHits = new List<RaycastHit2D>();
+                    Physics2D.defaultPhysicsScene.Raycast(origin, direction.normalized, distance, filter, rayHits);
+                    rayHits.Sort(CompareRayHits);
+                    foreach (var hit in rayHits)
+                    {
+                        hits.Add(new JObject
+                        {
+                            ["collider"] = SystemToolSupport.ObjectJson(hit.collider),
+                            ["point"] = SystemToolSupport.Vec2(hit.point),
+                            ["normal"] = SystemToolSupport.Vec2(hit.normal),
+                            ["distance"] = hit.distance,
+                            ["fraction"] = hit.fraction,
+                        });
+                    }
+                    break;
+                case "overlap_point":
+                    AddColliders(OverlapPoint(origin, filter), hits);
+                    break;
+                case "overlap_circle":
+                    if (!SystemToolSupport.TryFiniteNumber(args["radius"], out var radius) || radius < 0f)
+                        return ToolResult.Error("INVALID_ARGUMENT", "radius must be a non-negative finite number");
+                    AddColliders(OverlapCircle(origin, radius, filter), hits);
+                    break;
+                case "overlap_box":
+                    if (!SystemToolSupport.TryFiniteVector2(args["size"], out var size) || size.x < 0f || size.y < 0f)
+                        return ToolResult.Error("INVALID_ARGUMENT", "size must be a non-negative finite Vector2");
+                    var angle = 0f;
+                    if (args["angle"] != null && !SystemToolSupport.TryFiniteNumber(args["angle"], out angle))
+                        return ToolResult.Error("INVALID_ARGUMENT", "angle must be finite");
+                    AddColliders(OverlapBox(origin, size, angle, filter), hits);
+                    break;
+                default:
+                    return ToolResult.Error("INVALID_ARGUMENT", $"unknown kind '{kind}'");
             }
-            else
+
+            return ToolResult.Ok($"{hits.Count} hit(s)", new JObject
             {
-                Collider2D collider;
-                if (kind == "overlap_point") collider = Physics2D.OverlapPoint(origin, mask);
-                else if (kind == "overlap_circle") collider = Physics2D.OverlapCircle(origin, (float?)args["radius"] ?? 1f, mask);
-                else
+                ["kind"] = kind,
+                ["count"] = hits.Count,
+                ["hits"] = hits,
+            });
+        }
+
+        private static JObject Variant(string kind, JObject extraProperties, params string[] requiredExtra)
+        {
+            var properties = new JObject
+            {
+                ["kind"] = new JObject { ["type"] = "string", ["enum"] = new JArray { kind } },
+                ["origin"] = SchemaHelpers.StrictVec2Schema,
+                ["layerMask"] = SchemaHelpers.LayerMaskSchema,
+            };
+            foreach (var property in extraProperties.Properties()) properties[property.Name] = property.Value;
+            var required = new JArray { "kind", "origin" };
+            foreach (var property in requiredExtra) required.Add(property);
+            return new JObject
+            {
+                ["type"] = "object",
+                ["properties"] = properties,
+                ["required"] = required,
+                ["additionalProperties"] = false,
+            };
+        }
+
+        private static bool TryLayerMask(JToken token, out int mask, out string error)
+        {
+            mask = Physics2D.AllLayers;
+            error = null;
+            if (token == null || token.Type == JTokenType.Null) return true;
+            if (token.Type == JTokenType.Integer)
+            {
+                if (!long.TryParse(token.ToString(), out var rawMask) || rawMask < int.MinValue || rawMask > int.MaxValue)
                 {
-                    var size3 = JsonHelpers.ParseVector3(args["size"], Vector3.one);
-                    collider = Physics2D.OverlapBox(origin, new Vector2(size3.x, size3.y), (float?)args["angle"] ?? 0f, mask);
+                    error = "layerMask integer must be between -2147483648 and 2147483647";
+                    return false;
                 }
-                if (collider != null) hits.Add(SystemToolSupport.ObjectJson(collider));
+                mask = (int)rawMask;
+                return true;
             }
-            return ToolResult.Ok($"{hits.Count} hit(s)", new JObject { ["kind"] = kind, ["hits"] = hits });
+            if (token.Type == JTokenType.String)
+            {
+                var name = ((string)token ?? string.Empty).Trim();
+                var layer = LayerMask.NameToLayer(name);
+                if (layer < 0)
+                {
+                    error = $"unknown layer '{name}'";
+                    return false;
+                }
+                mask = 1 << layer;
+                return true;
+            }
+            if (token is JArray names && names.Count > 0)
+            {
+                mask = 0;
+                foreach (var item in names)
+                {
+                    if (item.Type != JTokenType.String)
+                    {
+                        error = "layerMask arrays must contain only layer names";
+                        return false;
+                    }
+                    var name = ((string)item ?? string.Empty).Trim();
+                    var layer = LayerMask.NameToLayer(name);
+                    if (layer < 0)
+                    {
+                        error = $"unknown layer '{name}'";
+                        return false;
+                    }
+                    mask |= 1 << layer;
+                }
+                return true;
+            }
+            error = "layerMask must be an integer, layer name, or non-empty array of layer names";
+            return false;
+        }
+
+        private static List<Collider2D> OverlapPoint(Vector2 point, ContactFilter2D filter)
+        {
+            var results = new List<Collider2D>();
+            Physics2D.defaultPhysicsScene.OverlapPoint(point, filter, results);
+            return results;
+        }
+
+        private static List<Collider2D> OverlapCircle(Vector2 point, float radius, ContactFilter2D filter)
+        {
+            var results = new List<Collider2D>();
+            Physics2D.defaultPhysicsScene.OverlapCircle(point, radius, filter, results);
+            return results;
+        }
+
+        private static List<Collider2D> OverlapBox(Vector2 point, Vector2 size, float angle, ContactFilter2D filter)
+        {
+            var results = new List<Collider2D>();
+            Physics2D.defaultPhysicsScene.OverlapBox(point, size, angle, filter, results);
+            return results;
+        }
+
+        private static void AddColliders(List<Collider2D> colliders, JArray hits)
+        {
+            colliders.Sort((left, right) =>
+            {
+                var name = string.Compare(left != null ? left.gameObject.name : string.Empty, right != null ? right.gameObject.name : string.Empty, StringComparison.Ordinal);
+                if (name != 0) return name;
+                return (left != null ? left.GetInstanceID() : 0).CompareTo(right != null ? right.GetInstanceID() : 0);
+            });
+            foreach (var collider in colliders) hits.Add(SystemToolSupport.ObjectJson(collider));
+        }
+
+        private static int CompareRayHits(RaycastHit2D left, RaycastHit2D right)
+        {
+            var distance = left.distance.CompareTo(right.distance);
+            if (distance != 0) return distance;
+            return (left.collider != null ? left.collider.GetInstanceID() : 0)
+                .CompareTo(right.collider != null ? right.collider.GetInstanceID() : 0);
         }
     }
 
@@ -729,6 +915,41 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         public string Description => "Reads global Physics2D settings and counts loaded Rigidbody2D/Collider2D components.";
         public JObject InputSchema => SystemToolSupport.EmptySchema();
         public bool IsWrite => false;
+        public JObject OutputSchema => CreateOutputSchema(false);
+        internal static JObject CreateOutputSchema(bool includeMutationMetadata)
+        {
+            var properties = new JObject
+            {
+                ["gravity"] = SchemaHelpers.StrictVec2Schema,
+                ["velocityIterations"] = new JObject { ["type"] = "integer", ["minimum"] = 1 },
+                ["positionIterations"] = new JObject { ["type"] = "integer", ["minimum"] = 1 },
+                ["queriesHitTriggers"] = new JObject { ["type"] = "boolean" },
+                ["queriesStartInColliders"] = new JObject { ["type"] = "boolean" },
+                ["rigidbodyCount"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["colliderCount"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+            };
+            var required = new JArray
+            {
+                "gravity", "velocityIterations", "positionIterations",
+                "queriesHitTriggers", "queriesStartInColliders", "rigidbodyCount", "colliderCount",
+            };
+            if (includeMutationMetadata)
+            {
+                properties["persistedImmediately"] = new JObject { ["type"] = "boolean" };
+                properties["undoRegistered"] = new JObject { ["type"] = "boolean" };
+                properties["changedKeys"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" } };
+                required.Add("persistedImmediately");
+                required.Add("undoRegistered");
+                required.Add("changedKeys");
+            }
+            return new JObject
+            {
+                ["type"] = "object",
+                ["properties"] = properties,
+                ["required"] = required,
+                ["additionalProperties"] = false,
+            };
+        }
         public ToolResult Execute(JObject args) => ToolResult.Ok("Physics2D settings", new JObject
         {
             ["gravity"] = SystemToolSupport.Vec2(Physics2D.gravity),
@@ -744,12 +965,12 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
     public sealed class SetPhysics2DSettingsTool : IMcpTool
     {
         public string Name => "set_physics2d_settings";
-        public string Description => "Sets selected global Physics2D settings with an explicit project-settings capability.";
+        public string Description => "Sets selected Physics2D project settings. The validated batch persists immediately and is not registered with Undo.";
         public JObject InputSchema => new JObject
         {
             ["type"] = "object", ["properties"] = new JObject
             {
-                ["gravity"] = SchemaHelpers.Vec3Schema,
+                ["gravity"] = SchemaHelpers.StrictVec2Schema,
                 ["velocityIterations"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 100 },
                 ["positionIterations"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 100 },
                 ["queriesHitTriggers"] = new JObject { ["type"] = "boolean" },
@@ -757,14 +978,69 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             }, ["minProperties"] = 1, ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public JObject OutputSchema => GetPhysics2DSettingsTool.CreateOutputSchema(true);
         public ToolResult Execute(JObject args)
         {
-            if (args["gravity"] != null) { var v = JsonHelpers.ParseVector3(args["gravity"]); Physics2D.gravity = new Vector2(v.x, v.y); }
-            if (args["velocityIterations"] != null) Physics2D.velocityIterations = (int)args["velocityIterations"];
-            if (args["positionIterations"] != null) Physics2D.positionIterations = (int)args["positionIterations"];
-            if (args["queriesHitTriggers"] != null) Physics2D.queriesHitTriggers = (bool)args["queriesHitTriggers"];
-            if (args["queriesStartInColliders"] != null) Physics2D.queriesStartInColliders = (bool)args["queriesStartInColliders"];
-            return new GetPhysics2DSettingsTool().Execute(new JObject());
+            if (args == null || !args.Properties().Any())
+                return ToolResult.Error("INVALID_ARGUMENT", "at least one Physics2D setting is required");
+
+            Vector2? gravity = null;
+            int? velocityIterations = null;
+            int? positionIterations = null;
+            bool? queriesHitTriggers = null;
+            bool? queriesStartInColliders = null;
+
+            if (args["gravity"] != null)
+            {
+                if (!SystemToolSupport.TryFiniteVector2(args["gravity"], out var value))
+                    return ToolResult.Error("INVALID_ARGUMENT", "gravity must be a finite Vector2 [x,y] or {x,y}");
+                gravity = value;
+            }
+            if (args["velocityIterations"] != null)
+            {
+                if (args["velocityIterations"].Type != JTokenType.Integer)
+                    return ToolResult.Error("INVALID_ARGUMENT", "velocityIterations must be an integer between 1 and 100");
+                var value = (int)args["velocityIterations"];
+                if (value < 1 || value > 100)
+                    return ToolResult.Error("INVALID_ARGUMENT", "velocityIterations must be between 1 and 100");
+                velocityIterations = value;
+            }
+            if (args["positionIterations"] != null)
+            {
+                if (args["positionIterations"].Type != JTokenType.Integer)
+                    return ToolResult.Error("INVALID_ARGUMENT", "positionIterations must be an integer between 1 and 100");
+                var value = (int)args["positionIterations"];
+                if (value < 1 || value > 100)
+                    return ToolResult.Error("INVALID_ARGUMENT", "positionIterations must be between 1 and 100");
+                positionIterations = value;
+            }
+            if (args["queriesHitTriggers"] != null)
+            {
+                if (args["queriesHitTriggers"].Type != JTokenType.Boolean)
+                    return ToolResult.Error("INVALID_ARGUMENT", "queriesHitTriggers must be a boolean");
+                queriesHitTriggers = (bool)args["queriesHitTriggers"];
+            }
+            if (args["queriesStartInColliders"] != null)
+            {
+                if (args["queriesStartInColliders"].Type != JTokenType.Boolean)
+                    return ToolResult.Error("INVALID_ARGUMENT", "queriesStartInColliders must be a boolean");
+                queriesStartInColliders = (bool)args["queriesStartInColliders"];
+            }
+
+            if (gravity.HasValue) Physics2D.gravity = gravity.Value;
+            if (velocityIterations.HasValue) Physics2D.velocityIterations = velocityIterations.Value;
+            if (positionIterations.HasValue) Physics2D.positionIterations = positionIterations.Value;
+            if (queriesHitTriggers.HasValue) Physics2D.queriesHitTriggers = queriesHitTriggers.Value;
+            if (queriesStartInColliders.HasValue) Physics2D.queriesStartInColliders = queriesStartInColliders.Value;
+
+            var result = new GetPhysics2DSettingsTool().Execute(new JObject());
+            if (result.Json is JObject payload)
+            {
+                payload["persistedImmediately"] = true;
+                payload["undoRegistered"] = false;
+                payload["changedKeys"] = new JArray(args.Properties().Select(property => property.Name));
+            }
+            return result;
         }
     }
 

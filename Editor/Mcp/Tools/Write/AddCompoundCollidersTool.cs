@@ -1,7 +1,5 @@
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Newtonsoft.Json.Linq;
-using UnityEditor.SceneManagement;
-using UnityEngine.SceneManagement;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
 {
@@ -9,8 +7,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
     {
         public string Name => "add_compound_colliders";
         public string Description =>
-            "Adds ONE primitive collider per child renderer — gives you a compound collider that approximates a complex mesh way better than a single box around the whole bounds, while staying cheap (no convex hull / VHACD). " +
-            "kind: box (default) / sphere / capsule / mesh (convex). replaceExisting=false (default) keeps existing colliders. Useful for buildings, vehicles, multi-part models.";
+            "Adds one collider per Renderer in the target hierarchy using each renderer's local bounds, preserving that renderer GameObject's orientation. " +
+            "kind: box (default), sphere, capsule, or mesh; sphere/capsule fits approximate the local AABB and capsules follow its longest axis. " +
+            "Mesh kind requires every renderer GameObject to have a MeshFilter.sharedMesh and always creates convex colliders. " +
+            "replaceExisting=false by default; when true, existing Colliders are removed except CharacterController.";
 
         public JObject InputSchema => new JObject
         {
@@ -25,12 +25,47 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             ["required"] = new JArray { "instanceId" },
             ["additionalProperties"] = false,
         };
+
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["target"] = SchemaHelpers.TargetRefSchema,
+                ["kind"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "box", "sphere", "capsule", "mesh" } },
+                ["addedCount"] = new JObject { ["type"] = "integer", ["minimum"] = 1 },
+                ["replacedCount"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["replaceExisting"] = new JObject { ["type"] = "boolean" },
+                ["isTrigger"] = new JObject { ["type"] = "boolean" },
+                ["colliders"] = new JObject
+                {
+                    ["type"] = "array",
+                    ["items"] = SchemaHelpers.TargetRefSchema,
+                    ["minItems"] = 1,
+                },
+            },
+            ["required"] = new JArray { "target", "kind", "addedCount", "replacedCount", "replaceExisting", "isTrigger", "colliders" },
+            ["additionalProperties"] = false,
+        };
+
         public bool IsWrite => true;
+        public ToolDescriptor Descriptor => new ToolDescriptor
+        {
+            Name = Name,
+            Category = "physics",
+            Capabilities = McpCapability.SceneWrite | McpCapability.Destructive,
+            Risk = McpRiskLevel.High,
+            ConfirmationPolicy = McpConfirmationPolicy.Required,
+            EditorMode = McpEditorMode.EditModeOnly,
+            IsIdempotent = false,
+            OutputSchema = OutputSchema,
+        };
+
         public ToolResult Execute(JObject args)
         {
-            var r = PhysicsAuthor.AddCompoundColliders(args);
-            if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary);
+            var result = PhysicsAuthor.AddCompoundColliders(args);
+            if (!result.Ok) return ToolResult.Error("OP_FAILED", result.Error);
+            return ToolResult.Ok(result.Summary, result.Data);
         }
     }
 }

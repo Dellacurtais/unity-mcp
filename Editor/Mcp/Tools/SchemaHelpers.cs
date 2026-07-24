@@ -39,6 +39,93 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools
             },
         };
 
+        public static JObject StrictVec2Schema => new JObject
+        {
+            ["description"] = "Vector2 as [x,y] or {x,y}; object form requires both coordinates.",
+            ["oneOf"] = new JArray
+            {
+                new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "number" }, ["minItems"] = 2, ["maxItems"] = 2 },
+                new JObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JObject
+                    {
+                        ["x"] = new JObject { ["type"] = "number" },
+                        ["y"] = new JObject { ["type"] = "number" },
+                    },
+                    ["required"] = new JArray { "x", "y" },
+                    ["additionalProperties"] = false,
+                },
+            },
+        };
+
+        public static JObject NonNegativeVec2Schema => new JObject
+        {
+            ["description"] = "Non-negative Vector2 as [x,y] or {x,y}.",
+            ["oneOf"] = new JArray
+            {
+                new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "number", ["minimum"] = 0 }, ["minItems"] = 2, ["maxItems"] = 2 },
+                new JObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JObject
+                    {
+                        ["x"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                        ["y"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                    },
+                    ["required"] = new JArray { "x", "y" },
+                    ["additionalProperties"] = false,
+                },
+            },
+        };
+
+        public static JObject NonNegativeVec3Schema => new JObject
+        {
+            ["description"] = "Non-negative Vector3 as [x,y,z] or {x,y,z}.",
+            ["oneOf"] = new JArray
+            {
+                new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "number", ["minimum"] = 0 }, ["minItems"] = 3, ["maxItems"] = 3 },
+                new JObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JObject
+                    {
+                        ["x"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                        ["y"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                        ["z"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                    },
+                    ["required"] = new JArray { "x", "y", "z" },
+                    ["additionalProperties"] = false,
+                },
+            },
+        };
+
+        public static JObject LayerMaskSchema => new JObject
+        {
+            ["description"] = "Layer mask as an integer bitmask, one layer name, or a non-empty array of layer names.",
+            ["oneOf"] = new JArray
+            {
+                new JObject { ["type"] = "integer", ["minimum"] = int.MinValue, ["maximum"] = int.MaxValue },
+                new JObject { ["type"] = "string", ["minLength"] = 1 },
+                new JObject
+                {
+                    ["type"] = "array",
+                    ["items"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                    ["minItems"] = 1,
+                },
+            },
+        };
+
+        public static JObject TriggerInteractionSchema => new JObject
+        {
+            ["description"] = "Trigger handling as true/false or UseGlobal/Collide/Ignore.",
+            ["oneOf"] = new JArray
+            {
+                new JObject { ["type"] = "boolean" },
+                new JObject { ["type"] = "string", ["enum"] = new JArray { "UseGlobal", "Collide", "Ignore" } },
+            },
+        };
+
         public static JObject TargetRefSchema => new JObject
         {
             ["type"] = "object",

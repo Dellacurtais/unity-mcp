@@ -12,30 +12,65 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
 
         public JObject InputSchema => new JObject
         {
+            ["oneOf"] = new JArray
+            {
+                Variant("box", new JObject
+                {
+                    ["center"] = SchemaHelpers.StrictVec3Schema,
+                    ["halfExtents"] = SchemaHelpers.NonNegativeVec3Schema,
+                    ["rotation"] = SchemaHelpers.RotSchema,
+                }, "center", "halfExtents"),
+                Variant("sphere", new JObject
+                {
+                    ["origin"] = SchemaHelpers.StrictVec3Schema,
+                    ["radius"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                }, "origin", "radius"),
+                Variant("capsule", new JObject
+                {
+                    ["pointA"] = SchemaHelpers.StrictVec3Schema,
+                    ["pointB"] = SchemaHelpers.StrictVec3Schema,
+                    ["radius"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                }, "pointA", "pointB", "radius"),
+            },
+        };
+        public bool IsWrite => false;
+        public JObject OutputSchema => new JObject
+        {
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["shape"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "box", "sphere", "capsule" } },
-                ["direction"] = new JObject(),
-                ["maxDistance"] = new JObject { ["type"] = "number" },
-                ["center"] = new JObject(),
-                ["halfExtents"] = new JObject(),
-                ["rotation"] = new JObject(),
-                ["origin"] = new JObject(),
-                ["radius"] = new JObject { ["type"] = "number" },
-                ["pointA"] = new JObject(),
-                ["pointB"] = new JObject(),
-                ["layerMask"] = new JObject(),
-                ["hitTriggers"] = new JObject(),
+                ["shape"] = new JObject { ["type"] = "string" },
+                ["count"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["hits"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
             },
-            ["required"] = new JArray { "shape", "direction" },
-            ["additionalProperties"] = false,
+            ["required"] = new JArray { "shape", "count", "hits" },
         };
-        public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
             var r = PhysicsAuthor.SweepQuery(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            return r.Ok ? ToolResult.Ok(r.Summary, r.Data) : ToolResult.Error("OP_FAILED", r.Error);
+        }
+
+        private static JObject Variant(string shape, JObject shapeProperties, params string[] requiredShapeProperties)
+        {
+            var properties = new JObject
+            {
+                ["shape"] = new JObject { ["type"] = "string", ["enum"] = new JArray { shape } },
+                ["direction"] = SchemaHelpers.StrictVec3Schema,
+                ["maxDistance"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+                ["layerMask"] = SchemaHelpers.LayerMaskSchema,
+                ["hitTriggers"] = SchemaHelpers.TriggerInteractionSchema,
+            };
+            foreach (var property in shapeProperties.Properties()) properties[property.Name] = property.Value;
+            var required = new JArray { "shape", "direction" };
+            foreach (var property in requiredShapeProperties) required.Add(property);
+            return new JObject
+            {
+                ["type"] = "object",
+                ["properties"] = properties,
+                ["required"] = required,
+                ["additionalProperties"] = false,
+            };
         }
     }
 }

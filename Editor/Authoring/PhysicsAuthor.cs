@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using ToolTargetRef = Maicon.SceneAnalyzer.Editor.Core.ToolTargetRef;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -16,105 +17,197 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         public static OpResult Raycast(JObject args)
         {
-            var origin = JsonHelpers.ParseVector3(args["origin"]);
-            var direction = JsonHelpers.ParseVector3(args["direction"], Vector3.forward);
-            if (direction == Vector3.zero) return OpResult.Fail("direction must be non-zero");
-            var maxDistance = (float?)args["maxDistance"] ?? Mathf.Infinity;
-            var layerMask = ParseLayerMask(args["layerMask"]);
-            var hitTriggers = ParseTriggerInteraction(args["hitTriggers"]);
+            if (!TryParseFiniteVector3(args["origin"], "origin", Vector3.zero, true, out var origin, out var error))
+                return OpResult.Fail(error);
+            if (!TryParseFiniteVector3(args["direction"], "direction", Vector3.forward, true, out var direction, out error)
+                || !TryNormalizeDirection(direction, "direction", out direction, out error))
+                return OpResult.Fail(error);
+            if (!TryParseNonNegativeNumber(args["maxDistance"], "maxDistance", Mathf.Infinity, true, out var maxDistance, out error))
+                return OpResult.Fail(error);
+            if (!TryParseLayerMask(args["layerMask"], out var layerMask, out error))
+                return OpResult.Fail(error);
+            if (!TryParseTriggerInteraction(args["hitTriggers"], out var hitTriggers, out error))
+                return OpResult.Fail(error);
             var multiple = (bool?)args["multiple"] ?? false;
+
+            Physics.SyncTransforms();
+            RaycastHit[] hits;
+            if (multiple)
+            {
+                hits = Physics.RaycastAll(origin, direction, maxDistance, layerMask, hitTriggers);
+            }
+            else if (Physics.Raycast(origin, direction, out var hit, maxDistance, layerMask, hitTriggers))
+            {
+                hits = new[] { hit };
+            }
+            else
+            {
+                hits = Array.Empty<RaycastHit>();
+            }
+
+            Array.Sort(hits, CompareHits);
+            var hitData = new JArray();
+            foreach (var current in hits) hitData.Add(HitJson(current));
 
             var sb = new System.Text.StringBuilder();
             if (multiple)
             {
-                var hits = Physics.RaycastAll(origin, direction.normalized, maxDistance, layerMask, hitTriggers);
-                Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
                 sb.AppendLine($"raycast hit {hits.Length} collider(s):");
-                foreach (var h in hits) sb.AppendLine("  " + DescribeHit(h));
+                foreach (var current in hits) sb.AppendLine("  " + DescribeHit(current));
+            }
+            else if (hits.Length == 1)
+            {
+                sb.AppendLine("raycast hit:\n  " + DescribeHit(hits[0]));
             }
             else
             {
-                if (Physics.Raycast(origin, direction.normalized, out var hit, maxDistance, layerMask, hitTriggers))
-                    sb.AppendLine("raycast hit:\n  " + DescribeHit(hit));
-                else
-                    sb.AppendLine("raycast: no hit");
+                sb.AppendLine("raycast: no hit");
             }
-            return new OpResult { Ok = true, Summary = sb.ToString(), InstanceID = 0 };
+
+            return new OpResult
+            {
+                Ok = true,
+                Summary = sb.ToString(),
+                InstanceID = 0,
+                Data = new JObject
+                {
+                    ["origin"] = JsonHelpers.Vec3(origin),
+                    ["direction"] = JsonHelpers.Vec3(direction),
+                    ["multiple"] = multiple,
+                    ["count"] = hits.Length,
+                    ["hits"] = hitData,
+                },
+            };
         }
 
         public static OpResult OverlapQuery(JObject args)
         {
-            var shape = ((string)args["shape"] ?? "box").ToLowerInvariant();
-            var center = JsonHelpers.ParseVector3(args["center"]);
-            var layerMask = ParseLayerMask(args["layerMask"]);
-            var hitTriggers = ParseTriggerInteraction(args["hitTriggers"]);
+            var shape = ((string)args["shape"] ?? string.Empty).Trim().ToLowerInvariant();
+            if (!TryParseLayerMask(args["layerMask"], out var layerMask, out var error))
+                return OpResult.Fail(error);
+            if (!TryParseTriggerInteraction(args["hitTriggers"], out var hitTriggers, out error))
+                return OpResult.Fail(error);
 
             Collider[] hits;
+            Physics.SyncTransforms();
             switch (shape)
             {
                 case "box":
-                    var halfExtents = JsonHelpers.ParseVector3(args["halfExtents"], Vector3.one * 0.5f);
-                    var rot = args["rotation"] != null ? JsonHelpers.ParseRotation(args["rotation"]) : Quaternion.identity;
-                    hits = Physics.OverlapBox(center, halfExtents, rot, layerMask, hitTriggers);
+                    if (!TryParseFiniteVector3(args["center"], "center", Vector3.zero, true, out var center, out error))
+                        return OpResult.Fail(error);
+                    if (!TryParseNonNegativeVector3(args["halfExtents"], "halfExtents", out var halfExtents, out error))
+                        return OpResult.Fail(error);
+                    if (!TryParseFiniteRotation(args["rotation"], out var rotation, out error))
+                        return OpResult.Fail(error);
+                    hits = Physics.OverlapBox(center, halfExtents, rotation, layerMask, hitTriggers);
                     break;
                 case "sphere":
-                    var radius = (float?)args["radius"] ?? 1f;
+                    if (!TryParseFiniteVector3(args["center"], "center", Vector3.zero, true, out center, out error))
+                        return OpResult.Fail(error);
+                    if (!TryParseNonNegativeNumber(args["radius"], "radius", 0f, false, out var radius, out error))
+                        return OpResult.Fail(error);
                     hits = Physics.OverlapSphere(center, radius, layerMask, hitTriggers);
                     break;
                 case "capsule":
-                    var p0 = JsonHelpers.ParseVector3(args["pointA"]);
-                    var p1 = JsonHelpers.ParseVector3(args["pointB"]);
-                    var capRadius = (float?)args["radius"] ?? 0.5f;
-                    hits = Physics.OverlapCapsule(p0, p1, capRadius, layerMask, hitTriggers);
+                    if (!TryParseFiniteVector3(args["pointA"], "pointA", Vector3.zero, true, out var pointA, out error))
+                        return OpResult.Fail(error);
+                    if (!TryParseFiniteVector3(args["pointB"], "pointB", Vector3.zero, true, out var pointB, out error))
+                        return OpResult.Fail(error);
+                    if (!TryParseNonNegativeNumber(args["radius"], "radius", 0f, false, out radius, out error))
+                        return OpResult.Fail(error);
+                    hits = Physics.OverlapCapsule(pointA, pointB, radius, layerMask, hitTriggers);
                     break;
-                default: return OpResult.Fail($"unknown shape '{shape}' (use box/sphere/capsule)");
+                default:
+                    return OpResult.Fail($"unknown shape '{shape}' (use box/sphere/capsule)");
             }
+
+            Array.Sort(hits, CompareColliders);
+            var colliderData = new JArray();
+            foreach (var collider in hits) colliderData.Add(ColliderJson(collider));
 
             var sb = new System.Text.StringBuilder();
             sb.AppendLine($"overlap_{shape}: {hits.Length} collider(s) inside:");
-            foreach (var c in hits.Take(50)) sb.AppendLine("  " + DescribeCollider(c));
+            foreach (var collider in hits.Take(50)) sb.AppendLine("  " + DescribeCollider(collider));
             if (hits.Length > 50) sb.AppendLine($"  [+{hits.Length - 50} more]");
-            return new OpResult { Ok = true, Summary = sb.ToString() };
+            return new OpResult
+            {
+                Ok = true,
+                Summary = sb.ToString(),
+                Data = new JObject
+                {
+                    ["shape"] = shape,
+                    ["count"] = hits.Length,
+                    ["colliders"] = colliderData,
+                },
+            };
         }
 
         public static OpResult SweepQuery(JObject args)
         {
-            var shape = ((string)args["shape"] ?? "box").ToLowerInvariant();
-            var direction = JsonHelpers.ParseVector3(args["direction"], Vector3.forward);
-            if (direction == Vector3.zero) return OpResult.Fail("direction must be non-zero");
-            var maxDistance = (float?)args["maxDistance"] ?? Mathf.Infinity;
-            var layerMask = ParseLayerMask(args["layerMask"]);
-            var hitTriggers = ParseTriggerInteraction(args["hitTriggers"]);
+            var shape = ((string)args["shape"] ?? string.Empty).Trim().ToLowerInvariant();
+            if (!TryParseFiniteVector3(args["direction"], "direction", Vector3.forward, true, out var direction, out var error)
+                || !TryNormalizeDirection(direction, "direction", out direction, out error))
+                return OpResult.Fail(error);
+            if (!TryParseNonNegativeNumber(args["maxDistance"], "maxDistance", Mathf.Infinity, true, out var maxDistance, out error))
+                return OpResult.Fail(error);
+            if (!TryParseLayerMask(args["layerMask"], out var layerMask, out error))
+                return OpResult.Fail(error);
+            if (!TryParseTriggerInteraction(args["hitTriggers"], out var hitTriggers, out error))
+                return OpResult.Fail(error);
 
             RaycastHit[] hits;
+            Physics.SyncTransforms();
             switch (shape)
             {
                 case "box":
-                    var center = JsonHelpers.ParseVector3(args["center"]);
-                    var halfExtents = JsonHelpers.ParseVector3(args["halfExtents"], Vector3.one * 0.5f);
-                    var rot = args["rotation"] != null ? JsonHelpers.ParseRotation(args["rotation"]) : Quaternion.identity;
-                    hits = Physics.BoxCastAll(center, halfExtents, direction.normalized, rot, maxDistance, layerMask, hitTriggers);
+                    if (!TryParseFiniteVector3(args["center"], "center", Vector3.zero, true, out var center, out error))
+                        return OpResult.Fail(error);
+                    if (!TryParseNonNegativeVector3(args["halfExtents"], "halfExtents", out var halfExtents, out error))
+                        return OpResult.Fail(error);
+                    if (!TryParseFiniteRotation(args["rotation"], out var rotation, out error))
+                        return OpResult.Fail(error);
+                    hits = Physics.BoxCastAll(center, halfExtents, direction, rotation, maxDistance, layerMask, hitTriggers);
                     break;
                 case "sphere":
-                    var origin = JsonHelpers.ParseVector3(args["origin"]);
-                    var radius = (float?)args["radius"] ?? 1f;
-                    hits = Physics.SphereCastAll(origin, radius, direction.normalized, maxDistance, layerMask, hitTriggers);
+                    if (!TryParseFiniteVector3(args["origin"], "origin", Vector3.zero, true, out var origin, out error))
+                        return OpResult.Fail(error);
+                    if (!TryParseNonNegativeNumber(args["radius"], "radius", 0f, false, out var radius, out error))
+                        return OpResult.Fail(error);
+                    hits = Physics.SphereCastAll(origin, radius, direction, maxDistance, layerMask, hitTriggers);
                     break;
                 case "capsule":
-                    var p0 = JsonHelpers.ParseVector3(args["pointA"]);
-                    var p1 = JsonHelpers.ParseVector3(args["pointB"]);
-                    var capRadius = (float?)args["radius"] ?? 0.5f;
-                    hits = Physics.CapsuleCastAll(p0, p1, capRadius, direction.normalized, maxDistance, layerMask, hitTriggers);
+                    if (!TryParseFiniteVector3(args["pointA"], "pointA", Vector3.zero, true, out var pointA, out error))
+                        return OpResult.Fail(error);
+                    if (!TryParseFiniteVector3(args["pointB"], "pointB", Vector3.zero, true, out var pointB, out error))
+                        return OpResult.Fail(error);
+                    if (!TryParseNonNegativeNumber(args["radius"], "radius", 0f, false, out radius, out error))
+                        return OpResult.Fail(error);
+                    hits = Physics.CapsuleCastAll(pointA, pointB, radius, direction, maxDistance, layerMask, hitTriggers);
                     break;
-                default: return OpResult.Fail($"unknown shape '{shape}'");
+                default:
+                    return OpResult.Fail($"unknown shape '{shape}' (use box/sphere/capsule)");
             }
 
-            Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+            Array.Sort(hits, CompareHits);
+            var hitData = new JArray();
+            foreach (var hit in hits) hitData.Add(HitJson(hit));
+
             var sb = new System.Text.StringBuilder();
             sb.AppendLine($"sweep_{shape}: {hits.Length} hit(s):");
-            foreach (var h in hits.Take(50)) sb.AppendLine("  " + DescribeHit(h));
+            foreach (var hit in hits.Take(50)) sb.AppendLine("  " + DescribeHit(hit));
             if (hits.Length > 50) sb.AppendLine($"  [+{hits.Length - 50} more]");
-            return new OpResult { Ok = true, Summary = sb.ToString() };
+            return new OpResult
+            {
+                Ok = true,
+                Summary = sb.ToString(),
+                Data = new JObject
+                {
+                    ["shape"] = shape,
+                    ["direction"] = JsonHelpers.Vec3(direction),
+                    ["count"] = hits.Length,
+                    ["hits"] = hitData,
+                },
+            };
         }
 
         public static OpResult CheckGround(JObject args)
@@ -123,18 +216,27 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var go = EditorUtility.InstanceIDToObject(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
 
-            var origin = go.transform.position + JsonHelpers.ParseVector3(args["originOffset"]);
-            var down = args["down"] != null ? JsonHelpers.ParseVector3(args["down"]) : Vector3.down;
-            var maxDistance = (float?)args["maxDistance"] ?? 100f;
-            var layerMask = ParseLayerMask(args["layerMask"]);
-            var hitTriggers = ParseTriggerInteraction(args["hitTriggers"]);
+            if (!TryParseFiniteVector3(args["originOffset"], "originOffset", Vector3.zero, false, out var originOffset, out var error))
+                return OpResult.Fail(error);
+            if (!TryParseFiniteVector3(args["down"], "down", Vector3.down, false, out var down, out error)
+                || !TryNormalizeDirection(down, "down", out down, out error))
+                return OpResult.Fail(error);
+            if (!TryParseNonNegativeNumber(args["maxDistance"], "maxDistance", 100f, true, out var maxDistance, out error))
+                return OpResult.Fail(error);
+            if (!TryParseLayerMask(args["layerMask"], out var layerMask, out error))
+                return OpResult.Fail(error);
+            if (!TryParseTriggerInteraction(args["hitTriggers"], out var hitTriggers, out error))
+                return OpResult.Fail(error);
 
+            var origin = go.transform.position + originOffset;
+            Physics.SyncTransforms();
+            var grounded = Physics.Raycast(origin, down, out var hit, maxDistance, layerMask, hitTriggers);
             var sb = new System.Text.StringBuilder();
-            if (Physics.Raycast(origin, down.normalized, out var hit, maxDistance, layerMask, hitTriggers))
+            if (grounded)
             {
-                var hgo = hit.collider.gameObject;
-                sb.AppendLine($"grounded: yes  distance={hit.distance:F3}  on '{hgo.name}'");
-                sb.AppendLine($"  tag='{hgo.tag}'  layer={hgo.layer} ('{LayerMask.LayerToName(hgo.layer)}')");
+                var hitObject = hit.collider.gameObject;
+                sb.AppendLine($"grounded: yes  distance={hit.distance:F3}  on '{hitObject.name}'");
+                sb.AppendLine($"  tag='{hitObject.tag}'  layer={hitObject.layer} ('{LayerMask.LayerToName(hitObject.layer)}')");
                 sb.AppendLine($"  point=[{hit.point.x:F2}, {hit.point.y:F2}, {hit.point.z:F2}]");
                 sb.AppendLine($"  normal=[{hit.normal.x:F2}, {hit.normal.y:F2}, {hit.normal.z:F2}]");
                 sb.AppendLine($"  collider={hit.collider.GetType().Name}  isTrigger={hit.collider.isTrigger}");
@@ -143,7 +245,21 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             {
                 sb.AppendLine($"grounded: NO  (no collider within {maxDistance} along {down})");
             }
-            return new OpResult { Ok = true, Summary = sb.ToString(), InstanceID = id };
+
+            return new OpResult
+            {
+                Ok = true,
+                Summary = sb.ToString(),
+                InstanceID = id,
+                Data = new JObject
+                {
+                    ["target"] = ToolTargetRef.Capture(go)?.ToJson(),
+                    ["origin"] = JsonHelpers.Vec3(origin),
+                    ["direction"] = JsonHelpers.Vec3(down),
+                    ["grounded"] = grounded,
+                    ["hit"] = grounded ? HitJson(hit) : null,
+                },
+            };
         }
 
         // ============== Bounds ==============
@@ -165,7 +281,18 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             sb.AppendLine($"  size=[{b.size.x:F2}, {b.size.y:F2}, {b.size.z:F2}]");
             sb.AppendLine($"  min=[{b.min.x:F2}, {b.min.y:F2}, {b.min.z:F2}]");
             sb.AppendLine($"  max=[{b.max.x:F2}, {b.max.y:F2}, {b.max.z:F2}]");
-            return new OpResult { Ok = true, Summary = sb.ToString(), InstanceID = id };
+            return new OpResult
+            {
+                Ok = true,
+                Summary = sb.ToString(),
+                InstanceID = id,
+                Data = new JObject
+                {
+                    ["target"] = ToolTargetRef.Capture(go)?.ToJson(),
+                    ["recursive"] = recursive,
+                    ["bounds"] = BoundsJson(b),
+                },
+            };
         }
 
         public static Bounds? ComputeWorldBounds(GameObject go, bool recursive)
@@ -386,44 +513,64 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         public static OpResult QueryCollisionLayers(JObject args)
         {
-            var only = ParseLayerInt(args["layer"]);
+            int? only = null;
+            if (args["layer"] != null && args["layer"].Type != JTokenType.Null)
+            {
+                if (!TryParseLayerIndex(args["layer"], out var layerIndex, out var error))
+                    return OpResult.Fail(error);
+                only = layerIndex;
+            }
+
+            var rows = new JArray();
             var sb = new System.Text.StringBuilder();
             if (only.HasValue)
             {
-                int i = only.Value;
-                sb.AppendLine($"layer {i} ('{LayerMask.LayerToName(i)}') collides with:");
-                for (int j = 0; j < 32; j++)
+                var index = only.Value;
+                var collidesWith = BuildCollisionLayerList(index);
+                var layerName = LayerMask.LayerToName(index);
+                rows.Add(new JObject
                 {
-                    var name = LayerMask.LayerToName(j);
-                    if (string.IsNullOrEmpty(name)) continue;
-                    bool ignored = Physics.GetIgnoreLayerCollision(i, j);
-                    if (!ignored) sb.AppendLine($"  {j} '{name}'");
-                }
+                    ["index"] = index,
+                    ["name"] = layerName,
+                    ["collidesWith"] = collidesWith,
+                });
+                sb.AppendLine($"layer {index} ('{DisplayLayerName(layerName)}') collides with:");
+                foreach (var layer in collidesWith)
+                    sb.AppendLine($"  {(int)layer["index"]} '{DisplayLayerName((string)layer["name"])}'");
             }
             else
             {
                 sb.AppendLine("collision matrix (X = collides, . = ignored):");
                 sb.Append("       ");
-                for (int j = 0; j < 32; j++)
-                {
-                    if (string.IsNullOrEmpty(LayerMask.LayerToName(j))) continue;
-                    sb.Append($"{j,3}");
-                }
+                for (var column = 0; column < 32; column++) sb.Append($"{column,3}");
                 sb.AppendLine();
-                for (int i = 0; i < 32; i++)
+                for (var row = 0; row < 32; row++)
                 {
-                    var rowName = LayerMask.LayerToName(i);
-                    if (string.IsNullOrEmpty(rowName)) continue;
-                    sb.Append($"{i,2} {rowName,-12}");
-                    for (int j = 0; j < 32; j++)
+                    var rowName = LayerMask.LayerToName(row);
+                    rows.Add(new JObject
                     {
-                        if (string.IsNullOrEmpty(LayerMask.LayerToName(j))) continue;
-                        sb.Append(Physics.GetIgnoreLayerCollision(i, j) ? "  ." : "  X");
-                    }
+                        ["index"] = row,
+                        ["name"] = rowName,
+                        ["collidesWith"] = BuildCollisionLayerList(row),
+                    });
+                    sb.Append($"{row,2} {DisplayLayerName(rowName),-12}");
+                    for (var column = 0; column < 32; column++)
+                        sb.Append(Physics.GetIgnoreLayerCollision(row, column) ? "  ." : "  X");
                     sb.AppendLine();
                 }
             }
-            return new OpResult { Ok = true, Summary = sb.ToString() };
+
+            return new OpResult
+            {
+                Ok = true,
+                Summary = sb.ToString(),
+                Data = new JObject
+                {
+                    ["matrixState"] = "effectiveRuntime",
+                    ["selectedLayer"] = only.HasValue ? rows[0] : null,
+                    ["layers"] = rows,
+                },
+            };
         }
 
         // ============== Collider authoring ==============
@@ -433,71 +580,74 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var id = (int?)args["instanceId"] ?? 0;
             var go = EditorUtility.InstanceIDToObject(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
-            var kind = ((string)args["kind"] ?? "box").ToLowerInvariant();
-            var useChildren = (bool?)args["useChildren"] ?? true;
+
+            var kind = ((string)args["kind"] ?? "box").Trim().ToLowerInvariant();
+            if (!IsColliderKind(kind))
+                return OpResult.Fail($"unknown kind '{kind}' (box/sphere/capsule/mesh)");
+
+            var useChildren = kind == "mesh"
+                ? (bool?)args["useChildren"] ?? false
+                : (bool?)args["useChildren"] ?? true;
             var replaceExisting = (bool?)args["replaceExisting"] ?? true;
             var isTrigger = (bool?)args["isTrigger"] ?? false;
+            var convex = kind == "mesh" && ((bool?)args["convex"] ?? false);
 
-            var bounds = ComputeWorldBounds(go, useChildren);
-            if (!bounds.HasValue) return OpResult.Fail("no Renderer found — cannot auto-fit");
-            var b = bounds.Value;
+            if (kind == "mesh" && useChildren)
+                return OpResult.Fail("mesh kind requires useChildren=false because one MeshCollider can only use the target GameObject's MeshFilter.sharedMesh");
 
-            if (replaceExisting)
+            var renderers = useChildren
+                ? go.GetComponentsInChildren<Renderer>(true)
+                : go.GetComponents<Renderer>();
+            if (renderers.Length == 0)
+                return OpResult.Fail("no Renderer found — cannot auto-fit");
+            if (!TryComputeLocalRendererBounds(go.transform, renderers, out var localBounds, out var boundsError))
+                return OpResult.Fail(boundsError);
+
+            Mesh mesh = null;
+            if (kind == "mesh")
             {
-                foreach (var existing in go.GetComponents<Collider>())
+                if (!TryGetMeshSource(go, out mesh, out var meshError))
+                    return OpResult.Fail(meshError);
+                if (isTrigger && !convex)
+                    return OpResult.Fail("mesh collider triggers require convex=true");
+                var attachedRigidbody = go.GetComponentInParent<Rigidbody>();
+                if (attachedRigidbody != null && !attachedRigidbody.isKinematic && !convex)
+                    return OpResult.Fail("a MeshCollider attached to a non-kinematic Rigidbody requires convex=true");
+            }
+
+            Collider added;
+            int replaced = 0;
+            using (var mutation = new MutationScope("Auto Fit Collider"))
+            {
+                if (replaceExisting)
                 {
-                    if (existing == null) continue;
-                    if (existing is CharacterController) continue; // never auto-remove
-                    Undo.DestroyObjectImmediate(existing);
+                    foreach (var existing in go.GetComponents<Collider>())
+                    {
+                        if (existing == null || existing is CharacterController) continue;
+                        mutation.Destroy(existing);
+                        replaced++;
+                    }
                 }
+
+                added = AddConfiguredCollider(mutation, go, kind, localBounds, isTrigger, convex, mesh);
+                mutation.Touch(go);
+                mutation.Complete();
             }
 
-            // Convert world-space bounds into the GO's local space.
-            var localCenter = go.transform.InverseTransformPoint(b.center);
-            var inverseLossy = new Vector3(
-                go.transform.lossyScale.x != 0 ? 1f / go.transform.lossyScale.x : 1f,
-                go.transform.lossyScale.y != 0 ? 1f / go.transform.lossyScale.y : 1f,
-                go.transform.lossyScale.z != 0 ? 1f / go.transform.lossyScale.z : 1f);
-            var localSize = Vector3.Scale(b.size, inverseLossy);
-
-            Collider added = null;
-            switch (kind)
+            var result = OpResult.Success(added.GetInstanceID(),
+                $"added {kind} collider on '{go.name}'  local size~{localBounds.size.x:F2}×{localBounds.size.y:F2}×{localBounds.size.z:F2}");
+            result.Data = new JObject
             {
-                case "box":
-                    var box = Undo.AddComponent<BoxCollider>(go);
-                    box.center = localCenter;
-                    box.size = localSize;
-                    box.isTrigger = isTrigger;
-                    added = box;
-                    break;
-                case "sphere":
-                    var sphere = Undo.AddComponent<SphereCollider>(go);
-                    sphere.center = localCenter;
-                    sphere.radius = Mathf.Max(localSize.x, localSize.y, localSize.z) * 0.5f;
-                    sphere.isTrigger = isTrigger;
-                    added = sphere;
-                    break;
-                case "capsule":
-                    var cap = Undo.AddComponent<CapsuleCollider>(go);
-                    cap.center = localCenter;
-                    cap.radius = Mathf.Max(localSize.x, localSize.z) * 0.5f;
-                    cap.height = localSize.y;
-                    cap.direction = 1; // Y
-                    cap.isTrigger = isTrigger;
-                    added = cap;
-                    break;
-                case "mesh":
-                    var mc = Undo.AddComponent<MeshCollider>(go);
-                    var mf = go.GetComponent<MeshFilter>();
-                    if (mf != null) mc.sharedMesh = mf.sharedMesh;
-                    mc.convex = (bool?)args["convex"] ?? false;
-                    mc.isTrigger = isTrigger;
-                    added = mc;
-                    break;
-                default: return OpResult.Fail($"unknown kind '{kind}' (box/sphere/capsule/mesh)");
-            }
-            return OpResult.Success(added.GetInstanceID(),
-                $"added {kind} collider on '{go.name}'  size~{b.size.x:F2}×{b.size.y:F2}×{b.size.z:F2}");
+                ["target"] = ToolTargetRef.Capture(go)?.ToJson(),
+                ["collider"] = ToolTargetRef.Capture(added)?.ToJson(),
+                ["kind"] = kind,
+                ["useChildren"] = useChildren,
+                ["replaceExisting"] = replaceExisting,
+                ["replacedCount"] = replaced,
+                ["isTrigger"] = isTrigger,
+                ["convex"] = convex,
+            };
+            return result;
         }
 
         public static OpResult AddCompoundColliders(JObject args)
@@ -505,57 +655,78 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var id = (int?)args["instanceId"] ?? 0;
             var rootGo = EditorUtility.InstanceIDToObject(id) as GameObject;
             if (rootGo == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
-            var kind = ((string)args["kind"] ?? "box").ToLowerInvariant();
+
+            var kind = ((string)args["kind"] ?? "box").Trim().ToLowerInvariant();
+            if (!IsColliderKind(kind))
+                return OpResult.Fail($"unknown kind '{kind}' (box/sphere/capsule/mesh)");
             var isTrigger = (bool?)args["isTrigger"] ?? false;
             var replaceExisting = (bool?)args["replaceExisting"] ?? false;
 
             var renderers = rootGo.GetComponentsInChildren<Renderer>(true);
-            int added = 0, replaced = 0;
-            foreach (var r in renderers)
+            if (renderers.Length == 0)
+                return OpResult.Fail("no Renderer found on the target hierarchy");
+
+            var plans = new List<(Renderer renderer, Bounds localBounds, Mesh mesh)>();
+            foreach (var renderer in renderers)
             {
-                var go = r.gameObject;
+                if (!TryComputeLocalRendererBounds(renderer.transform, new[] { renderer }, out var localBounds, out var boundsError))
+                    return OpResult.Fail($"cannot fit renderer '{renderer.name}': {boundsError}");
+                Mesh mesh = null;
+                if (kind == "mesh" && !TryGetMeshSource(renderer.gameObject, out mesh, out var meshError))
+                    return OpResult.Fail($"cannot add mesh collider for renderer '{renderer.name}': {meshError}");
+                plans.Add((renderer, localBounds, mesh));
+            }
+
+            int replaced = 0;
+            var colliderRefs = new JArray();
+            using (var mutation = new MutationScope("Add Compound Colliders"))
+            {
                 if (replaceExisting)
                 {
-                    foreach (var ex in go.GetComponents<Collider>())
+                    var visitedObjects = new HashSet<int>();
+                    foreach (var plan in plans)
                     {
-                        if (ex is CharacterController) continue;
-                        Undo.DestroyObjectImmediate(ex);
-                        replaced++;
+                        var gameObject = plan.renderer.gameObject;
+                        if (!visitedObjects.Add(gameObject.GetInstanceID())) continue;
+                        foreach (var existing in gameObject.GetComponents<Collider>())
+                        {
+                            if (existing == null || existing is CharacterController) continue;
+                            mutation.Destroy(existing);
+                            replaced++;
+                        }
                     }
                 }
 
-                var b = r.bounds;
-                var localCenter = go.transform.InverseTransformPoint(b.center);
-                var inverseLossy = new Vector3(
-                    go.transform.lossyScale.x != 0 ? 1f / go.transform.lossyScale.x : 1f,
-                    go.transform.lossyScale.y != 0 ? 1f / go.transform.lossyScale.y : 1f,
-                    go.transform.lossyScale.z != 0 ? 1f / go.transform.lossyScale.z : 1f);
-                var localSize = Vector3.Scale(b.size, inverseLossy);
-
-                switch (kind)
+                foreach (var plan in plans)
                 {
-                    case "box":
-                        var box = Undo.AddComponent<BoxCollider>(go);
-                        box.center = localCenter; box.size = localSize; box.isTrigger = isTrigger;
-                        break;
-                    case "sphere":
-                        var sp = Undo.AddComponent<SphereCollider>(go);
-                        sp.center = localCenter; sp.radius = Mathf.Max(localSize.x, localSize.y, localSize.z) * 0.5f; sp.isTrigger = isTrigger;
-                        break;
-                    case "capsule":
-                        var cap = Undo.AddComponent<CapsuleCollider>(go);
-                        cap.center = localCenter; cap.radius = Mathf.Max(localSize.x, localSize.z) * 0.5f; cap.height = localSize.y; cap.direction = 1; cap.isTrigger = isTrigger;
-                        break;
-                    case "mesh":
-                        var mc = Undo.AddComponent<MeshCollider>(go);
-                        var mf = go.GetComponent<MeshFilter>(); if (mf != null) mc.sharedMesh = mf.sharedMesh;
-                        mc.convex = true; mc.isTrigger = isTrigger; // convex required for trigger or rigidbody
-                        break;
-                    default: return OpResult.Fail($"unknown kind '{kind}'");
+                    var added = AddConfiguredCollider(
+                        mutation,
+                        plan.renderer.gameObject,
+                        kind,
+                        plan.localBounds,
+                        isTrigger,
+                        kind == "mesh",
+                        plan.mesh);
+                    colliderRefs.Add(ToolTargetRef.Capture(added)?.ToJson());
                 }
-                added++;
+                mutation.Touch(rootGo);
+                mutation.Complete();
             }
-            return OpResult.Success(id, $"added {added} {kind} collider(s) across child renderers" + (replaced > 0 ? $" (replaced {replaced} pre-existing)" : ""));
+
+            var result = OpResult.Success(id,
+                $"added {plans.Count} {kind} collider(s) across child renderers" +
+                (replaced > 0 ? $" (replaced {replaced} pre-existing)" : ""));
+            result.Data = new JObject
+            {
+                ["target"] = ToolTargetRef.Capture(rootGo)?.ToJson(),
+                ["kind"] = kind,
+                ["addedCount"] = plans.Count,
+                ["replacedCount"] = replaced,
+                ["replaceExisting"] = replaceExisting,
+                ["isTrigger"] = isTrigger,
+                ["colliders"] = colliderRefs,
+            };
+            return result;
         }
 
         public static OpResult SetPhysicsMaterial(JObject args)
@@ -563,13 +734,33 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var id = (int?)args["instanceId"] ?? 0;
             var go = EditorUtility.InstanceIDToObject(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
-            var collider = go.GetComponent<Collider>();
-            if (collider == null) return OpResult.Fail("no Collider on GameObject");
 
-            var matRef = (string)args["materialGuidOrPath"];
-            if (string.IsNullOrEmpty(matRef)) return OpResult.Fail("materialGuidOrPath is required");
-            var path = matRef.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)
-                ? matRef : AssetDatabase.GUIDToAssetPath(matRef);
+            var colliderId = (int?)args["colliderInstanceId"] ?? 0;
+            Collider collider;
+            if (colliderId != 0)
+            {
+                collider = EditorUtility.InstanceIDToObject(colliderId) as Collider;
+                if (collider == null)
+                    return OpResult.Fail($"Collider not found: colliderInstanceId={colliderId}");
+                if (collider.gameObject != go)
+                    return OpResult.Fail("colliderInstanceId must identify a Collider on the target GameObject");
+            }
+            else
+            {
+                var colliders = go.GetComponents<Collider>().Where(candidate => candidate != null).ToArray();
+                if (colliders.Length == 0) return OpResult.Fail("no Collider on GameObject");
+                if (colliders.Length > 1)
+                    return OpResult.Fail($"GameObject has {colliders.Length} Colliders; colliderInstanceId is required");
+                collider = colliders[0];
+            }
+
+            var matRef = ((string)args["materialGuidOrPath"] ?? string.Empty).Trim();
+            if (matRef.Length == 0) return OpResult.Fail("materialGuidOrPath is required");
+            var normalizedRef = matRef.Replace('\\', '/');
+            var path = normalizedRef.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) ||
+                       normalizedRef.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase)
+                ? normalizedRef
+                : AssetDatabase.GUIDToAssetPath(normalizedRef);
 
 #if UNITY_2023_3_OR_NEWER
             var mat = AssetDatabase.LoadAssetAtPath<PhysicsMaterial>(path);
@@ -578,39 +769,489 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 #endif
             if (mat == null) return OpResult.Fail($"physics material not found: {matRef}");
 
-            Undo.RecordObject(collider, "Set Physics Material");
-            collider.sharedMaterial = mat;
-            return OpResult.Success(id, $"set physics material '{mat.name}' on {collider.GetType().Name}");
+            var changed = collider.sharedMaterial != mat;
+            if (changed)
+            {
+                using (var mutation = new MutationScope("Set Physics Material"))
+                {
+                    mutation.Record(collider);
+                    collider.sharedMaterial = mat;
+                    if (PrefabUtility.IsPartOfPrefabInstance(collider))
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(collider);
+                    mutation.Complete();
+                }
+            }
+
+            var result = OpResult.Success(id, $"set physics material '{mat.name}' on {collider.GetType().Name}");
+            result.Data = new JObject
+            {
+                ["target"] = ToolTargetRef.Capture(go)?.ToJson(),
+                ["collider"] = ToolTargetRef.Capture(collider)?.ToJson(),
+                ["material"] = ToolTargetRef.Capture(mat)?.ToJson(),
+                ["changed"] = changed,
+            };
+            return result;
         }
+
+        private static bool IsColliderKind(string kind) =>
+            kind == "box" || kind == "sphere" || kind == "capsule" || kind == "mesh";
+
+        private static bool TryGetMeshSource(GameObject gameObject, out Mesh mesh, out string error)
+        {
+            var meshFilter = gameObject.GetComponent<MeshFilter>();
+            mesh = meshFilter != null ? meshFilter.sharedMesh : null;
+            if (mesh == null)
+            {
+                error = "mesh kind requires a MeshFilter with a non-null sharedMesh on the collider GameObject";
+                return false;
+            }
+            if (mesh.vertexCount == 0)
+            {
+                error = $"mesh '{mesh.name}' has no vertices";
+                return false;
+            }
+            error = null;
+            return true;
+        }
+
+        private static bool TryComputeLocalRendererBounds(
+            Transform target,
+            IEnumerable<Renderer> renderers,
+            out Bounds bounds,
+            out string error)
+        {
+            bounds = default;
+            error = null;
+            if (target == null)
+            {
+                error = "target Transform is missing";
+                return false;
+            }
+
+            var scale = target.lossyScale;
+            if (Mathf.Abs(scale.x) < 0.000001f || Mathf.Abs(scale.y) < 0.000001f || Mathf.Abs(scale.z) < 0.000001f)
+            {
+                error = "target Transform has a zero world-scale axis";
+                return false;
+            }
+
+            bool hasPoint = false;
+            foreach (var renderer in renderers)
+            {
+                if (renderer == null) continue;
+                var rendererBounds = renderer.localBounds;
+                if (!IsFiniteVector(rendererBounds.center) || !IsFiniteVector(rendererBounds.size))
+                {
+                    error = $"Renderer '{renderer.name}' has non-finite local bounds";
+                    return false;
+                }
+
+                var matrix = target.worldToLocalMatrix * renderer.transform.localToWorldMatrix;
+                var min = rendererBounds.min;
+                var max = rendererBounds.max;
+                for (int cornerIndex = 0; cornerIndex < 8; cornerIndex++)
+                {
+                    var corner = new Vector3(
+                        (cornerIndex & 1) == 0 ? min.x : max.x,
+                        (cornerIndex & 2) == 0 ? min.y : max.y,
+                        (cornerIndex & 4) == 0 ? min.z : max.z);
+                    var point = matrix.MultiplyPoint3x4(corner);
+                    if (!IsFiniteVector(point))
+                    {
+                        error = $"Renderer '{renderer.name}' produced non-finite local bounds";
+                        return false;
+                    }
+                    if (!hasPoint)
+                    {
+                        bounds = new Bounds(point, Vector3.zero);
+                        hasPoint = true;
+                    }
+                    else
+                    {
+                        bounds.Encapsulate(point);
+                    }
+                }
+            }
+
+            if (hasPoint) return true;
+            error = "no Renderer found — cannot compute local bounds";
+            return false;
+        }
+
+        private static Collider AddConfiguredCollider(
+            MutationScope mutation,
+            GameObject gameObject,
+            string kind,
+            Bounds localBounds,
+            bool isTrigger,
+            bool convex,
+            Mesh mesh)
+        {
+            switch (kind)
+            {
+                case "box":
+                    var box = mutation.AddComponent<BoxCollider>(gameObject);
+                    box.center = localBounds.center;
+                    box.size = localBounds.size;
+                    box.isTrigger = isTrigger;
+                    return box;
+                case "sphere":
+                    var sphere = mutation.AddComponent<SphereCollider>(gameObject);
+                    sphere.center = localBounds.center;
+                    sphere.radius = Mathf.Max(localBounds.size.x, localBounds.size.y, localBounds.size.z) * 0.5f;
+                    sphere.isTrigger = isTrigger;
+                    return sphere;
+                case "capsule":
+                    var capsule = mutation.AddComponent<CapsuleCollider>(gameObject);
+                    ConfigureCapsule(capsule, localBounds);
+                    capsule.isTrigger = isTrigger;
+                    return capsule;
+                case "mesh":
+                    var meshCollider = mutation.AddComponent<MeshCollider>(gameObject);
+                    meshCollider.convex = convex;
+                    meshCollider.sharedMesh = mesh;
+                    meshCollider.isTrigger = isTrigger;
+                    return meshCollider;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported collider kind");
+            }
+        }
+
+        private static void ConfigureCapsule(CapsuleCollider capsule, Bounds localBounds)
+        {
+            var size = localBounds.size;
+            int direction;
+            float height;
+            float radius;
+            if (size.x >= size.y && size.x >= size.z)
+            {
+                direction = 0;
+                height = size.x;
+                radius = Mathf.Max(size.y, size.z) * 0.5f;
+            }
+            else if (size.y >= size.z)
+            {
+                direction = 1;
+                height = size.y;
+                radius = Mathf.Max(size.x, size.z) * 0.5f;
+            }
+            else
+            {
+                direction = 2;
+                height = size.z;
+                radius = Mathf.Max(size.x, size.y) * 0.5f;
+            }
+
+            capsule.center = localBounds.center;
+            capsule.direction = direction;
+            capsule.height = height;
+            capsule.radius = radius;
+        }
+
+        private static bool IsFiniteVector(Vector3 value) =>
+            !float.IsNaN(value.x) && !float.IsInfinity(value.x) &&
+            !float.IsNaN(value.y) && !float.IsInfinity(value.y) &&
+            !float.IsNaN(value.z) && !float.IsInfinity(value.z);
 
         // ============== Helpers ==============
 
-        private static int ParseLayerMask(JToken t)
+        private static bool TryParseLayerMask(JToken token, out int mask, out string error)
         {
-            if (t == null || t.Type == JTokenType.Null) return Physics.DefaultRaycastLayers;
-            if (t.Type == JTokenType.Integer) return (int)t;
-            if (t.Type == JTokenType.String)
+            mask = Physics.DefaultRaycastLayers;
+            error = null;
+            if (token == null || token.Type == JTokenType.Null) return true;
+            if (token.Type == JTokenType.Integer)
             {
-                var m = LayerMask.GetMask((string)t);
-                return m != 0 ? m : Physics.DefaultRaycastLayers;
+                if (!long.TryParse(token.ToString(), out var rawMask) || rawMask < int.MinValue || rawMask > int.MaxValue)
+                {
+                    error = "layerMask integer must be between -2147483648 and 2147483647";
+                    return false;
+                }
+                mask = (int)rawMask;
+                return true;
             }
-            if (t is JArray a)
+
+            if (token.Type == JTokenType.String)
             {
-                var names = a.Select(x => (string)x).Where(s => !string.IsNullOrEmpty(s)).ToArray();
-                if (names.Length > 0) return LayerMask.GetMask(names);
+                var name = ((string)token ?? string.Empty).Trim();
+                var layer = LayerMask.NameToLayer(name);
+                if (layer < 0)
+                {
+                    error = $"unknown layer '{name}'";
+                    return false;
+                }
+                mask = 1 << layer;
+                return true;
             }
-            return Physics.DefaultRaycastLayers;
+
+            if (token is JArray names && names.Count > 0)
+            {
+                mask = 0;
+                foreach (var item in names)
+                {
+                    if (item.Type != JTokenType.String)
+                    {
+                        error = "layerMask arrays must contain only layer names";
+                        return false;
+                    }
+                    var name = ((string)item ?? string.Empty).Trim();
+                    var layer = LayerMask.NameToLayer(name);
+                    if (layer < 0)
+                    {
+                        error = $"unknown layer '{name}'";
+                        return false;
+                    }
+                    mask |= 1 << layer;
+                }
+                return true;
+            }
+
+            error = "layerMask must be an integer, layer name, or non-empty array of layer names";
+            return false;
         }
 
-        private static QueryTriggerInteraction ParseTriggerInteraction(JToken t)
+        private static bool TryParseTriggerInteraction(JToken token, out QueryTriggerInteraction value, out string error)
         {
-            if (t == null || t.Type == JTokenType.Null) return QueryTriggerInteraction.UseGlobal;
-            if (t.Type == JTokenType.Boolean)
-                return (bool)t ? QueryTriggerInteraction.Collide : QueryTriggerInteraction.Ignore;
-            if (t.Type == JTokenType.String
-                && Enum.TryParse<QueryTriggerInteraction>((string)t, true, out var v)) return v;
-            return QueryTriggerInteraction.UseGlobal;
+            value = QueryTriggerInteraction.UseGlobal;
+            error = null;
+            if (token == null || token.Type == JTokenType.Null) return true;
+            if (token.Type == JTokenType.Boolean)
+            {
+                value = (bool)token ? QueryTriggerInteraction.Collide : QueryTriggerInteraction.Ignore;
+                return true;
+            }
+            if (token.Type == JTokenType.String
+                && Enum.TryParse((string)token, true, out QueryTriggerInteraction parsed)
+                && Enum.IsDefined(typeof(QueryTriggerInteraction), parsed))
+            {
+                value = parsed;
+                return true;
+            }
+            error = "hitTriggers must be true, false, 'UseGlobal', 'Collide', or 'Ignore'";
+            return false;
         }
+
+        private static bool TryParseLayerIndex(JToken token, out int layer, out string error)
+        {
+            layer = -1;
+            error = null;
+            if (token.Type == JTokenType.Integer)
+            {
+                layer = (int)token;
+                if (layer >= 0 && layer < 32) return true;
+                error = "layer index must be between 0 and 31";
+                return false;
+            }
+            if (token.Type == JTokenType.String)
+            {
+                var name = ((string)token ?? string.Empty).Trim();
+                layer = LayerMask.NameToLayer(name);
+                if (layer >= 0) return true;
+                error = $"unknown layer '{name}'";
+                return false;
+            }
+            error = "layer must be an index or layer name";
+            return false;
+        }
+
+        private static bool TryParseFiniteVector3(JToken token, string name, Vector3 fallback, bool required, out Vector3 value, out string error)
+        {
+            value = fallback;
+            error = null;
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                if (!required) return true;
+                error = $"{name} is required";
+                return false;
+            }
+
+            if (token is JArray array && array.Count == 3
+                && TryReadFiniteFloat(array[0], out var x)
+                && TryReadFiniteFloat(array[1], out var y)
+                && TryReadFiniteFloat(array[2], out var z))
+            {
+                value = new Vector3(x, y, z);
+                return true;
+            }
+            if (token is JObject obj && obj["x"] != null && obj["y"] != null && obj["z"] != null
+                && TryReadFiniteFloat(obj["x"], out x)
+                && TryReadFiniteFloat(obj["y"], out y)
+                && TryReadFiniteFloat(obj["z"], out z))
+            {
+                value = new Vector3(x, y, z);
+                return true;
+            }
+
+            error = $"{name} must be a finite Vector3 [x,y,z] or {{x,y,z}}";
+            return false;
+        }
+
+        private static bool TryParseNonNegativeVector3(JToken token, string name, out Vector3 value, out string error)
+        {
+            if (!TryParseFiniteVector3(token, name, Vector3.zero, true, out value, out error)) return false;
+            if (value.x >= 0f && value.y >= 0f && value.z >= 0f) return true;
+            error = $"{name} components must be non-negative";
+            return false;
+        }
+
+        private static bool TryParseFiniteRotation(JToken token, out Quaternion value, out string error)
+        {
+            value = Quaternion.identity;
+            error = null;
+            if (token == null || token.Type == JTokenType.Null) return true;
+            if (token is JArray array && (array.Count == 3 || array.Count == 4)
+                && TryReadFiniteFloat(array[0], out var x)
+                && TryReadFiniteFloat(array[1], out var y)
+                && TryReadFiniteFloat(array[2], out var z))
+            {
+                if (array.Count == 3)
+                {
+                    value = Quaternion.Euler(x, y, z);
+                    return true;
+                }
+                if (TryReadFiniteFloat(array[3], out var w))
+                {
+                    value = new Quaternion(x, y, z, w);
+                    return true;
+                }
+            }
+            if (token is JObject obj && obj["x"] != null && obj["y"] != null && obj["z"] != null
+                && TryReadFiniteFloat(obj["x"], out x)
+                && TryReadFiniteFloat(obj["y"], out y)
+                && TryReadFiniteFloat(obj["z"], out z))
+            {
+                if (obj["w"] == null)
+                {
+                    value = Quaternion.Euler(x, y, z);
+                    return true;
+                }
+                if (TryReadFiniteFloat(obj["w"], out var w))
+                {
+                    value = new Quaternion(x, y, z, w);
+                    return true;
+                }
+            }
+            error = "rotation must contain three finite Euler components or four finite quaternion components";
+            return false;
+        }
+
+        private static bool TryParseNonNegativeNumber(JToken token, string name, float fallback, bool allowPositiveInfinity, out float value, out string error)
+        {
+            value = fallback;
+            error = null;
+            if (token == null || token.Type == JTokenType.Null) return true;
+            if ((token.Type != JTokenType.Integer && token.Type != JTokenType.Float))
+            {
+                error = $"{name} must be a number";
+                return false;
+            }
+            value = (float)token;
+            if (float.IsNaN(value) || value < 0f || (!allowPositiveInfinity && float.IsInfinity(value)))
+            {
+                error = $"{name} must be a non-negative {(allowPositiveInfinity ? "number" : "finite number")}";
+                return false;
+            }
+            return true;
+        }
+
+        private static bool TryNormalizeDirection(Vector3 value, string name, out Vector3 normalized, out string error)
+        {
+            normalized = Vector3.zero;
+            error = null;
+            if (value.sqrMagnitude <= 1e-12f)
+            {
+                error = $"{name} must be non-zero";
+                return false;
+            }
+            normalized = value.normalized;
+            return true;
+        }
+
+        private static bool TryReadFiniteFloat(JToken token, out float value)
+        {
+            value = 0f;
+            if (token == null || (token.Type != JTokenType.Integer && token.Type != JTokenType.Float)) return false;
+            value = (float)token;
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        private static int CompareHits(RaycastHit left, RaycastHit right)
+        {
+            var distance = left.distance.CompareTo(right.distance);
+            if (distance != 0) return distance;
+            var leftId = left.collider != null ? left.collider.GetInstanceID() : 0;
+            var rightId = right.collider != null ? right.collider.GetInstanceID() : 0;
+            return leftId.CompareTo(rightId);
+        }
+
+        private static int CompareColliders(Collider left, Collider right)
+        {
+            var name = string.Compare(left != null ? left.gameObject.name : string.Empty, right != null ? right.gameObject.name : string.Empty, StringComparison.Ordinal);
+            if (name != 0) return name;
+            var leftId = left != null ? left.GetInstanceID() : 0;
+            var rightId = right != null ? right.GetInstanceID() : 0;
+            return leftId.CompareTo(rightId);
+        }
+
+        private static JObject HitJson(RaycastHit hit)
+        {
+            var collider = hit.collider;
+            var gameObject = collider != null ? collider.gameObject : null;
+            return new JObject
+            {
+                ["name"] = gameObject != null ? gameObject.name : null,
+                ["instanceId"] = gameObject != null ? gameObject.GetInstanceID() : 0,
+                ["target"] = ToolTargetRef.Capture(gameObject)?.ToJson(),
+                ["colliderTarget"] = ToolTargetRef.Capture(collider)?.ToJson(),
+                ["tag"] = gameObject != null ? gameObject.tag : null,
+                ["layer"] = gameObject != null ? gameObject.layer : -1,
+                ["layerName"] = gameObject != null ? LayerMask.LayerToName(gameObject.layer) : null,
+                ["point"] = JsonHelpers.Vec3(hit.point),
+                ["normal"] = JsonHelpers.Vec3(hit.normal),
+                ["distance"] = hit.distance,
+                ["colliderType"] = collider != null ? collider.GetType().FullName : null,
+                ["isTrigger"] = collider != null && collider.isTrigger,
+            };
+        }
+
+        private static JObject ColliderJson(Collider collider)
+        {
+            var gameObject = collider != null ? collider.gameObject : null;
+            return new JObject
+            {
+                ["name"] = gameObject != null ? gameObject.name : null,
+                ["instanceId"] = gameObject != null ? gameObject.GetInstanceID() : 0,
+                ["target"] = ToolTargetRef.Capture(gameObject)?.ToJson(),
+                ["colliderTarget"] = ToolTargetRef.Capture(collider)?.ToJson(),
+                ["tag"] = gameObject != null ? gameObject.tag : null,
+                ["layer"] = gameObject != null ? gameObject.layer : -1,
+                ["layerName"] = gameObject != null ? LayerMask.LayerToName(gameObject.layer) : null,
+                ["colliderType"] = collider != null ? collider.GetType().FullName : null,
+                ["isTrigger"] = collider != null && collider.isTrigger,
+            };
+        }
+
+        private static JObject BoundsJson(Bounds bounds) => new JObject
+        {
+            ["center"] = JsonHelpers.Vec3(bounds.center),
+            ["size"] = JsonHelpers.Vec3(bounds.size),
+            ["min"] = JsonHelpers.Vec3(bounds.min),
+            ["max"] = JsonHelpers.Vec3(bounds.max),
+        };
+
+        private static JArray BuildCollisionLayerList(int layer)
+        {
+            var result = new JArray();
+            for (var index = 0; index < 32; index++)
+            {
+                var name = LayerMask.LayerToName(index);
+                if (Physics.GetIgnoreLayerCollision(layer, index)) continue;
+                result.Add(new JObject { ["index"] = index, ["name"] = name });
+            }
+            return result;
+        }
+
+        private static string DisplayLayerName(string name) => string.IsNullOrEmpty(name) ? "(unnamed)" : name;
 
         private static int? ParseLayerInt(JToken t)
         {
