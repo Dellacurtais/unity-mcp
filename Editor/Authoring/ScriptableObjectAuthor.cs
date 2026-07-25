@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using Maicon.SceneAnalyzer.Editor.AssetTools;
+using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -20,58 +23,47 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var nameContains = (string)args["nameContains"];
             var category = ((string)args["category"] ?? "all").ToLowerInvariant();
+            if (category != "all" && category != "builtin" && category != "user")
+                return OpResult.Fail("category must be all, builtin, or user");
             var withMenuOnly = (bool?)args["withMenuOnly"] ?? false;
-            var limit = (int?)args["limit"] ?? 200;
+            var offset = Math.Max(0, (int?)args["offset"] ?? 0);
+            var limit = Math.Max(1, Math.Min(1000, (int?)args["limit"] ?? 200));
+            var editorWindow = typeof(EditorWindow);
 
-            var sb = new System.Text.StringBuilder();
-            int count = 0;
-            var soBase = typeof(ScriptableObject);
-            var editorWindow = typeof(UnityEditor.EditorWindow);
-
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                var asmName = asm.GetName().Name ?? "";
-                bool isBuiltin = ComponentTypeInspector.IsBuiltinAssembly(asmName);
-                if (category == "user" && isBuiltin) continue;
-                if (category == "builtin" && !isBuiltin) continue;
-
-                Type[] types;
-                try { types = asm.GetTypes(); }
-                catch (ReflectionTypeLoadException tle) { types = tle.Types.Where(t => t != null).ToArray(); }
-                catch { continue; }
-
-                foreach (var t in types)
+            var matches = TypeCache.GetTypesDerivedFrom<ScriptableObject>()
+                .Where(type => type != null && !type.IsAbstract && !type.IsGenericType && !editorWindow.IsAssignableFrom(type))
+                .Select(type => new
                 {
-                    if (t == null) continue;
-                    if (!soBase.IsAssignableFrom(t)) continue;
-                    if (t == soBase) continue;
-                    if (t.IsAbstract || t.IsGenericType) continue;
-                    // Skip EditorWindow and most editor-only SOs (still ScriptableObject-derived,
-                    // but not what the agent typically wants to instantiate as data assets).
-                    if (editorWindow.IsAssignableFrom(t)) continue;
+                    Type = type,
+                    Assembly = type.Assembly.GetName().Name ?? string.Empty,
+                    Menu = type.GetCustomAttribute<CreateAssetMenuAttribute>(),
+                })
+                .Where(entry => category == "all"
+                    || (category == "builtin") == ComponentTypeInspector.IsBuiltinAssembly(entry.Assembly))
+                .Where(entry => string.IsNullOrEmpty(nameContains)
+                    || entry.Type.Name.IndexOf(nameContains, StringComparison.OrdinalIgnoreCase) >= 0
+                    || (entry.Type.FullName ?? string.Empty).IndexOf(nameContains, StringComparison.OrdinalIgnoreCase) >= 0)
+                .Where(entry => !withMenuOnly || entry.Menu != null)
+                .OrderBy(entry => entry.Type.FullName, StringComparer.Ordinal)
+                .ThenBy(entry => entry.Assembly, StringComparer.Ordinal)
+                .ToArray();
 
-                    if (!string.IsNullOrEmpty(nameContains)
-                        && t.Name.IndexOf(nameContains, StringComparison.OrdinalIgnoreCase) < 0
-                        && (t.FullName ?? "").IndexOf(nameContains, StringComparison.OrdinalIgnoreCase) < 0) continue;
-
-                    var menu = t.GetCustomAttribute<CreateAssetMenuAttribute>();
-                    if (withMenuOnly && menu == null) continue;
-
-                    sb.Append($"  {t.FullName}");
-                    sb.Append($"  (asm={asmName}, builtin={isBuiltin})");
-                    if (menu != null)
-                    {
-                        sb.Append($"  [menu='{menu.menuName}'");
-                        if (!string.IsNullOrEmpty(menu.fileName)) sb.Append($", default='{menu.fileName}'");
-                        sb.Append(']');
-                    }
-                    sb.AppendLine();
-                    count++;
-                    if (count >= limit) goto done;
-                }
-            }
-            done:
-            return new OpResult { Ok = true, Summary = $"{count} ScriptableObject type(s):\n" + sb, InstanceID = 0 };
+            var page = new JArray(matches.Skip(offset).Take(limit).Select(entry => new JObject
+            {
+                ["name"] = entry.Type.Name,
+                ["fullName"] = entry.Type.FullName,
+                ["assembly"] = entry.Assembly,
+                ["assemblyQualifiedName"] = entry.Type.AssemblyQualifiedName,
+                ["builtin"] = ComponentTypeInspector.IsBuiltinAssembly(entry.Assembly),
+                ["menuName"] = entry.Menu != null ? entry.Menu.menuName : null,
+                ["defaultFileName"] = entry.Menu != null ? entry.Menu.fileName : null,
+            }));
+            return new OpResult
+            {
+                Ok = true,
+                Summary = $"returned {page.Count} of {matches.Length} ScriptableObject type(s)",
+                Data = PageData("types", page, matches.Length, offset),
+            };
         }
 
         // ============== Find instances by subclass ==============
@@ -79,39 +71,37 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult FindInstances(JObject args)
         {
             var typeName = (string)args["className"];
-            if (string.IsNullOrEmpty(typeName)) return OpResult.Fail("className is required");
-            var pathPrefix = (string)args["pathPrefix"];
-            var limit = (int?)args["limit"] ?? 200;
+            if (!TryResolveScriptableObjectType(typeName, false, out var type, out var typeError)) return OpResult.Fail(typeError);
+            var searchPath = (string)args["pathPrefix"] ?? "Assets";
+            if (!TryAssetPath(searchPath, false, true, out searchPath, out var pathError)) return OpResult.Fail(pathError);
+            if (!AssetDatabase.IsValidFolder(searchPath)) return OpResult.Fail($"search folder not found: {searchPath}");
+            var offset = Math.Max(0, (int?)args["offset"] ?? 0);
+            var limit = Math.Max(1, Math.Min(1000, (int?)args["limit"] ?? 200));
 
-            var type = ResolveScriptableObjectType(typeName);
-            if (type == null) return OpResult.Fail(
-                $"unknown ScriptableObject type '{typeName}'. " +
-                $"Use list_scriptable_object_types nameContains=\"{typeName}\" to find the real name.");
-
-            // Unity's `t:` filter matches the simple type name across the project. Two
-            // unrelated classes sharing a name would both surface, so we re-validate
-            // each hit against the resolved Type. IsAssignableFrom also lets a query
-            // for a base class surface its derived assets.
-            var guids = AssetDatabase.FindAssets($"t:{type.Name}");
-            if (guids == null || guids.Length == 0)
-                return new OpResult { Ok = true, Summary = $"0 instance(s) of {type.FullName}" };
-
-            var sb = new System.Text.StringBuilder();
-            int count = 0;
-            foreach (var guid in guids)
+            var searchableTypes = TypeCache.GetTypesDerivedFrom<ScriptableObject>()
+                .Where(candidate => candidate != null && !candidate.IsAbstract && !candidate.IsGenericType && type.IsAssignableFrom(candidate))
+                .Concat(!type.IsAbstract && !type.IsGenericType ? new[] { type } : Array.Empty<Type>())
+                .Distinct()
+                .ToArray();
+            var matches = searchableTypes
+                .SelectMany(candidate => AssetDatabase.FindAssets($"t:{candidate.Name}", new[] { searchPath }))
+                .Distinct(StringComparer.Ordinal)
+                .Select(AssetDatabase.GUIDToAssetPath)
+                .Where(path => !string.IsNullOrEmpty(path))
+                .Select(path => new { Path = path, Type = AssetDatabase.GetMainAssetTypeAtPath(path) })
+                .Where(entry => entry.Type != null && type.IsAssignableFrom(entry.Type))
+                .OrderBy(entry => entry.Path, StringComparer.Ordinal)
+                .ToArray();
+            var page = new JArray(matches.Skip(offset).Take(limit).Select(entry => AssetData(entry.Path)));
+            var data = PageData("assets", page, matches.Length, offset);
+            data["type"] = type.FullName;
+            data["searchPath"] = searchPath;
+            return new OpResult
             {
-                var p = AssetDatabase.GUIDToAssetPath(guid);
-                if (string.IsNullOrEmpty(p)) continue;
-                if (!string.IsNullOrEmpty(pathPrefix)
-                    && !p.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase)) continue;
-                var assetType = AssetDatabase.GetMainAssetTypeAtPath(p);
-                if (assetType == null || !type.IsAssignableFrom(assetType)) continue;
-                var asset = AssetDatabase.LoadAssetAtPath<ScriptableObject>(p);
-                sb.AppendLine($"  {p}  guid={guid}  name='{(asset != null ? asset.name : "<unloaded>")}'  type={assetType.Name}");
-                count++;
-                if (count >= limit) { sb.AppendLine($"  [+more truncated at limit={limit}]"); break; }
-            }
-            return new OpResult { Ok = true, Summary = $"{count} instance(s) of {type.FullName}:\n{sb}" };
+                Ok = true,
+                Summary = $"returned {page.Count} of {matches.Length} instance(s) of {type.FullName}",
+                Data = data,
+            };
         }
 
         // ============== Create ==============
@@ -119,314 +109,465 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult Create(JObject args)
         {
             var typeName = (string)args["className"];
-            var path = (string)args["path"];
-            if (string.IsNullOrEmpty(typeName)) return OpResult.Fail("className is required");
-            if (string.IsNullOrEmpty(path)) return OpResult.Fail("path is required (e.g. Assets/Data/MyAsset.asset)");
-            if (!path.EndsWith(".asset", StringComparison.OrdinalIgnoreCase)) path += ".asset";
+            var requestedPath = (string)args["path"];
+            if (string.IsNullOrEmpty(requestedPath)) return OpResult.Fail("path is required (e.g. Assets/Data/MyAsset.asset)");
+            if (!TryAssetPath(requestedPath, false, false, out var path, out var pathError, requireAssetExtension: true)) return OpResult.Fail(pathError);
+            if (path.StartsWith("Assets/StreamingAssets/", StringComparison.Ordinal) || path == "Assets/StreamingAssets")
+                return OpResult.Fail("ScriptableObject assets cannot be created under Assets/StreamingAssets");
+            if (AssetDatabase.AssetPathExists(path)) return OpResult.Fail($"asset already exists: {path}");
+            if (!TryResolveScriptableObjectType(typeName, true, out var type, out var typeError))
+                return OpResult.Fail(typeError + " If the script was just created, call refresh_assets first.");
 
-            var type = ResolveScriptableObjectType(typeName);
-            if (type == null) return OpResult.Fail(
-                $"unknown ScriptableObject type '{typeName}'. " +
-                $"If you JUST created the script, call refresh_assets first. " +
-                $"Otherwise use list_scriptable_object_types nameContains=\"{typeName}\" to find the real name.");
-
-            EnsureFolder(Path.GetDirectoryName(path));
-            var so = ScriptableObject.CreateInstance(type);
-            so.name = Path.GetFileNameWithoutExtension(path);
-            AssetDatabase.CreateAsset(so, path);
-            // Register so Ctrl+Z removes the freshly-created asset, matching the
-            // single-Undo-group contract used elsewhere in the toolkit.
-            Undo.RegisterCreatedObjectUndo(so, $"Create {type.Name}");
-
-            // Apply initialFields if provided. Each key = SerializedProperty name; value goes through ApplyValue.
-            int applied = 0;
-            if (args["initialFields"] is JObject fields)
+            ScriptableObject scriptableObject = null;
+            var createdFolders = new List<string>();
+            try
             {
-                var serObj = new SerializedObject(so);
-                foreach (var kv in fields)
-                {
-                    var p = serObj.FindProperty(kv.Key);
-                    if (p == null) continue;
-                    try { ComponentEditor.ApplyValue(p, kv.Value); applied++; }
-                    catch (Exception e) { Debug.LogWarning($"[scene-analyzer] initialFields[{kv.Key}]: {e.Message}"); }
-                }
-                serObj.ApplyModifiedProperties();
+                scriptableObject = ScriptableObject.CreateInstance(type);
+                if (scriptableObject == null) return OpResult.Fail($"CreateInstance returned null for {type.FullName}");
+                scriptableObject.name = Path.GetFileNameWithoutExtension(path);
+                var applied = ApplyInitialFields(scriptableObject, args["initialFields"] as JObject, out var fieldError);
+                if (fieldError != null) return OpResult.Fail(fieldError);
+                EnsureFolder(Path.GetDirectoryName(path)?.Replace('\\', '/'), createdFolders);
+                AssetDatabase.CreateAsset(scriptableObject, path);
+                if (!AssetDatabase.AssetPathExists(path)) throw new InvalidOperationException($"CreateAsset did not create '{path}'");
+                var result = OpResult.Success(scriptableObject.GetInstanceID(),
+                    $"created {type.Name} at {path}" + (applied > 0 ? $" (set {applied} initial field(s))" : string.Empty));
+                result.Data = new JObject { ["asset"] = AssetData(path), ["savedAssets"] = true };
+                result.CreatedAssetPath = path;
+                scriptableObject = null;
+                return result;
             }
-
-            EditorUtility.SetDirty(so);
-            return OpResult.Success(so.GetInstanceID(),
-                $"created {type.Name} at {path}" + (applied > 0 ? $" (set {applied} initial field(s))" : ""));
+            catch (Exception exception)
+            {
+                if (AssetDatabase.AssetPathExists(path)) AssetDatabase.DeleteAsset(path);
+                CleanupEmptyFolders(createdFolders);
+                return OpResult.Fail($"CREATE_FAILED: {exception.Message}");
+            }
+            finally
+            {
+                if (scriptableObject != null) Object.DestroyImmediate(scriptableObject);
+            }
         }
 
         // ============== Read ==============
 
         public static OpResult Read(JObject args)
         {
-            var assetRef = (string)args["guidOrPath"];
-            if (string.IsNullOrEmpty(assetRef)) return OpResult.Fail("guidOrPath is required");
-            var path = ResolvePath(assetRef);
-            var so = AssetDatabase.LoadAssetAtPath<ScriptableObject>(path);
-            if (so == null) return OpResult.Fail($"ScriptableObject not found: {assetRef}");
-
-            var sb = new System.Text.StringBuilder();
-            sb.AppendLine($"{so.name} ({so.GetType().FullName})");
-            sb.AppendLine($"  path: {path}");
-
-            var serObj = new SerializedObject(so);
-            var iter = serObj.GetIterator();
+            if (!TryResolveScriptableObject((string)args["guidOrPath"], out var path, out var scriptableObject, out var error)) return OpResult.Fail(error);
+            var offset = Math.Max(0, (int?)args["offset"] ?? 0);
+            var limit = Math.Max(1, Math.Min(1000, (int?)args["limit"] ?? 80));
+            var readOptions = new SerializedValueCodec.ReadOptions
+            {
+                MaxDepth = Math.Max(1, Math.Min(16, (int?)args["maxDepth"] ?? 4)),
+                MaxArrayItems = Math.Max(1, Math.Min(1000, (int?)args["maxArrayItems"] ?? 32)),
+            };
+            var fields = new JArray();
+            var serialized = new SerializedObject(scriptableObject);
+            var iterator = serialized.GetIterator();
             bool enterChildren = true;
-            int shown = 0;
-            while (iter.NextVisible(enterChildren))
+            int total = 0;
+            while (iterator.NextVisible(enterChildren))
             {
                 enterChildren = false;
-                if (iter.name == "m_Script") continue;
-                if (shown++ >= 80) { sb.AppendLine($"  [+more fields truncated]"); break; }
-                sb.AppendLine($"  {iter.name} ({iter.propertyType}{(iter.isArray ? $" array[{iter.arraySize}]" : "")}) = {DescribeValue(iter)}");
+                if (iterator.name == "m_Script") continue;
+                if (total >= offset && fields.Count < limit)
+                {
+                    fields.Add(new JObject
+                    {
+                        ["name"] = iterator.name,
+                        ["propertyPath"] = iterator.propertyPath,
+                        ["propertyType"] = iterator.propertyType.ToString(),
+                        ["unityType"] = iterator.type,
+                        ["isArray"] = iterator.isArray,
+                        ["arraySize"] = iterator.isArray ? iterator.arraySize : (int?)null,
+                        ["value"] = SerializedValueCodec.Read(iterator, readOptions),
+                    });
+                }
+                total++;
             }
-            return new OpResult { Ok = true, Summary = sb.ToString(), InstanceID = so.GetInstanceID() };
+            var data = PageData("fields", fields, total, offset);
+            data["asset"] = AssetData(path);
+            return new OpResult
+            {
+                Ok = true,
+                InstanceID = scriptableObject.GetInstanceID(),
+                Summary = $"read {fields.Count} of {total} field(s) from {scriptableObject.name}",
+                Data = data,
+            };
         }
 
         // ============== Set property ==============
 
         public static OpResult SetProperty(JObject args)
         {
-            var assetRef = (string)args["assetGuidOrPath"];
-            if (string.IsNullOrEmpty(assetRef)) return OpResult.Fail("assetGuidOrPath is required");
-            var path = ResolvePath(assetRef);
-            var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
-            if (asset == null) return OpResult.Fail($"asset not found: {assetRef}");
+            if (!TryResolveScriptableObject((string)args["assetGuidOrPath"], out var path, out var asset, out var error)) return OpResult.Fail(error);
+            if (!AssetDatabase.IsOpenForEdit(path, out var editMessage, StatusQueryOptions.ForceUpdate))
+                return OpResult.Fail($"ASSET_NOT_EDITABLE: {editMessage}");
+            var propertyPath = (string)args["propertyPath"];
+            if (string.IsNullOrEmpty(propertyPath)) return OpResult.Fail("propertyPath is required");
 
-            var propPath = (string)args["propertyPath"];
-            if (string.IsNullOrEmpty(propPath)) return OpResult.Fail("propertyPath is required");
-
-            var serObj = new SerializedObject(asset);
-            var prop = serObj.FindProperty(propPath);
-            if (prop == null) return OpResult.Fail($"property '{propPath}' not found on {asset.GetType().Name}");
-
-            Undo.RecordObject(asset, $"Set {asset.name}.{propPath}");
-            try { ComponentEditor.ApplyValue(prop, args["value"]); }
-            catch (Exception e) { return OpResult.Fail($"INVALID_ARG: {e.Message}"); }
-            serObj.ApplyModifiedProperties();
-            EditorUtility.SetDirty(asset);
-            return OpResult.Success(asset.GetInstanceID(), $"set {asset.GetType().Name}.{propPath}");
+            var serialized = new SerializedObject(asset);
+            var property = serialized.FindProperty(propertyPath);
+            if (property == null) return OpResult.Fail($"property '{propertyPath}' not found on {asset.GetType().Name}");
+            var before = SerializedValueCodec.Read(property, CompleteReadOptions());
+            using (var mutation = new MutationScope($"Set {asset.name}.{propertyPath}"))
+            {
+                mutation.Record(asset, $"Set {asset.name}.{propertyPath}");
+                try
+                {
+                    ValidateAssignedValue(property, args["value"], false);
+                    ComponentEditor.ApplyValue(property, args["value"]);
+                    var after = SerializedValueCodec.Read(property, CompleteReadOptions());
+                    serialized.ApplyModifiedProperties();
+                    EditorUtility.SetDirty(asset);
+                    AssetDatabase.SaveAssetIfDirty(asset);
+                    var result = new OpResult
+                    {
+                        Ok = true,
+                        InstanceID = asset.GetInstanceID(),
+                        Summary = $"set {asset.GetType().Name}.{propertyPath}",
+                        Data = new JObject
+                        {
+                            ["asset"] = AssetData(path),
+                            ["propertyPath"] = propertyPath,
+                            ["before"] = before,
+                            ["after"] = after,
+                            ["savedAssets"] = true,
+                        },
+                    };
+                    mutation.Complete();
+                    return result;
+                }
+                catch (Exception exception)
+                {
+                    serialized.Update();
+                    return OpResult.Fail($"SET_FAILED: {exception.Message}");
+                }
+            }
         }
 
         // ============== Duplicate ==============
 
         public static OpResult Duplicate(JObject args)
         {
-            var srcRef = (string)args["sourceGuidOrPath"];
-            var newPath = (string)args["targetPath"];
-            if (string.IsNullOrEmpty(srcRef) || string.IsNullOrEmpty(newPath))
-                return OpResult.Fail("sourceGuidOrPath + targetPath required");
-            if (!newPath.EndsWith(".asset", StringComparison.OrdinalIgnoreCase)) newPath += ".asset";
+            if (!TryResolveScriptableObject((string)args["sourceGuidOrPath"], out var sourcePath, out var source, out var sourceError)) return OpResult.Fail(sourceError);
+            var requestedTarget = (string)args["targetPath"];
+            if (string.IsNullOrEmpty(requestedTarget)) return OpResult.Fail("targetPath is required");
+            if (!TryAssetPath(requestedTarget, false, false, out var targetPath, out var pathError, requireAssetExtension: true)) return OpResult.Fail(pathError);
+            if (targetPath.StartsWith("Assets/StreamingAssets/", StringComparison.Ordinal) || targetPath == "Assets/StreamingAssets")
+                return OpResult.Fail("ScriptableObject assets cannot be created under Assets/StreamingAssets");
+            if (string.Equals(sourcePath, targetPath, StringComparison.OrdinalIgnoreCase)) return OpResult.Fail("source and target paths must differ");
+            if (AssetDatabase.AssetPathExists(targetPath)) return OpResult.Fail($"asset already exists: {targetPath}");
 
-            var srcPath = ResolvePath(srcRef);
-            var src = AssetDatabase.LoadAssetAtPath<ScriptableObject>(srcPath);
-            if (src == null) return OpResult.Fail($"source not found: {srcRef}");
-
-            EnsureFolder(Path.GetDirectoryName(newPath));
-            // CopyAsset preserves sub-assets (BlendTrees, sub-clips, etc.) and is
-            // the official Unity way to clone an .asset with full fidelity.
-            // Object.Instantiate would only clone the root SO and silently lose
-            // anything attached via AssetDatabase.AddObjectToAsset.
-            if (!AssetDatabase.CopyAsset(srcPath, newPath))
-                return OpResult.Fail($"AssetDatabase.CopyAsset failed: {srcPath} → {newPath}");
-            var clone = AssetDatabase.LoadAssetAtPath<ScriptableObject>(newPath);
-            if (clone == null) return OpResult.Fail($"copy succeeded but clone not loadable at {newPath}");
-            Undo.RegisterCreatedObjectUndo(clone, $"Duplicate {src.GetType().Name}");
-            EditorUtility.SetDirty(clone);
-            return OpResult.Success(clone.GetInstanceID(),
-                $"duplicated {src.GetType().Name} '{src.name}' → {newPath}");
+            var createdFolders = new List<string>();
+            try
+            {
+                EnsureFolder(Path.GetDirectoryName(targetPath)?.Replace('\\', '/'), createdFolders);
+                if (!AssetDatabase.CopyAsset(sourcePath, targetPath)) throw new InvalidOperationException($"CopyAsset returned false: {sourcePath} -> {targetPath}");
+                var clone = AssetDatabase.LoadAssetAtPath<ScriptableObject>(targetPath);
+                if (clone == null) throw new InvalidOperationException($"copy succeeded but clone is not a ScriptableObject at {targetPath}");
+                var result = OpResult.Success(clone.GetInstanceID(), $"duplicated {source.GetType().Name} '{source.name}' -> {targetPath}");
+                result.Data = new JObject { ["asset"] = AssetData(targetPath), ["savedAssets"] = true };
+                result.CreatedAssetPath = targetPath;
+                return result;
+            }
+            catch (Exception exception)
+            {
+                if (AssetDatabase.AssetPathExists(targetPath)) AssetDatabase.DeleteAsset(targetPath);
+                CleanupEmptyFolders(createdFolders);
+                return OpResult.Fail($"DUPLICATE_FAILED: {exception.Message}");
+            }
         }
 
         // ============== Modify array property (works on Component OR SO target) ==============
 
         public static OpResult ModifyArrayProperty(JObject args)
         {
-            var serObj = ResolveSerializedObject(args, out var err);
-            if (serObj == null) return OpResult.Fail(err);
+            var serialized = ResolveSerializedObject(args, out var assetPath, out var error);
+            if (serialized == null) return OpResult.Fail(error);
+            if (!string.IsNullOrEmpty(assetPath)
+                && !AssetDatabase.IsOpenForEdit(assetPath, out var editMessage, StatusQueryOptions.ForceUpdate))
+                return OpResult.Fail($"ASSET_NOT_EDITABLE: {editMessage}");
 
-            var propPath = (string)args["propertyPath"];
-            if (string.IsNullOrEmpty(propPath)) return OpResult.Fail("propertyPath is required");
-            var prop = serObj.FindProperty(propPath);
-            if (prop == null) return OpResult.Fail($"property '{propPath}' not found");
-            if (!prop.isArray) return OpResult.Fail($"'{propPath}' is not an array/list (it's {prop.propertyType})");
+            var propertyPath = (string)args["propertyPath"];
+            if (string.IsNullOrEmpty(propertyPath)) return OpResult.Fail("propertyPath is required");
+            var property = serialized.FindProperty(propertyPath);
+            if (property == null) return OpResult.Fail($"property '{propertyPath}' not found");
+            if (!property.isArray) return OpResult.Fail($"'{propertyPath}' is not an array/list (it's {property.propertyType})");
 
             var action = ((string)args["action"] ?? "append").ToLowerInvariant();
-            Undo.RecordObject(serObj.targetObject, $"Array {action}");
+            var index = (int?)args["index"] ?? -1;
+            var size = (int?)args["size"] ?? -1;
+            var value = args["value"];
+            if ((action == "append" || action == "insert" || action == "set") && value == null)
+                return OpResult.Fail($"value is required for {action}");
+            if (action == "insert" && (index < 0 || index > property.arraySize))
+                return OpResult.Fail($"index {index} out of range [0..{property.arraySize}]");
+            if ((action == "remove" || action == "set") && (index < 0 || index >= property.arraySize))
+                return OpResult.Fail($"index {index} out of range [0..{property.arraySize - 1}]");
+            if (action == "resize" && size < 0) return OpResult.Fail("size is required for resize and must be >= 0");
+            if (action == "resize" && size > property.arraySize && value == null)
+                return OpResult.Fail("value is required when resize expands an array because Unity leaves inserted values undefined");
+            if (action != "append" && action != "insert" && action != "remove"
+                && action != "resize" && action != "clear" && action != "set")
+                return OpResult.Fail($"unknown action '{action}' (use append/insert/remove/resize/clear/set)");
 
-            string summary;
-            switch (action)
+            var before = SerializedValueCodec.Read(property, CompleteReadOptions());
+            using (var mutation = new MutationScope($"Array {action}"))
             {
-                case "append":
+                mutation.Record(serialized.targetObject, $"Array {action}");
+                try
                 {
-                    var idx = prop.arraySize;
-                    prop.arraySize = idx + 1;
-                    var elem = prop.GetArrayElementAtIndex(idx);
-                    if (args["value"] != null)
-                        try { ComponentEditor.ApplyValue(elem, args["value"]); }
-                        catch (Exception e) { return OpResult.Fail($"INVALID_ARG: {e.Message}"); }
-                    summary = $"appended at [{idx}] (new size {prop.arraySize})";
-                    break;
-                }
-                case "insert":
-                {
-                    var idx = (int?)args["index"] ?? 0;
-                    if (idx < 0 || idx > prop.arraySize) return OpResult.Fail($"index {idx} out of range [0..{prop.arraySize}]");
-                    prop.InsertArrayElementAtIndex(idx);
-                    if (args["value"] != null)
+                    string summary;
+                    switch (action)
                     {
-                        var elem = prop.GetArrayElementAtIndex(idx);
-                        try { ComponentEditor.ApplyValue(elem, args["value"]); }
-                        catch (Exception e) { return OpResult.Fail($"INVALID_ARG: {e.Message}"); }
+                        case "append":
+                            index = property.arraySize;
+                            property.InsertArrayElementAtIndex(index);
+                            var appended = property.GetArrayElementAtIndex(index);
+                            ValidateCompleteValue(appended, value);
+                            ComponentEditor.ApplyValue(appended, value);
+                            summary = $"appended at [{index}]";
+                            break;
+                        case "insert":
+                            property.InsertArrayElementAtIndex(index);
+                            var inserted = property.GetArrayElementAtIndex(index);
+                            ValidateCompleteValue(inserted, value);
+                            ComponentEditor.ApplyValue(inserted, value);
+                            summary = $"inserted at [{index}]";
+                            break;
+                        case "remove":
+                            DeleteArrayElement(property, index);
+                            summary = $"removed at [{index}]";
+                            break;
+                        case "resize":
+                            while (property.arraySize > size) DeleteArrayElement(property, property.arraySize - 1);
+                            while (property.arraySize < size)
+                            {
+                                var next = property.arraySize;
+                                property.InsertArrayElementAtIndex(next);
+                                var expanded = property.GetArrayElementAtIndex(next);
+                                ValidateCompleteValue(expanded, value);
+                                ComponentEditor.ApplyValue(expanded, value);
+                            }
+                            summary = $"resized to {size}";
+                            break;
+                        case "clear":
+                            property.ClearArray();
+                            summary = "cleared";
+                            break;
+                        default:
+                            var element = property.GetArrayElementAtIndex(index);
+                            ValidateAssignedValue(element, value, true);
+                            ComponentEditor.ApplyValue(element, value);
+                            summary = $"set [{index}]";
+                            break;
                     }
-                    summary = $"inserted at [{idx}] (new size {prop.arraySize})";
-                    break;
-                }
-                case "remove":
-                {
-                    var idx = (int?)args["index"] ?? -1;
-                    if (idx < 0 || idx >= prop.arraySize) return OpResult.Fail($"index {idx} out of range [0..{prop.arraySize - 1}]");
-                    // Object-ref array quirk: first DeleteArrayElementAtIndex nulls it,
-                    // second actually removes. Apply twice when needed.
-                    var elem = prop.GetArrayElementAtIndex(idx);
-                    if (elem.propertyType == SerializedPropertyType.ObjectReference
-                        && elem.objectReferenceValue != null)
-                        prop.DeleteArrayElementAtIndex(idx);
-                    prop.DeleteArrayElementAtIndex(idx);
-                    summary = $"removed at [{idx}] (new size {prop.arraySize})";
-                    break;
-                }
-                case "resize":
-                {
-                    var size = (int?)args["size"] ?? -1;
-                    if (size < 0) return OpResult.Fail("size required for resize (>= 0)");
-                    prop.arraySize = size;
-                    summary = $"resized to {size}";
-                    break;
-                }
-                case "clear":
-                    prop.ClearArray();
-                    summary = "cleared";
-                    break;
-                case "set":
-                {
-                    var idx = (int?)args["index"] ?? -1;
-                    if (idx < 0 || idx >= prop.arraySize) return OpResult.Fail($"index {idx} out of range");
-                    var elem = prop.GetArrayElementAtIndex(idx);
-                    if (args["value"] == null) return OpResult.Fail("value required for set");
-                    try { ComponentEditor.ApplyValue(elem, args["value"]); }
-                    catch (Exception e) { return OpResult.Fail($"INVALID_ARG: {e.Message}"); }
-                    summary = $"set [{idx}]";
-                    break;
-                }
-                default:
-                    return OpResult.Fail($"unknown action '{action}' (use append/insert/remove/resize/clear/set)");
-            }
 
-            serObj.ApplyModifiedProperties();
-            EditorUtility.SetDirty(serObj.targetObject);
-            return OpResult.Success(serObj.targetObject.GetInstanceID(), summary);
+                    var after = SerializedValueCodec.Read(property, CompleteReadOptions());
+                    serialized.ApplyModifiedProperties();
+                    EditorUtility.SetDirty(serialized.targetObject);
+                    if (!string.IsNullOrEmpty(assetPath)) AssetDatabase.SaveAssetIfDirty(serialized.targetObject);
+                    var result = new OpResult
+                    {
+                        Ok = true,
+                        InstanceID = serialized.targetObject.GetInstanceID(),
+                        Summary = summary + $" (new size {property.arraySize})",
+                        Data = new JObject
+                        {
+                            ["target"] = ToolTargetRef.Capture(serialized.targetObject)?.ToJson(),
+                            ["assetPath"] = string.IsNullOrEmpty(assetPath) ? null : assetPath,
+                            ["propertyPath"] = propertyPath,
+                            ["action"] = action,
+                            ["before"] = before,
+                            ["after"] = after,
+                            ["arraySize"] = property.arraySize,
+                            ["savedAssets"] = !string.IsNullOrEmpty(assetPath),
+                        },
+                    };
+                    mutation.Complete();
+                    return result;
+                }
+                catch (Exception exception)
+                {
+                    serialized.Update();
+                    return OpResult.Fail($"ARRAY_MUTATION_FAILED: {exception.Message}");
+                }
+            }
         }
 
         // ============== Helpers ==============
 
-        private static SerializedObject ResolveSerializedObject(JObject args, out string err)
+        private static SerializedObject ResolveSerializedObject(JObject args, out string assetPath, out string error)
         {
-            err = null;
+            assetPath = null;
+            error = null;
             var assetRef = (string)args["assetGuidOrPath"];
-            if (!string.IsNullOrEmpty(assetRef))
+            var hasAsset = !string.IsNullOrEmpty(assetRef);
+            var hasTarget = args["target"] != null;
+            var hasInstanceId = ((int?)args["instanceId"] ?? 0) != 0;
+            if (hasTarget && hasInstanceId)
             {
-                var path = ResolvePath(assetRef);
-                var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
-                if (asset == null) { err = $"asset not found: {assetRef}"; return null; }
+                error = "provide target or instanceId, not both";
+                return null;
+            }
+            var hasComponent = hasTarget || hasInstanceId;
+            if (hasAsset == hasComponent)
+            {
+                error = "provide exactly one target: assetGuidOrPath or target/instanceId+componentType";
+                return null;
+            }
+            if (hasAsset)
+            {
+                if (!TryResolveScriptableObject(assetRef, out assetPath, out var asset, out error)) return null;
                 return new SerializedObject(asset);
             }
-            var id = (int?)args["instanceId"] ?? 0;
             var typeName = (string)args["componentType"];
-            if (id == 0) { err = "either assetGuidOrPath or instanceId+componentType required"; return null; }
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (go == null) { err = $"GameObject not found: instanceId={id}"; return null; }
-            if (string.IsNullOrEmpty(typeName)) { err = "componentType required when targeting a GameObject"; return null; }
-            var t = ComponentEditor.ResolveComponentType(typeName);
-            if (t == null) { err = $"unknown component type '{typeName}'"; return null; }
-            var c = go.GetComponent(t);
-            if (c == null) { err = $"component '{typeName}' not found on '{go.name}'"; return null; }
-            return new SerializedObject(c);
+            if (string.IsNullOrEmpty(typeName)) { error = "componentType is required when targeting a GameObject"; return null; }
+            var component = ToolTargetResolver.ResolveComponent(args, typeName, (int?)args["componentOrdinal"] ?? 0, out error);
+            return component != null ? new SerializedObject(component) : null;
         }
 
         public static Type ResolveScriptableObjectType(string name)
+            => TryResolveScriptableObjectType(name, false, out var type, out _) ? type : null;
+
+        private static bool TryResolveScriptableObjectType(string name, bool requireCreatable, out Type type, out string error)
         {
-            if (string.IsNullOrEmpty(name)) return null;
-            var direct = Type.GetType(name);
-            if (direct != null && typeof(ScriptableObject).IsAssignableFrom(direct)) return direct;
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            type = null;
+            error = null;
+            if (string.IsNullOrWhiteSpace(name)) { error = "className is required"; return false; }
+            var exact = Type.GetType(name, false);
+            if (IsScriptableObjectType(exact) && (!requireCreatable || IsCreatableScriptableObjectType(exact))) { type = exact; return true; }
+            var candidates = TypeCache.GetTypesDerivedFrom<ScriptableObject>()
+                .Where(candidate => IsScriptableObjectType(candidate) && (!requireCreatable || IsCreatableScriptableObjectType(candidate)))
+                .Where(candidate => string.Equals(candidate.FullName, name, StringComparison.Ordinal)
+                    || string.Equals(candidate.AssemblyQualifiedName, name, StringComparison.Ordinal)
+                    || string.Equals(candidate.Name, name, StringComparison.Ordinal))
+                .OrderBy(candidate => candidate.FullName, StringComparer.Ordinal)
+                .ThenBy(candidate => candidate.Assembly.GetName().Name, StringComparer.Ordinal)
+                .ToArray();
+            if (candidates.Length == 1) { type = candidates[0]; return true; }
+            if (candidates.Length > 1)
             {
-                var t = asm.GetType(name);
-                if (t != null && typeof(ScriptableObject).IsAssignableFrom(t)) return t;
-                Type[] types;
-                try { types = asm.GetTypes(); }
-                catch (ReflectionTypeLoadException tle) { types = tle.Types.Where(x => x != null).ToArray(); }
-                catch { continue; }
-                foreach (var c in types)
+                error = $"ambiguous ScriptableObject type '{name}': {string.Join(", ", candidates.Select(candidate => candidate.AssemblyQualifiedName))}. Use fullName or assemblyQualifiedName.";
+                return false;
+            }
+            error = requireCreatable
+                ? $"unknown or non-creatable ScriptableObject type '{name}'. Use list_scriptable_object_types nameContains=\"{name}\"."
+                : $"unknown ScriptableObject type '{name}'. Use list_scriptable_object_types nameContains=\"{name}\".";
+            return false;
+        }
+
+        private static bool IsScriptableObjectType(Type type)
+            => type != null && typeof(ScriptableObject).IsAssignableFrom(type) && !typeof(EditorWindow).IsAssignableFrom(type);
+
+        private static bool IsCreatableScriptableObjectType(Type type)
+            => IsScriptableObjectType(type) && !type.IsAbstract && !type.IsGenericType;
+
+        private static bool TryResolveScriptableObject(string assetRef, out string path, out ScriptableObject asset, out string error)
+        {
+            path = null;
+            asset = null;
+            error = null;
+            if (string.IsNullOrWhiteSpace(assetRef)) { error = "asset GUID or path is required"; return false; }
+            var resolved = AssetToolSupport.ResolveGuidOrPath(assetRef);
+            if (!AssetToolSupport.TryAssetPath(resolved, true, out path, out error)) return false;
+            asset = AssetDatabase.LoadAssetAtPath<ScriptableObject>(path);
+            if (asset == null) { error = $"asset is not a ScriptableObject: {path}"; return false; }
+            return true;
+        }
+
+        private static bool TryAssetPath(string path, bool mustExist, bool allowRoot, out string normalized, out string error, bool requireAssetExtension = false)
+        {
+            if (!AssetToolSupport.TryAssetPath(path, mustExist, out normalized, out error, allowRoot)) return false;
+            if (requireAssetExtension && !normalized.EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
+            {
+                error = "ScriptableObject asset paths must end with .asset";
+                return false;
+            }
+            return true;
+        }
+
+        private static int ApplyInitialFields(ScriptableObject scriptableObject, JObject fields, out string error)
+        {
+            error = null;
+            if (fields == null || fields.Count == 0) return 0;
+            var serialized = new SerializedObject(scriptableObject);
+            foreach (var field in fields.Properties())
+            {
+                var property = serialized.FindProperty(field.Name);
+                if (property == null) { error = $"initial field not found: {field.Name}"; serialized.Update(); return 0; }
+                try
                 {
-                    if (c == null) continue;
-                    if (string.Equals(c.Name, name, StringComparison.Ordinal)
-                        && typeof(ScriptableObject).IsAssignableFrom(c)
-                        && !c.IsAbstract) return c;
+                    ValidateAssignedValue(property, field.Value, false);
+                    ComponentEditor.ApplyValue(property, field.Value);
                 }
+                catch (Exception exception) { error = $"invalid initialFields.{field.Name}: {exception.Message}"; serialized.Update(); return 0; }
             }
-            return null;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            return fields.Count;
         }
 
-        private static string ResolvePath(string assetRef)
-        {
-            return assetRef.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)
-                ? assetRef
-                : AssetDatabase.GUIDToAssetPath(assetRef);
-        }
+        private static void EnsureFolder(string folder, List<string> createdFolders)
+            => AssetToolSupport.EnsureFolder(folder, createdFolders);
 
-        private static void EnsureFolder(string folder)
-        {
-            if (string.IsNullOrEmpty(folder)) return;
-            // Path.GetDirectoryName returns Windows-style backslashes which
-            // AssetDatabase.IsValidFolder/CreateFolder reject — they expect
-            // forward-slash paths regardless of host OS. Normalize before
-            // anything else.
-            folder = folder.Replace('\\', '/');
-            if (AssetDatabase.IsValidFolder(folder)) return;
-            int slash = folder.LastIndexOf('/');
-            var parent = slash >= 0 ? folder.Substring(0, slash) : "";
-            var name = slash >= 0 ? folder.Substring(slash + 1) : folder;
-            if (!string.IsNullOrEmpty(parent)) EnsureFolder(parent);
-            if (!string.IsNullOrEmpty(parent)) AssetDatabase.CreateFolder(parent, name);
-        }
+        private static void CleanupEmptyFolders(List<string> createdFolders)
+            => AssetToolSupport.CleanupEmptyFolders(createdFolders);
 
-        private static string DescribeValue(SerializedProperty p)
+        private static JObject AssetData(string path) => AssetToolSupport.AssetJson(path);
+
+        private static JObject PageData(string arrayName, JArray values, int total, int offset) => new JObject
         {
-            switch (p.propertyType)
+            ["total"] = total,
+            ["returned"] = values.Count,
+            ["offset"] = offset,
+            ["truncated"] = offset + values.Count < total,
+            [arrayName] = values,
+        };
+
+        private static SerializedValueCodec.ReadOptions CompleteReadOptions() => new SerializedValueCodec.ReadOptions
+        {
+            MaxDepth = 64,
+            MaxArrayItems = int.MaxValue,
+        };
+
+        private static void ValidateAssignedValue(SerializedProperty property, JToken value, bool requireCompleteGeneric)
+        {
+            if (value == null || value.Type == JTokenType.Null)
             {
-                case SerializedPropertyType.Integer: return p.intValue.ToString();
-                case SerializedPropertyType.Boolean: return p.boolValue.ToString();
-                case SerializedPropertyType.Float: return p.floatValue.ToString("F3");
-                case SerializedPropertyType.String: return $"\"{p.stringValue}\"";
-                case SerializedPropertyType.Color: return p.colorValue.ToString();
-                case SerializedPropertyType.Vector2: return p.vector2Value.ToString();
-                case SerializedPropertyType.Vector3: return p.vector3Value.ToString();
-                case SerializedPropertyType.Vector4: return p.vector4Value.ToString();
-                case SerializedPropertyType.Quaternion: return p.quaternionValue.eulerAngles.ToString();
-                case SerializedPropertyType.LayerMask: return $"mask=0x{p.intValue:X8}";
-                case SerializedPropertyType.Enum:
-                    return p.enumValueIndex >= 0 && p.enumValueIndex < p.enumNames.Length
-                        ? p.enumNames[p.enumValueIndex]
-                        : p.enumValueIndex.ToString();
-                case SerializedPropertyType.ObjectReference:
-                    if (p.objectReferenceValue == null) return "null";
-                    return $"{p.objectReferenceValue.name} ({p.objectReferenceValue.GetType().Name})";
-                default:
-                    return $"[{p.propertyType}]";
+                if (property.propertyType == SerializedPropertyType.ObjectReference || property.propertyType == SerializedPropertyType.String) return;
+                throw new InvalidOperationException($"{property.propertyPath} does not accept null");
             }
+            if (requireCompleteGeneric) ValidateCompleteValue(property, value);
+        }
+
+        private static void ValidateCompleteValue(SerializedProperty property, JToken value)
+        {
+            ValidateAssignedValue(property, value, false);
+            if (property.propertyType != SerializedPropertyType.Generic || property.isArray) return;
+            var fields = value as JObject;
+            if (fields?["fields"] is JObject nested) fields = nested;
+            if (fields == null) throw new InvalidOperationException($"{property.propertyPath} requires a complete object value");
+            var iterator = property.Copy();
+            var end = iterator.GetEndProperty();
+            bool enterChildren = true;
+            while (iterator.NextVisible(enterChildren) && !SerializedProperty.EqualContents(iterator, end))
+            {
+                enterChildren = false;
+                if (iterator.depth != property.depth + 1) continue;
+                var childValue = fields[iterator.name];
+                if (childValue == null) throw new InvalidOperationException($"{property.propertyPath} requires field '{iterator.name}' because inserted values are undefined");
+                ValidateCompleteValue(iterator, childValue);
+            }
+        }
+
+        private static void DeleteArrayElement(SerializedProperty property, int index)
+        {
+            var oldSize = property.arraySize;
+            property.DeleteArrayElementAtIndex(index);
+            if (property.arraySize == oldSize) property.DeleteArrayElementAtIndex(index);
+            if (property.arraySize != oldSize - 1)
+                throw new InvalidOperationException($"DeleteArrayElementAtIndex did not remove index {index}");
         }
     }
 }

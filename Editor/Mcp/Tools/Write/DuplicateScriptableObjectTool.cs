@@ -7,17 +7,28 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
     {
         public string Name => "duplicate_scriptable_object";
         public string Description =>
-            "Clones an existing ScriptableObject asset and saves it at targetPath. All field values are copied. The new asset is independent — modifying it does not affect the source.";
+            "Copies a ScriptableObject asset, including sub-assets, to a new canonical .asset targetPath. Existing targets are never overwritten; failed copies remove partial assets and auto-created empty folders.";
 
         public JObject InputSchema => new JObject
         {
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["sourceGuidOrPath"] = new JObject { ["type"] = "string" },
-                ["targetPath"] = new JObject { ["type"] = "string" },
+                ["sourceGuidOrPath"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["targetPath"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["pattern"] = "^Assets/(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\\\).+\\.asset$" },
             },
             ["required"] = new JArray { "sourceGuidOrPath", "targetPath" },
+            ["additionalProperties"] = false,
+        };
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["asset"] = new JObject { ["type"] = "object" },
+                ["savedAssets"] = new JObject { ["type"] = "boolean" },
+            },
+            ["required"] = new JArray { "asset", "savedAssets" },
             ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
@@ -25,7 +36,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         {
             var r = ScriptableObjectAuthor.Duplicate(args);
             return r.Ok
-                ? ToolResult.Ok(r.Summary, new JObject { ["instanceId"] = r.InstanceID })
+                ? ToolResult.Ok(r.Summary, r.Data)
                 : ToolResult.Error("OP_FAILED", r.Error);
         }
     }

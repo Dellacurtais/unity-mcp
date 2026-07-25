@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Port, bearer token, and sticky auto-start remain global by design so registered MCP clients keep one stable endpoint; listener ownership is now isolated by the coordinator. This release still serves one project at a time—simultaneous multi-project service requires a future external broker/router.
 
+## [0.15.8] - 2026-07-18
+
+### Changed
+
+- Patch release bump to `0.15.8`.
+
 ## [0.15.7] - 2026-07-18
 
 ### Changed

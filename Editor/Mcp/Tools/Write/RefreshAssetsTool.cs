@@ -11,6 +11,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         public string Description =>
             "Calls `AssetDatabase.Refresh()` so Unity notices files you just created via the project filesystem (e.g. a `.cs` script written by the agent). " +
             "MUST be called after creating a new MonoBehaviour script and BEFORE `add_component` on its type — otherwise `add_component` returns `unknown component type` because the script hasn't been compiled into an assembly yet. " +
+            "AssetDatabase.Refresh imports changed assets synchronously, can trigger asset garbage collection, and starts script compilation asynchronously. " +
             "When `wait: true` (default), polls cooperatively (no main-thread block, other tools keep responding) until `EditorApplication.isCompiling` flips false (or `timeoutSeconds` is hit). " +
             "Even after this returns, the assembly reload may still be in flight; if `add_component` still fails, retry once after a short delay.";
 
@@ -20,11 +21,24 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             ["properties"] = new JObject
             {
                 ["wait"] = new JObject { ["type"] = "boolean", ["default"] = true, ["description"] = "Wait for compilation to finish (cooperative — does NOT freeze the editor)." },
-                ["timeoutSeconds"] = new JObject { ["type"] = "number", ["default"] = 30 },
+                ["timeoutSeconds"] = new JObject { ["type"] = "number", ["minimum"] = 0.1, ["maximum"] = 600, ["default"] = 30 },
             },
             ["additionalProperties"] = false,
         };
 
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["refreshed"] = new JObject { ["type"] = "boolean" },
+                ["waited"] = new JObject { ["type"] = "boolean" },
+                ["compiling"] = new JObject { ["type"] = "boolean" },
+                ["elapsedSeconds"] = new JObject { ["type"] = "number", ["minimum"] = 0 },
+            },
+            ["required"] = new JArray { "refreshed", "waited", "compiling", "elapsedSeconds" },
+            ["additionalProperties"] = false,
+        };
         public bool IsWrite => true;
 
         /// Sync fallback exists only to satisfy IMcpTool. The framework calls
@@ -52,9 +66,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             if (!wait)
             {
                 bool stillCompiling = await MainThreadDispatcher.RunAsync(() => EditorApplication.isCompiling);
+                double elapsed = await MainThreadDispatcher.RunAsync(() => EditorApplication.timeSinceStartup) - startTime;
                 return ToolResult.Ok(stillCompiling
-                    ? "AssetDatabase.Refresh() requested; compilation in progress (call again with wait=true to block cooperatively)"
-                    : "AssetDatabase.Refresh() requested (no compilation triggered)");
+                    ? "AssetDatabase.Refresh() completed asset import; script compilation is still in progress"
+                    : "AssetDatabase.Refresh() completed asset import; no script compilation is currently running", new JObject
+                {
+                    ["refreshed"] = true,
+                    ["waited"] = false,
+                    ["compiling"] = stillCompiling,
+                    ["elapsedSeconds"] = Math.Max(0d, elapsed),
+                });
             }
 
             // Cooperative wait via EditorApplication.update polling.
@@ -105,7 +126,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             await Task.WhenAny(settled.Task, Task.Delay(2000));
 
             double elapsed = await MainThreadDispatcher.RunAsync(() => EditorApplication.timeSinceStartup) - startTime;
-            return ToolResult.Ok($"refresh + compile completed in {elapsed:F1}s.");
+            return ToolResult.Ok($"refresh completed and script compilation is not running after {elapsed:F1}s", new JObject
+            {
+                ["refreshed"] = true,
+                ["waited"] = true,
+                ["compiling"] = false,
+                ["elapsedSeconds"] = Math.Max(0d, elapsed),
+            });
         }
     }
 }

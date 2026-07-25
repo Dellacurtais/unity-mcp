@@ -136,6 +136,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             name.Contains("panel_settings") || name.Contains("input_action") ||
             name.Contains("input_binding") || name.Contains("input_control_scheme") ||
             name.Contains("addressable") || name.Contains("localization") || name.Contains("localized_") || name.Contains("shader_graph") ||
+            name == "set_so_property" || name == "modify_array_property" ||
             name == "create_folder" || name == "refresh_assets" ||
             name == "request_script_compilation" || name == "mesh_enable_read_write";
 

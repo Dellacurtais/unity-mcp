@@ -1,3 +1,5 @@
+using System.Linq;
+using Maicon.SceneAnalyzer.Editor.AssetTools;
 using Newtonsoft.Json.Linq;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
@@ -13,15 +15,17 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["nameContains"] = new JObject { ["type"] = "string" },
+                ["nameContains"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
                 ["type"] = new JObject { ["type"] = "string" },
                 ["folder"] = new JObject { ["type"] = "string", ["description"] = "Path prefix (e.g. \"Assets/Prefabs\")." },
-                ["limit"] = new JObject { ["type"] = "integer", ["default"] = 50, ["minimum"] = 1 },
+                ["offset"] = new JObject { ["type"] = "integer", ["default"] = 0, ["minimum"] = 0 },
+                ["limit"] = new JObject { ["type"] = "integer", ["default"] = 50, ["minimum"] = 1, ["maximum"] = 5000 },
             },
             ["required"] = new JArray { "nameContains" },
             ["additionalProperties"] = false,
         };
 
+        public JObject OutputSchema => AssetToolSupport.AssetListOutput("matches");
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
@@ -29,16 +33,18 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
             var name = (string)args["nameContains"];
             var type = (string)args["type"];
             var folder = (string)args["folder"];
+            var offset = (int?)args["offset"] ?? 0;
             var limit = (int?)args["limit"] ?? 50;
 
             var catalog = Bootstrap.AssetCatalog;
             catalog.EnsureBuilt();
 
+            var matches = catalog.Search(name, type, folder)
+                .OrderBy(entry => entry.Path, System.StringComparer.Ordinal)
+                .ToArray();
             var arr = new JArray();
-            int returned = 0;
-            foreach (var e in catalog.Search(name, type, folder))
+            foreach (var e in matches.Skip(offset).Take(limit))
             {
-                if (returned++ >= limit) break;
                 arr.Add(new JObject
                 {
                     ["guid"] = e.Guid,
@@ -47,8 +53,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
                     ["typeName"] = e.TypeName,
                 });
             }
-            var payload = new JObject { ["matches"] = arr, ["returned"] = returned };
-            return ToolResult.Ok($"{returned} matches for '{name}'", payload);
+            var payload = new JObject
+            {
+                ["catalogTotal"] = catalog.Count,
+                ["total"] = matches.Length,
+                ["returned"] = arr.Count,
+                ["offset"] = offset,
+                ["truncated"] = offset + arr.Count < matches.Length,
+                ["matches"] = arr,
+            };
+            return ToolResult.Ok($"{arr.Count} matches for '{name}'", payload);
         }
     }
 }

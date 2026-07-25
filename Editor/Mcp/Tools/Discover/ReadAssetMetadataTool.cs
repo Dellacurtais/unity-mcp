@@ -1,4 +1,6 @@
 using System;
+using Maicon.SceneAnalyzer.Editor.AssetTools;
+using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -16,12 +18,27 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["guidOrPath"] = new JObject { ["type"] = "string" },
+                ["guidOrPath"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
             },
             ["required"] = new JArray { "guidOrPath" },
             ["additionalProperties"] = false,
         };
 
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["path"] = new JObject { ["type"] = "string" },
+                ["guid"] = new JObject { ["type"] = "string" },
+                ["localFileId"] = new JObject { ["type"] = "integer" },
+                ["name"] = new JObject { ["type"] = "string" },
+                ["type"] = new JObject { ["type"] = "string" },
+                ["target"] = new JObject { ["type"] = new JArray { "object", "null" } },
+            },
+            ["required"] = new JArray { "path", "guid", "localFileId", "name", "type", "target" },
+            ["additionalProperties"] = true,
+        };
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
@@ -30,29 +47,40 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
             if (string.IsNullOrEmpty(guidOrPath))
                 return ToolResult.Error("BAD_ARGS", "guidOrPath is required");
 
-            var path = guidOrPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)
-                ? guidOrPath
-                : AssetDatabase.GUIDToAssetPath(guidOrPath);
-            if (string.IsNullOrEmpty(path))
-                return ToolResult.Error("NOT_FOUND", $"asset not found: {guidOrPath}");
+            var resolvedPath = AssetToolSupport.ResolveGuidOrPath(guidOrPath);
+            if (!AssetToolSupport.TryAssetPath(resolvedPath, true, out var path, out var pathError))
+                return ToolResult.Error("NOT_FOUND", pathError);
 
-            var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
+            var asset = AssetDatabase.LoadMainAssetAtPath(path);
             if (asset == null)
                 return ToolResult.Error("NOT_FOUND", $"failed to load asset at {path}");
 
+            var guid = AssetDatabase.AssetPathToGUID(path);
+            AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out guid, out long localFileId);
             var meta = new JObject
             {
                 ["path"] = path,
-                ["guid"] = AssetDatabase.AssetPathToGUID(path),
+                ["guid"] = guid,
+                ["localFileId"] = localFileId,
                 ["name"] = asset.name,
                 ["type"] = asset.GetType().Name,
+                ["target"] = ToolTargetRef.Capture(asset)?.ToJson(),
             };
 
             switch (asset)
             {
                 case Mesh m:
                     meta["vertexCount"] = m.vertexCount;
-                    meta["triangleCount"] = m.triangles.LongLength / 3;
+                    long indexCount = 0;
+                    long triangleCount = 0;
+                    for (var subMesh = 0; subMesh < m.subMeshCount; subMesh++)
+                    {
+                        var subMeshIndexCount = (long)m.GetIndexCount(subMesh);
+                        indexCount += subMeshIndexCount;
+                        if (m.GetTopology(subMesh) == MeshTopology.Triangles) triangleCount += subMeshIndexCount / 3;
+                    }
+                    meta["indexCount"] = indexCount;
+                    meta["triangleCount"] = triangleCount;
                     meta["subMeshCount"] = m.subMeshCount;
                     meta["bounds"] = new JObject
                     {

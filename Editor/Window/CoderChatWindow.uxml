@@ -25,10 +25,12 @@
 
         <ui:VisualElement name="composer-panel" class="composer-panel">
             <ui:VisualElement name="reference-chips" class="reference-chips" />
-            <ui:Label text="Mensagem" class="composer-caption" />
-            <ui:TextField name="composer-input" multiline="true" class="composer-input" />
+            <ui:VisualElement class="composer-input-shell">
+                <ui:TextField name="composer-input" multiline="true" class="composer-input" />
+                <ui:Label name="composer-placeholder" text="Descreva o que deseja fazer no projeto…" class="composer-placeholder" picking-mode="Ignore" />
+            </ui:VisualElement>
             <ui:Label name="composer-feedback" class="composer-feedback hidden" />
-            <ui:VisualElement class="composer-toolbar">
+            <ui:VisualElement name="composer-toolbar" class="composer-toolbar">
                 <ui:VisualElement name="composer-left" class="composer-left" />
                 <ui:VisualElement name="composer-right" class="composer-right" />
             </ui:VisualElement>

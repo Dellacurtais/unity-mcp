@@ -7,8 +7,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
     {
         public string Name => "create_scriptable_object";
         public string Description =>
-            "Creates a ScriptableObject .asset on disk. className is the C# class (simple name 'EnemyData' or full 'Game.EnemyData'). path is under Assets/ (folders auto-created). " +
-            "initialFields is an optional JObject mapping SerializedProperty names → values applied at creation (same value parsing as set_property: int/bool/float/string/Color/Vector*/LayerMask/enum/ObjectReference). " +
+            "Creates a new ScriptableObject .asset without overwriting an existing path. className accepts simple, fully-qualified, or assembly-qualified names; ambiguous simple names are rejected. path must be a canonical .asset path under Assets/ (folders auto-created, except StreamingAssets). " +
+            "initialFields is an optional object mapping SerializedProperty paths to values. Every supplied field is validated before the asset is written; any error leaves no asset or folder residue. " +
             "If the class was just created in code, call refresh_assets first so the type is available.";
 
         public JObject InputSchema => new JObject
@@ -16,11 +16,22 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["className"] = new JObject { ["type"] = "string" },
-                ["path"] = new JObject { ["type"] = "string", ["description"] = "e.g. Assets/Data/Goblin.asset" },
+                ["className"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["path"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["pattern"] = "^Assets/(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\\\).+\\.asset$", ["description"] = "Canonical .asset path, e.g. Assets/Data/Goblin.asset" },
                 ["initialFields"] = new JObject { ["type"] = "object" },
             },
             ["required"] = new JArray { "className", "path" },
+            ["additionalProperties"] = false,
+        };
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["asset"] = new JObject { ["type"] = "object" },
+                ["savedAssets"] = new JObject { ["type"] = "boolean" },
+            },
+            ["required"] = new JArray { "asset", "savedAssets" },
             ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
@@ -28,7 +39,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         {
             var r = ScriptableObjectAuthor.Create(args);
             return r.Ok
-                ? ToolResult.Ok(r.Summary, new JObject { ["instanceId"] = r.InstanceID })
+                ? ToolResult.Ok(r.Summary, r.Data)
                 : ToolResult.Error("OP_FAILED", r.Error);
         }
     }

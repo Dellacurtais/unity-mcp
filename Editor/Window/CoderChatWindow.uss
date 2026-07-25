@@ -157,7 +157,8 @@
     border-width: 1px;
     border-color: var(--border-strong);
 }
-.reference-chip.unavailable { border-color: var(--danger); color: var(--danger); }
+.reference-chip.unavailable,
+.message-reference-chip.unavailable { border-color: var(--danger); color: var(--danger); }
 .reference-remove-button { margin-left: 4px; min-width: 18px; width: 18px; height: 18px; padding: 0; }
 
 .interactions-container {
@@ -184,34 +185,57 @@
 
 .composer-panel {
     flex-shrink: 0;
-    margin: 8px 10px 10px 10px;
-    padding: 8px;
-    min-height: 148px;
+    margin: 6px 10px 10px 10px;
+    padding: 7px;
+    min-height: 88px;
     background-color: var(--surface);
     border-width: 1px;
     border-color: var(--border-strong);
-    border-radius: 7px;
+    border-radius: 8px;
+    transition-property: border-color, background-color;
+    transition-duration: 120ms;
 }
+.composer-panel.focused { border-color: var(--accent); background-color: var(--surface-raised); }
 .reference-chips { flex-wrap: wrap; }
-.composer-caption { font-size: 10px; color: var(--text-muted); margin-bottom: 3px; }
-.composer-input { flex-shrink: 0; min-height: 66px; max-height: 180px; }
-.composer-input .unity-text-input { white-space: normal; }
+.composer-input-shell { position: relative; min-height: 42px; }
+.composer-input {
+    flex-shrink: 0;
+    min-height: 42px;
+    max-height: 160px;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+}
+.composer-input .unity-text-input { padding: 6px 7px; white-space: normal; background-color: rgba(0, 0, 0, 0); }
+.composer-placeholder {
+    position: absolute;
+    left: 10px;
+    right: 8px;
+    top: 10px;
+    color: var(--text-muted);
+    white-space: normal;
+}
 .composer-feedback { margin-top: 4px; color: var(--danger); white-space: normal; }
 .composer-toolbar {
-    flex-direction: column;
-    align-items: stretch;
-    justify-content: flex-start;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
     flex-wrap: nowrap;
-    margin-top: 7px;
+    margin-top: 5px;
 }
-.composer-left { flex-grow: 0; flex-shrink: 0; width: 100%; flex-wrap: wrap; }
-.composer-right { flex-shrink: 0; width: 100%; justify-content: flex-end; margin-top: 3px; }
+.composer-left { flex-grow: 1; flex-shrink: 1; min-width: 0; flex-wrap: wrap; }
+.composer-right { flex-shrink: 0; justify-content: flex-end; }
 .composer-left > *,
 .composer-right > * { margin-right: 5px; margin-top: 3px; }
 .agent-field { min-width: 135px; max-width: 220px; }
 .effort-field { width: 92px; }
 .send-button { min-width: 82px; background-color: var(--accent); color: #ffffff; }
 .send-button.stop { background-color: var(--danger); }
+.coder-chat-root.compact-layout .composer-toolbar { flex-direction: column; align-items: stretch; }
+.coder-chat-root.compact-layout .composer-left { width: 100%; }
+.coder-chat-root.compact-layout .composer-right { width: 100%; margin-top: 2px; }
+.coder-chat-root.compact-layout .agent-field { flex-grow: 1; max-width: none; }
+.coder-chat-root.compact-layout .message-row.role-user .message-bubble { margin-left: 12px; }
+.coder-chat-root.compact-layout .message-row.role-assistant .message-bubble { margin-right: 6px; }
 
 .empty-state { flex-grow: 1; align-items: center; justify-content: center; padding: 24px; }
 .empty-title { font-size: 16px; -unity-font-style: bold; }

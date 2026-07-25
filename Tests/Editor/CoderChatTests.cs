@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Maicon.SceneAnalyzer.Editor.Chat;
+using Maicon.SceneAnalyzer.Editor.Core;
+using Maicon.SceneAnalyzer.Editor.Window;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
@@ -291,8 +293,25 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var bind = elementType.GetMethod("Bind", BindingFlags.Instance | BindingFlags.Public);
             Assert.That(bind, Is.Not.Null);
 
+            message.References.Add(new ChatReference
+            {
+                Label = "Player",
+                Target = new ToolTargetRef { Kind = "asset", AssetPath = "Assets/Player.prefab" },
+            });
+
             bind.Invoke(element, new object[] { message });
             AssertExpandedFoldouts(element);
+            var originalToolCard = element.Q<VisualElement>("tool-card-tool-1");
+            var originalReferenceChip = element.Q<VisualElement>("reference-chip-path:Assets/Player.prefab");
+            Assert.That(originalToolCard, Is.Not.Null);
+            Assert.That(originalReferenceChip, Is.Not.Null);
+
+            message.Text = "Resposta parcial";
+            message.Touch();
+            bind.Invoke(element, new object[] { message });
+
+            Assert.That(element.Q<VisualElement>("tool-card-tool-1"), Is.SameAs(originalToolCard));
+            Assert.That(element.Q<VisualElement>("reference-chip-path:Assets/Player.prefab"), Is.SameAs(originalReferenceChip));
 
             var remote = new ChatMessage
             {
@@ -308,6 +327,11 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 ResultText = "ok",
                 Completed = true,
             });
+            remote.References.Add(new ChatReference
+            {
+                Label = "Player",
+                Target = new ToolTargetRef { Kind = "asset", AssetPath = "Assets/Player.prefab" },
+            });
 
             Assert.That(message.CopyRemoteContentFrom(remote), Is.True);
             Assert.That(message.ThinkingExpanded, Is.True);
@@ -315,6 +339,131 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             bind.Invoke(element, new object[] { message });
             AssertExpandedFoldouts(element);
+            Assert.That(element.Q<VisualElement>("tool-card-tool-1"), Is.SameAs(originalToolCard));
+            Assert.That(element.Q<VisualElement>("reference-chip-path:Assets/Player.prefab"), Is.SameAs(originalReferenceChip));
+        }
+
+        [Test]
+        public void MessageElement_ReconcileKeepsDuplicateAndFallbackKeysDistinct()
+        {
+            var message = new ChatMessage { Role = ChatRole.Assistant };
+            message.ToolCalls.Add(new ChatToolCall { Id = "index-1", Name = "explicit" });
+            message.ToolCalls.Add(new ChatToolCall { Name = "fallback" });
+            message.ToolCalls.Add(new ChatToolCall { Id = "duplicate", Name = "first duplicate" });
+            message.ToolCalls.Add(new ChatToolCall { Id = "duplicate", Name = "second duplicate" });
+            message.References.Add(new ChatReference
+            {
+                Label = "Player A",
+                Target = new ToolTargetRef { Kind = "asset", AssetPath = "Assets/Player.prefab" },
+            });
+            message.References.Add(new ChatReference
+            {
+                Label = "Player B",
+                Target = new ToolTargetRef { Kind = "asset", AssetPath = "Assets/Player.prefab" },
+            });
+
+            var elementType = typeof(CoderApiClient).Assembly.GetType(
+                "Maicon.SceneAnalyzer.Editor.Window.CoderChatMessageElement", true);
+            var element = (VisualElement)Activator.CreateInstance(elementType);
+            var bind = elementType.GetMethod("Bind", BindingFlags.Instance | BindingFlags.Public);
+            bind.Invoke(element, new object[] { message });
+
+            var toolList = element.Q<VisualElement>(className: "tool-list");
+            var referenceList = element.Q<VisualElement>(className: "message-references");
+            Assert.That(toolList.childCount, Is.EqualTo(4));
+            Assert.That(referenceList.childCount, Is.EqualTo(2));
+            var explicitCard = element.Q<VisualElement>("tool-card-index-1");
+            var fallbackCard = element.Q<VisualElement>("tool-card-fallback-index-1");
+            var duplicateCard = element.Q<VisualElement>("tool-card-duplicate-duplicate-1");
+            var duplicateReference = element.Q<VisualElement>("reference-chip-path:Assets/Player.prefab-duplicate-1");
+            Assert.That(explicitCard, Is.Not.Null);
+            Assert.That(fallbackCard, Is.Not.Null.And.Not.SameAs(explicitCard));
+            Assert.That(duplicateCard, Is.Not.Null);
+            Assert.That(duplicateReference, Is.Not.Null);
+
+            message.Touch();
+            bind.Invoke(element, new object[] { message });
+
+            Assert.That(toolList.childCount, Is.EqualTo(4));
+            Assert.That(referenceList.childCount, Is.EqualTo(2));
+            Assert.That(element.Q<VisualElement>("tool-card-index-1"), Is.SameAs(explicitCard));
+            Assert.That(element.Q<VisualElement>("tool-card-fallback-index-1"), Is.SameAs(fallbackCard));
+            Assert.That(element.Q<VisualElement>("tool-card-duplicate-duplicate-1"), Is.SameAs(duplicateCard));
+            Assert.That(element.Q<VisualElement>("reference-chip-path:Assets/Player.prefab-duplicate-1"), Is.SameAs(duplicateReference));
+        }
+
+        [Test]
+        public void UiInvalidation_CoalescesUntilConsumedOrCancelled()
+        {
+            var state = new CoderChatInvalidationState();
+
+            Assert.That(state.TrySchedule(), Is.True);
+            Assert.That(state.TrySchedule(), Is.False);
+            Assert.That(state.IsScheduled, Is.True);
+
+            state.Consume();
+            Assert.That(state.IsScheduled, Is.False);
+            Assert.That(state.TrySchedule(), Is.True);
+
+            state.Cancel();
+            Assert.That(state.IsScheduled, Is.False);
+        }
+
+        [Test]
+        public void TranscriptAppend_DetectsOnlyStrictReferencePrefixGrowth()
+        {
+            var first = new object();
+            var second = new object();
+            var replacement = new object();
+
+            Assert.That(CoderChatWindow.IsStrictReferenceAppend(
+                new[] { first }, new[] { first, second }), Is.True);
+            Assert.That(CoderChatWindow.IsStrictReferenceAppend(
+                new[] { first }, new[] { replacement, second }), Is.False);
+            Assert.That(CoderChatWindow.IsStrictReferenceAppend(
+                new[] { first }, new[] { first }), Is.False);
+        }
+
+        [Test]
+        public void ScrollState_PreservesUserHistoryUntilFollowingIsResumed()
+        {
+            var state = new CoderChatScrollState();
+
+            Assert.That(state.IsFollowingEnd, Is.True);
+            Assert.That(state.TryBeginCorrection(), Is.True);
+            Assert.That(state.TryBeginCorrection(), Is.False);
+            state.CompleteCorrection();
+            Assert.That(state.IsFollowingEnd, Is.True);
+            Assert.That(state.CorrectionPending, Is.False);
+
+            state.ObserveUserPosition(700f, 1000f);
+            Assert.That(state.IsFollowingEnd, Is.False);
+            Assert.That(state.TryBeginCorrection(), Is.False);
+
+            state.ResumeFollowing();
+            Assert.That(state.TryBeginCorrection(), Is.True);
+            state.CancelCorrection();
+            state.SuspendFollowing();
+            Assert.That(state.IsFollowingEnd, Is.False);
+
+            state.BeginUserDrag();
+            Assert.That(state.IsUserDragging, Is.True);
+            state.ObserveUserPosition(980f, 1000f);
+            Assert.That(state.IsFollowingEnd, Is.False);
+
+            state.EndUserDrag();
+            Assert.That(state.IsUserDragging, Is.False);
+            state.ObserveUserPosition(980f, 1000f);
+            Assert.That(state.IsFollowingEnd, Is.True);
+            Assert.That(CoderChatScrollState.DistanceFromEnd(980f, 1000f), Is.EqualTo(20f));
+        }
+
+        [Test]
+        public void ComposerHeight_GrowsForExplicitAndWrappedLinesWithinBounds()
+        {
+            Assert.That(CoderChatWindow.EstimateComposerHeight("", 500f), Is.EqualTo(42f));
+            Assert.That(CoderChatWindow.EstimateComposerHeight("linha 1\nlinha 2", 500f), Is.EqualTo(59f));
+            Assert.That(CoderChatWindow.EstimateComposerHeight(new string('x', 2000), 260f), Is.EqualTo(160f));
         }
 
         [Test]

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Maicon.SceneAnalyzer.Editor.Chat;
 using Maicon.SceneAnalyzer.Editor.Core;
 using UnityEditor;
@@ -17,6 +18,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private readonly Label _thinkingText;
         private readonly VisualElement _tools;
         private readonly VisualElement _references;
+        private readonly Dictionary<string, ToolCardElement> _toolCards = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, ReferenceChipElement> _referenceChips = new(StringComparer.Ordinal);
 
         public ChatMessage BoundMessage { get; private set; }
         public int BoundRevision { get; private set; } = -1;
@@ -71,102 +74,153 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
         public void Bind(ChatMessage message)
         {
-            BoundMessage = message;
-            BoundRevision = message?.Revision ?? -1;
-            ClearRoleClasses();
-            _tools.Clear();
-            _references.Clear();
-
             if (message == null)
             {
-                _role.text = "";
-                _time.text = "";
-                _body.text = "";
-                SetDisplayed(_streaming, false);
-                SetDisplayed(_thinking, false);
-                SetDisplayed(_tools, false);
-                SetDisplayed(_references, false);
+                ClearBinding();
                 return;
             }
 
-            AddToClassList(RoleClass(message.Role));
-            _role.text = RoleLabel(message.Role);
-            _time.text = message.Timestamp.ToString("HH:mm:ss");
-            _body.text = message.Text ?? "";
+            var messageChanged = !ReferenceEquals(BoundMessage, message);
+            BoundMessage = message;
+            BoundRevision = message.Revision;
+
+            if (messageChanged)
+            {
+                ClearRoleClasses();
+                AddToClassList(RoleClass(message.Role));
+                _role.text = RoleLabel(message.Role);
+                _time.text = message.Timestamp.ToString("HH:mm:ss");
+            }
+
+            SetTextIfChanged(_body, message.Text);
             SetDisplayed(_body, !string.IsNullOrEmpty(message.Text));
             SetDisplayed(_streaming, message.Streaming);
 
             var hasThinking = !string.IsNullOrEmpty(message.ThinkingText);
             _thinking.SetValueWithoutNotify(message.ThinkingExpanded);
-            _thinkingText.text = message.ThinkingText ?? "";
+            SetTextIfChanged(_thinkingText, message.ThinkingText);
             SetDisplayed(_thinking, hasThinking);
 
-            foreach (var call in message.ToolCalls)
-                _tools.Add(CreateToolCard(call));
-            SetDisplayed(_tools, message.ToolCalls.Count > 0);
-
-            foreach (var reference in message.References)
-                if (reference != null) _references.Add(CreateReferenceChip(reference));
-            SetDisplayed(_references, message.References.Count > 0);
+            ReconcileToolCards(message.ToolCalls);
+            ReconcileReferenceChips(message.References);
         }
 
-        private static VisualElement CreateToolCard(ChatToolCall call)
+        private void ClearBinding()
         {
-            var card = new Foldout
-            {
-                text = string.IsNullOrEmpty(call?.Name) ? "Ferramenta" : call.Name,
-                value = call?.Expanded == true,
-            };
-            card.AddToClassList("tool-card");
-            if (call != null)
-                card.RegisterValueChangedCallback(evt => call.Expanded = evt.newValue);
-            if (call?.Failed == true) card.AddToClassList("failed");
-
-            var status = call == null
-                ? "sem dados"
-                : call.Completed
-                    ? call.Failed ? "falhou" : "concluída"
-                    : "executando";
-            var duration = call != null && call.DurationMs > 0 ? $" • {call.DurationMs:F0} ms" : "";
-            var meta = new Label(status + duration);
-            meta.AddToClassList("tool-meta");
-            card.Add(meta);
-
-            if (!string.IsNullOrEmpty(call?.InputJson))
-            {
-                var inputCaption = new Label("Entrada");
-                inputCaption.AddToClassList("tool-meta");
-                card.Add(inputCaption);
-                var input = new Label(Truncate(call.InputJson, 4000));
-                input.AddToClassList("tool-code");
-                card.Add(input);
-            }
-
-            if (!string.IsNullOrEmpty(call?.ResultText))
-            {
-                var resultCaption = new Label("Resultado");
-                resultCaption.AddToClassList("tool-meta");
-                card.Add(resultCaption);
-                var result = new Label(Truncate(call.ResultText, 8000));
-                result.AddToClassList("tool-code");
-                card.Add(result);
-            }
-
-            return card;
+            BoundMessage = null;
+            BoundRevision = -1;
+            ClearRoleClasses();
+            _role.text = "";
+            _time.text = "";
+            _body.text = "";
+            _thinkingText.text = "";
+            _tools.Clear();
+            _references.Clear();
+            _toolCards.Clear();
+            _referenceChips.Clear();
+            SetDisplayed(_body, false);
+            SetDisplayed(_streaming, false);
+            SetDisplayed(_thinking, false);
+            SetDisplayed(_tools, false);
+            SetDisplayed(_references, false);
         }
 
-        private static VisualElement CreateReferenceChip(ChatReference reference)
+        private void ReconcileToolCards(IReadOnlyList<ChatToolCall> calls)
         {
-            var button = new Button(() => PingReference(reference))
+            var activeKeys = new HashSet<string>(StringComparer.Ordinal);
+            var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
+            var visualIndex = 0;
+            for (var index = 0; index < calls.Count; index++)
             {
-                text = string.IsNullOrEmpty(reference.Label) ? reference.Kind : reference.Label,
-                tooltip = reference.IsAvailable
-                    ? $"Localizar {reference.Kind} no Unity"
-                    : reference.ValidationError ?? "Referência indisponível",
-            };
-            button.AddToClassList("message-reference-chip");
-            if (!reference.IsAvailable) button.AddToClassList("unavailable");
-            return button;
+                var call = calls[index];
+                if (call == null) continue;
+                var key = OccurrenceKey("tool", call.Id, index, occurrences, out var occurrence);
+                activeKeys.Add(key);
+                if (!_toolCards.TryGetValue(key, out var card))
+                {
+                    card = new ToolCardElement();
+                    card.name = ElementName("tool-card-", call.Id, index, occurrence);
+                    _toolCards.Add(key, card);
+                }
+                card.UpdateFrom(call);
+                EnsureChildOrder(_tools, card, visualIndex++);
+            }
+
+            RemoveMissing(_toolCards, activeKeys, _tools);
+            SetDisplayed(_tools, _toolCards.Count > 0);
+        }
+
+        private void ReconcileReferenceChips(IReadOnlyList<ChatReference> references)
+        {
+            var activeKeys = new HashSet<string>(StringComparer.Ordinal);
+            var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
+            var visualIndex = 0;
+            for (var index = 0; index < references.Count; index++)
+            {
+                var reference = references[index];
+                if (reference == null) continue;
+                var key = OccurrenceKey("reference", reference.CanonicalKey, index, occurrences, out var occurrence);
+                activeKeys.Add(key);
+                if (!_referenceChips.TryGetValue(key, out var chip))
+                {
+                    chip = new ReferenceChipElement();
+                    chip.name = ElementName("reference-chip-", reference.CanonicalKey, index, occurrence);
+                    _referenceChips.Add(key, chip);
+                }
+                chip.UpdateFrom(reference);
+                EnsureChildOrder(_references, chip, visualIndex++);
+            }
+
+            RemoveMissing(_referenceChips, activeKeys, _references);
+            SetDisplayed(_references, _referenceChips.Count > 0);
+        }
+
+        private static void EnsureChildOrder(VisualElement parent, VisualElement child, int index)
+        {
+            var currentIndex = parent.IndexOf(child);
+            if (currentIndex == index) return;
+            if (currentIndex >= 0) parent.RemoveAt(currentIndex);
+            parent.Insert(Math.Min(index, parent.childCount), child);
+        }
+
+        private static void RemoveMissing<T>(Dictionary<string, T> elements, HashSet<string> activeKeys, VisualElement parent)
+            where T : VisualElement
+        {
+            var removedKeys = new List<string>();
+            foreach (var pair in elements)
+            {
+                if (activeKeys.Contains(pair.Key)) continue;
+                pair.Value.RemoveFromHierarchy();
+                removedKeys.Add(pair.Key);
+            }
+            foreach (var key in removedKeys) elements.Remove(key);
+        }
+
+        private static string OccurrenceKey(
+            string keyNamespace,
+            string stableValue,
+            int fallbackIndex,
+            Dictionary<string, int> occurrences,
+            out int occurrence)
+        {
+            var baseKey = string.IsNullOrEmpty(stableValue)
+                ? $"{keyNamespace}:fallback:{fallbackIndex}"
+                : $"{keyNamespace}:stable:{stableValue}";
+            occurrences.TryGetValue(baseKey, out occurrence);
+            occurrences[baseKey] = occurrence + 1;
+            return $"{baseKey}#{occurrence}";
+        }
+
+        private static string ElementName(string prefix, string stableValue, int fallbackIndex, int occurrence)
+        {
+            var value = string.IsNullOrEmpty(stableValue) ? $"fallback-index-{fallbackIndex}" : stableValue;
+            return occurrence == 0 ? prefix + value : $"{prefix}{value}-duplicate-{occurrence}";
+        }
+
+        private static void SetTextIfChanged(Label label, string value)
+        {
+            value ??= "";
+            if (!string.Equals(label.text, value, StringComparison.Ordinal)) label.text = value;
         }
 
         private static void PingReference(ChatReference reference)
@@ -224,6 +278,86 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         {
             if (string.IsNullOrEmpty(value) || value.Length <= max) return value ?? "";
             return value.Substring(0, max) + "\n… conteúdo truncado";
+        }
+
+        private sealed class ToolCardElement : Foldout
+        {
+            private readonly Label _meta;
+            private readonly Label _inputCaption;
+            private readonly Label _input;
+            private readonly Label _resultCaption;
+            private readonly Label _result;
+            private ChatToolCall _call;
+
+            public ToolCardElement()
+            {
+                AddToClassList("tool-card");
+                RegisterCallback<ChangeEvent<bool>>(evt =>
+                {
+                    if (_call != null) _call.Expanded = evt.newValue;
+                });
+
+                _meta = CreateLabel("tool-meta");
+                Add(_meta);
+                _inputCaption = CreateLabel("tool-meta", "Entrada");
+                Add(_inputCaption);
+                _input = CreateLabel("tool-code");
+                Add(_input);
+                _resultCaption = CreateLabel("tool-meta", "Resultado");
+                Add(_resultCaption);
+                _result = CreateLabel("tool-code");
+                Add(_result);
+            }
+
+            public void UpdateFrom(ChatToolCall call)
+            {
+                _call = call;
+                text = string.IsNullOrEmpty(call.Name) ? "Ferramenta" : call.Name;
+                SetValueWithoutNotify(call.Expanded);
+                EnableInClassList("failed", call.Failed);
+
+                var status = call.Completed ? call.Failed ? "falhou" : "concluída" : "executando";
+                var duration = call.DurationMs > 0 ? $" • {call.DurationMs:F0} ms" : "";
+                SetTextIfChanged(_meta, status + duration);
+
+                var hasInput = !string.IsNullOrEmpty(call.InputJson);
+                SetTextIfChanged(_input, Truncate(call.InputJson, 4000));
+                SetDisplayed(_inputCaption, hasInput);
+                SetDisplayed(_input, hasInput);
+
+                var hasResult = !string.IsNullOrEmpty(call.ResultText);
+                SetTextIfChanged(_result, Truncate(call.ResultText, 8000));
+                SetDisplayed(_resultCaption, hasResult);
+                SetDisplayed(_result, hasResult);
+            }
+        }
+
+        private sealed class ReferenceChipElement : Button
+        {
+            private ChatReference _reference;
+
+            public ReferenceChipElement()
+            {
+                AddToClassList("message-reference-chip");
+                clicked += () => PingReference(_reference);
+            }
+
+            public void UpdateFrom(ChatReference reference)
+            {
+                _reference = reference;
+                text = string.IsNullOrEmpty(reference.Label) ? reference.Kind : reference.Label;
+                tooltip = reference.IsAvailable
+                    ? $"Localizar {reference.Kind} no Unity"
+                    : reference.ValidationError ?? "Referência indisponível";
+                EnableInClassList("unavailable", !reference.IsAvailable);
+            }
+        }
+
+        private static Label CreateLabel(string className, string text = "")
+        {
+            var label = new Label(text);
+            label.AddToClassList(className);
+            return label;
         }
     }
 }

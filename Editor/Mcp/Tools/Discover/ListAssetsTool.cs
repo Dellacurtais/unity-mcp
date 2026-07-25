@@ -1,3 +1,5 @@
+using System.Linq;
+using Maicon.SceneAnalyzer.Editor.AssetTools;
 using Newtonsoft.Json.Linq;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
@@ -16,12 +18,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
                 ["type"] = new JObject { ["type"] = "string" },
                 ["nameContains"] = new JObject { ["type"] = "string" },
                 ["folder"] = new JObject { ["type"] = "string" },
-                ["limit"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["default"] = 100 },
+                ["limit"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 5000, ["default"] = 100 },
                 ["offset"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["default"] = 0 },
             },
             ["additionalProperties"] = false,
         };
 
+        public JObject OutputSchema => AssetToolSupport.AssetListOutput("assets");
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
@@ -35,13 +38,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
             var catalog = Bootstrap.AssetCatalog;
             catalog.EnsureBuilt();
 
+            var matches = catalog.Search(name, type, folder)
+                .OrderBy(entry => entry.Path, System.StringComparer.Ordinal)
+                .ToArray();
+            var page = matches.Skip(offset).Take(limit).ToArray();
             var arr = new JArray();
-            int seen = 0;
-            int returned = 0;
-            foreach (var e in catalog.Search(name, type, folder))
+            foreach (var e in page)
             {
-                if (seen++ < offset) continue;
-                if (returned++ >= limit) break;
                 var labels = new JArray();
                 if (e.Labels != null)
                     foreach (var l in e.Labels) labels.Add(l);
@@ -57,12 +60,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
 
             var payload = new JObject
             {
-                ["total"] = catalog.Count,
-                ["returned"] = returned,
+                ["catalogTotal"] = catalog.Count,
+                ["total"] = matches.Length,
+                ["returned"] = arr.Count,
                 ["offset"] = offset,
+                ["truncated"] = offset + arr.Count < matches.Length,
                 ["assets"] = arr,
             };
-            return ToolResult.Ok($"{returned} assets" + (string.IsNullOrEmpty(type) ? "" : $" of type {type}"), payload);
+            return ToolResult.Ok($"{arr.Count} assets" + (string.IsNullOrEmpty(type) ? "" : $" of type {type}"), payload);
         }
     }
 }

@@ -14,18 +14,33 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["nameContains"] = new JObject { ["type"] = "string" },
+                ["nameContains"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
                 ["category"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "all", "builtin", "user" }, ["default"] = "all" },
                 ["withMenuOnly"] = new JObject { ["type"] = "boolean", ["default"] = false },
-                ["limit"] = new JObject { ["type"] = "integer", ["default"] = 200 },
+                ["offset"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["default"] = 0 },
+                ["limit"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 1000, ["default"] = 200 },
             },
+            ["additionalProperties"] = false,
+        };
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["total"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["returned"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["offset"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["truncated"] = new JObject { ["type"] = "boolean" },
+                ["types"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            },
+            ["required"] = new JArray { "total", "returned", "offset", "truncated", "types" },
             ["additionalProperties"] = false,
         };
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
             var r = ScriptableObjectAuthor.ListTypes(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            return r.Ok ? ToolResult.Ok(r.Summary, r.Data) : ToolResult.Error("OP_FAILED", r.Error);
         }
     }
 }

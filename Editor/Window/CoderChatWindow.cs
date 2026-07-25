@@ -20,13 +20,18 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private readonly List<ChatReference> _draftReferences = new();
         private readonly Dictionary<string, CoderAgentInfo> _agentByLabel = new(StringComparer.Ordinal);
         private readonly Dictionary<string, CoderSessionInfo> _sessionByLabel = new(StringComparer.Ordinal);
+        private readonly CoderChatScrollState _scrollState = new();
+        private readonly CoderChatInvalidationState _invalidationState = new();
 
         private ListView _transcriptList;
         private VisualElement _interactionsContainer;
         private VisualElement _referenceChips;
         private VisualElement _connectionActions;
+        private VisualElement _composerPanel;
+        private VisualElement _composerToolbar;
         private VisualElement _composerLeft;
         private VisualElement _composerRight;
+        private Label _composerPlaceholder;
         private Label _statusLabel;
         private Label _sessionMetaLabel;
         private Label _permissionBadge;
@@ -40,11 +45,11 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private DropdownField _effortField;
         private DropdownField _sessionField;
         private ScrollView _transcriptScroll;
-        private IVisualElementScheduledItem _uiPump;
+        private IVisualElementScheduledItem _scheduledUiFlush;
 
         private bool _sessionDirty = true;
         private bool _catalogDirty = true;
-        private bool _userAtBottom = true;
+        private bool _composerFocused;
         private bool _showSystemMessages;
         private bool _eventsSubscribed;
         private string _composerDraft = "";
@@ -71,8 +76,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private void OnDisable()
         {
             if (_composerInput != null) _composerDraft = _composerInput.value ?? "";
-            _uiPump?.Pause();
-            _uiPump = null;
+            CancelScheduledUiFlush();
             CloseReferencePicker();
             Bootstrap.ChatClient?.StopSessionSync();
             _attachedSessionId = 0;
@@ -81,8 +85,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
         public void CreateGUI()
         {
-            _uiPump?.Pause();
-            _uiPump = null;
+            CancelScheduledUiFlush();
             CloseReferencePicker();
             rootVisualElement.Clear();
             var tree = LoadVisualTree();
@@ -108,7 +111,6 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
             _sessionDirty = true;
             _catalogDirty = true;
-            _uiPump = rootVisualElement.schedule.Execute(FlushUi).Every(33);
             rootVisualElement.schedule.Execute(InitializeTranscriptScroll);
             RefreshRemoteCatalogs();
             FlushUi();
@@ -142,12 +144,14 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         {
             _sessionDirty = true;
             _pendingAttachSessionId = Settings.CoderSessionId;
+            ScheduleUiFlush();
         }
 
         private void OnCatalogChanged()
         {
             _catalogDirty = true;
             _sessionDirty = true;
+            ScheduleUiFlush();
         }
 
         private static void OnServerStateChanged(string state)
@@ -166,7 +170,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _newMessagesButton = rootVisualElement.Q<Button>("new-messages-button");
             _interactionsContainer = rootVisualElement.Q<VisualElement>("interactions-container");
             _referenceChips = rootVisualElement.Q<VisualElement>("reference-chips");
+            _composerPanel = rootVisualElement.Q<VisualElement>("composer-panel");
+            _composerToolbar = rootVisualElement.Q<VisualElement>("composer-toolbar");
             _composerInput = rootVisualElement.Q<TextField>("composer-input");
+            _composerPlaceholder = rootVisualElement.Q<Label>("composer-placeholder");
             _composerFeedback = rootVisualElement.Q<Label>("composer-feedback");
             _composerLeft = rootVisualElement.Q<VisualElement>("composer-left");
             _composerRight = rootVisualElement.Q<VisualElement>("composer-right");
@@ -180,7 +187,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 && _newMessagesButton != null
                 && _interactionsContainer != null
                 && _referenceChips != null
+                && _composerPanel != null
+                && _composerToolbar != null
                 && _composerInput != null
+                && _composerPlaceholder != null
                 && _composerFeedback != null
                 && _composerLeft != null
                 && _composerRight != null;
@@ -246,8 +256,26 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
             _composerInput.value = _composerDraft;
             _composerInput.multiline = true;
-            _composerInput.RegisterValueChangedCallback(evt => _composerDraft = evt.newValue ?? "");
+            _composerInput.RegisterValueChangedCallback(evt =>
+            {
+                _composerDraft = evt.newValue ?? "";
+                UpdateComposerPresentation();
+            });
             _composerInput.RegisterCallback<KeyDownEvent>(OnComposerKeyDown, TrickleDown.TrickleDown);
+            _composerInput.RegisterCallback<FocusInEvent>(_ =>
+            {
+                _composerFocused = true;
+                _composerPanel.AddToClassList("focused");
+                UpdateComposerPresentation();
+            });
+            _composerInput.RegisterCallback<FocusOutEvent>(_ =>
+            {
+                _composerFocused = false;
+                _composerPanel.RemoveFromClassList("focused");
+                UpdateComposerPresentation();
+            });
+            rootVisualElement.UnregisterCallback<GeometryChangedEvent>(OnChatGeometryChanged);
+            rootVisualElement.RegisterCallback<GeometryChangedEvent>(OnChatGeometryChanged);
 
             var attachButton = new Button(OpenReferencePicker)
             {
@@ -295,6 +323,37 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _composerRight.Add(_sendButton);
 
             RenderReferenceChips();
+            UpdateComposerPresentation();
+            UpdateResponsiveLayout(rootVisualElement.resolvedStyle.width);
+        }
+
+        private void OnChatGeometryChanged(GeometryChangedEvent evt)
+        {
+            if (Mathf.Abs(evt.newRect.width - evt.oldRect.width) < 1f) return;
+            UpdateResponsiveLayout(evt.newRect.width);
+            UpdateComposerPresentation();
+        }
+
+        private void UpdateResponsiveLayout(float width)
+        {
+            rootVisualElement.EnableInClassList("compact-layout", width > 0f && width < 620f);
+        }
+
+        private void UpdateComposerPresentation()
+        {
+            if (_composerInput == null || _composerPlaceholder == null) return;
+            var text = _composerInput.value ?? "";
+            SetDisplayed(_composerPlaceholder, string.IsNullOrEmpty(text) && !_composerFocused);
+            _composerInput.style.height = EstimateComposerHeight(text, _composerInput.resolvedStyle.width);
+        }
+
+        internal static float EstimateComposerHeight(string text, float width)
+        {
+            var estimatedColumns = Mathf.Max(24, Mathf.FloorToInt(Mathf.Max(260f, width) / 7f));
+            var visualLines = 0;
+            foreach (var line in (text ?? "").Split('\n'))
+                visualLines += Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, line.Length) / (float)estimatedColumns));
+            return Mathf.Clamp(42f + (visualLines - 1) * 17f, 42f, 160f);
         }
 
         private void OnComposerKeyDown(KeyDownEvent evt)
@@ -349,7 +408,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 ShowComposerFeedback($"{invalidCount} referência(s) indisponível(is) não foram enviada(s).", false);
             else
                 HideComposerFeedback();
-            _userAtBottom = true;
+            _scrollState.ResumeFollowing();
+            RequestScrollTranscriptToEnd();
             _composerInput.Focus();
         }
 
@@ -382,8 +442,23 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 Settings.CoderUrl, Settings.CoderToken, sessionId, replaceConversation);
         }
 
+        private void ScheduleUiFlush()
+        {
+            if (rootVisualElement.panel == null || !_invalidationState.TrySchedule()) return;
+            _scheduledUiFlush = rootVisualElement.schedule.Execute(FlushUi);
+        }
+
+        private void CancelScheduledUiFlush()
+        {
+            _scheduledUiFlush?.Pause();
+            _scheduledUiFlush = null;
+            _invalidationState.Cancel();
+        }
+
         private void FlushUi()
         {
+            _scheduledUiFlush = null;
+            _invalidationState.Consume();
             if (rootVisualElement.panel == null) return;
             TryAttachPendingSession();
 
@@ -426,12 +501,28 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             var lastItemChanged = false;
             if (structureChanged)
             {
-                _visibleMessages.Clear();
+                var nextVisibleMessages = new List<ChatMessage>();
                 foreach (var message in session.Messages)
-                    if (IsVisible(message)) _visibleMessages.Add(message);
-                _renderedRevisions.Clear();
-                foreach (var message in _visibleMessages) _renderedRevisions[message] = message.Revision;
-                _transcriptList.Rebuild();
+                    if (IsVisible(message)) nextVisibleMessages.Add(message);
+
+                if (IsStrictReferenceAppend(_visibleMessages, nextVisibleMessages))
+                {
+                    for (var index = oldCount; index < nextVisibleMessages.Count; index++)
+                    {
+                        var message = nextVisibleMessages[index];
+                        _visibleMessages.Add(message);
+                        _renderedRevisions[message] = message.Revision;
+                    }
+                    _transcriptList.RefreshItems();
+                }
+                else
+                {
+                    _visibleMessages.Clear();
+                    _visibleMessages.AddRange(nextVisibleMessages);
+                    _renderedRevisions.Clear();
+                    foreach (var message in _visibleMessages) _renderedRevisions[message] = message.Revision;
+                    _transcriptList.Rebuild();
+                }
             }
             else
             {
@@ -448,9 +539,18 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
             if (_visibleMessages.Count > oldCount || lastItemChanged)
             {
-                if (_userAtBottom) ScrollTranscriptToEnd();
+                if (_scrollState.IsFollowingEnd) RequestScrollTranscriptToEnd();
                 else SetDisplayed(_newMessagesButton, true);
             }
+        }
+
+        internal static bool IsStrictReferenceAppend<T>(IReadOnlyList<T> current, IReadOnlyList<T> next)
+            where T : class
+        {
+            if (current == null || next == null || next.Count <= current.Count) return false;
+            for (var index = 0; index < current.Count; index++)
+                if (!ReferenceEquals(current[index], next[index])) return false;
+            return true;
         }
 
         private bool VisibleSequenceChanged(IReadOnlyList<ChatMessage> messages)
@@ -636,29 +736,77 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             if (_transcriptList == null) return;
             _transcriptScroll = _transcriptList.Q<ScrollView>();
             if (_transcriptScroll == null) return;
+
+            _transcriptScroll.RegisterCallback<WheelEvent>(_ =>
+            {
+                _scrollState.SuspendFollowing();
+                _transcriptScroll.schedule.Execute(UpdateScrollStateFromUser);
+            });
+            _transcriptScroll.verticalScroller.RegisterCallback<PointerDownEvent>(_ => _scrollState.BeginUserDrag());
+            _transcriptScroll.verticalScroller.RegisterCallback<PointerUpEvent>(_ =>
+            {
+                _scrollState.EndUserDrag();
+                _transcriptScroll.schedule.Execute(UpdateScrollStateFromUser);
+            });
             _transcriptScroll.verticalScroller.valueChanged += _ =>
             {
-                var scroller = _transcriptScroll.verticalScroller;
-                _userAtBottom = scroller.highValue - scroller.value < 24f;
-                if (_userAtBottom) SetDisplayed(_newMessagesButton, false);
+                if (_scrollState.CorrectionPending || _scrollState.IsUserDragging) return;
+                UpdateScrollStateFromUser();
             };
+            _transcriptScroll.contentContainer.RegisterCallback<GeometryChangedEvent>(_ =>
+            {
+                if (_scrollState.IsFollowingEnd) RequestScrollTranscriptToEnd();
+            });
+        }
+
+        private void UpdateScrollStateFromUser()
+        {
+            if (_transcriptScroll == null) return;
+            var scroller = _transcriptScroll.verticalScroller;
+            _scrollState.ObserveUserPosition(scroller.value, scroller.highValue);
+            if (_scrollState.IsFollowingEnd) SetDisplayed(_newMessagesButton, false);
         }
 
         private void WireNewMessagesButton()
         {
             _newMessagesButton.clicked += () =>
             {
-                _userAtBottom = true;
-                ScrollTranscriptToEnd();
+                _scrollState.ResumeFollowing();
+                RequestScrollTranscriptToEnd();
                 SetDisplayed(_newMessagesButton, false);
             };
         }
 
-        private void ScrollTranscriptToEnd()
+        private void RequestScrollTranscriptToEnd()
         {
-            if (_transcriptList == null || _visibleMessages.Count == 0) return;
-            _transcriptList.schedule.Execute(() => _transcriptList.ScrollToItem(_visibleMessages.Count - 1));
+            if (_transcriptList == null || _visibleMessages.Count == 0 || !_scrollState.TryBeginCorrection()) return;
+            _transcriptList.schedule.Execute(() =>
+            {
+                if (_transcriptList == null
+                    || _visibleMessages.Count == 0
+                    || !_scrollState.IsFollowingEnd
+                    || !_scrollState.CorrectionPending)
+                {
+                    _scrollState.CancelCorrection();
+                    return;
+                }
+
+                _transcriptList.ScrollToItem(_visibleMessages.Count - 1);
+                _transcriptList.schedule.Execute(CompleteScrollCorrection);
+            });
             SetDisplayed(_newMessagesButton, false);
+        }
+
+        private void CompleteScrollCorrection()
+        {
+            if (_transcriptScroll == null
+                || !_scrollState.IsFollowingEnd
+                || !_scrollState.CorrectionPending)
+            {
+                _scrollState.CancelCorrection();
+                return;
+            }
+            _scrollState.CompleteCorrection();
         }
 
         private void RefreshRemoteCatalogs()
@@ -736,6 +884,90 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private static void SetDisplayed(VisualElement element, bool displayed)
         {
             if (element != null) element.style.display = displayed ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+    }
+
+    internal sealed class CoderChatInvalidationState
+    {
+        public bool IsScheduled { get; private set; }
+
+        public bool TrySchedule()
+        {
+            if (IsScheduled) return false;
+            IsScheduled = true;
+            return true;
+        }
+
+        public void Consume()
+        {
+            IsScheduled = false;
+        }
+
+        public void Cancel()
+        {
+            IsScheduled = false;
+        }
+    }
+
+    internal sealed class CoderChatScrollState
+    {
+        internal const float EndThreshold = 32f;
+
+        public bool IsFollowingEnd { get; private set; } = true;
+        public bool CorrectionPending { get; private set; }
+        public bool IsUserDragging { get; private set; }
+
+        public void ObserveUserPosition(float value, float highValue)
+        {
+            if (IsUserDragging) return;
+            CorrectionPending = false;
+            IsFollowingEnd = DistanceFromEnd(value, highValue) <= EndThreshold;
+        }
+
+        public void BeginUserDrag()
+        {
+            IsUserDragging = true;
+            SuspendFollowing();
+        }
+
+        public void EndUserDrag()
+        {
+            IsUserDragging = false;
+        }
+
+        public void SuspendFollowing()
+        {
+            CorrectionPending = false;
+            IsFollowingEnd = false;
+        }
+
+        public void ResumeFollowing()
+        {
+            IsUserDragging = false;
+            IsFollowingEnd = true;
+        }
+
+        public bool TryBeginCorrection()
+        {
+            if (!IsFollowingEnd || CorrectionPending) return false;
+            CorrectionPending = true;
+            return true;
+        }
+
+        public void CompleteCorrection()
+        {
+            CorrectionPending = false;
+            IsFollowingEnd = true;
+        }
+
+        public void CancelCorrection()
+        {
+            CorrectionPending = false;
+        }
+
+        internal static float DistanceFromEnd(float value, float highValue)
+        {
+            return Mathf.Max(0f, highValue - value);
         }
     }
 }
