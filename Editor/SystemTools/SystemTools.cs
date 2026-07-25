@@ -675,6 +675,7 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             ["flags"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" }, ["maxItems"] = 16 },
         }, "flags");
         public bool IsWrite => true;
+        public JObject OutputSchema => GameObjectAuthoringSchemas.StaticFlagsResult;
         public ToolResult Execute(JObject args)
         {
             var gameObject = SystemToolSupport.GameObject(args, out var error);

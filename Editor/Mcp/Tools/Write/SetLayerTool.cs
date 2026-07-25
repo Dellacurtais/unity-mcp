@@ -25,12 +25,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         };
 
         public bool IsWrite => true;
+        public JObject OutputSchema => GameObjectAuthoringSchemas.TargetResult;
 
         public ToolResult Execute(JObject args)
         {
             var r = GameObjectEditor.SetLayer(args);
             if (!r.Ok) return ToolResult.Error("OP_FAILED", r.Error);
-            return ToolResult.Ok(r.Summary);
+            return ToolResult.Ok(r.Summary, SceneAuthoringSupport.TargetResult(r.InstanceID, r.Data));
         }
     }
 }

@@ -16,10 +16,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             ["additionalProperties"] = false,
         };
         public bool IsWrite => false;
+        public JObject OutputSchema => SceneToolSchemas.ClassifyScene;
         public ToolResult Execute(JObject args)
         {
             var r = PhysicsAuthor.ClassifyScene(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            return r.Ok ? ToolResult.Ok(r.Summary, r.Data) : ToolResult.Error("OP_FAILED", r.Error);
         }
     }
 }

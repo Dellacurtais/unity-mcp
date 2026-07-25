@@ -8,7 +8,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
     {
         public string Name => "read_component";
         public string Description =>
-            "Returns the serialized properties of one Component (or all components when componentType is omitted). Includes scalar values, color, vectors, enums, object references and bounded array elements. For deeply-nested struct fields, surface comes back tagged '[struct: ...]' — call set_property with a propertyPath to write into them.";
+            "Returns serialized properties for a GameObject or Component instanceId. A GameObject ID returns all components unless componentType filters them; a Component ID returns that exact component. IDs emitted by read_scene are accepted directly.";
 
         public JObject InputSchema => new JObject
         {
@@ -24,6 +24,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
         };
 
         public bool IsWrite => false;
+        public JObject OutputSchema => SceneToolSchemas.ReadComponent;
 
         public ToolResult Execute(JObject args)
         {
@@ -31,12 +32,17 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             var typeName = (string)args["componentType"];
             var max = (int?)args["maxArrayItems"] ?? ReadHelpers.DefaultMaxArrayItems;
 
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (go == null) return ToolResult.Error("NOT_FOUND", $"GameObject not found: instanceId={id}");
+            var target = EditorUtility.InstanceIDToObject(id);
+            var requestedComponent = target as Component;
+            var go = target as GameObject ?? requestedComponent?.gameObject;
+            if (go == null) return ToolResult.Error("NOT_FOUND", $"GameObject or Component not found: instanceId={id}");
 
             var arr = new JArray();
             int matched = 0;
-            foreach (var c in go.GetComponents<Component>())
+            var components = requestedComponent != null
+                ? new[] { requestedComponent }
+                : go.GetComponents<Component>();
+            foreach (var c in components)
             {
                 if (c == null) continue;
                 if (!string.IsNullOrEmpty(typeName))
@@ -56,6 +62,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             var payload = new JObject
             {
                 ["instanceId"] = id,
+                ["requestedInstanceId"] = id,
+                ["gameObjectInstanceId"] = go.GetInstanceID(),
+                ["componentInstanceId"] = requestedComponent != null ? requestedComponent.GetInstanceID() : (JToken)null,
                 ["gameObjectName"] = go.name,
                 ["components"] = arr,
             };

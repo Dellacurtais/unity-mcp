@@ -1,9 +1,5 @@
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Newtonsoft.Json.Linq;
-using UnityEditor;
-using UnityEditor.SceneManagement;
-using UnityEngine;
-using UnityEngine.SceneManagement;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
 {
@@ -27,17 +23,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         };
 
         public bool IsWrite => true;
+        public JObject OutputSchema => SceneAuthoringSupport.TargetResultSchema;
 
         public ToolResult Execute(JObject args)
         {
-            var name = (string)args["name"] ?? "GameObject";
-            var go = new GameObject(name);
-            Undo.RegisterCreatedObjectUndo(go, "Create Empty");
-            var parent = JsonHelpers.ResolveParent(args["parent"]);
-            if (parent != null) Undo.SetTransformParent(go.transform, parent.transform, "Parent");
-            go.transform.localPosition = JsonHelpers.ParseVector3(args["position"]);
-            go.transform.localRotation = JsonHelpers.ParseRotation(args["rotation"]);
-            return ToolResult.Ok($"created empty '{name}'", new JObject { ["instanceId"] = go.GetInstanceID() });
+            var result = GameObjectFactory.CreateEmpty(args);
+            if (!result.Ok) return ToolResult.Error("OP_FAILED", result.Error);
+            return ToolResult.Ok(result.Summary, SceneAuthoringSupport.TargetResult(result.InstanceID, result.Data));
         }
     }
 }

@@ -313,47 +313,81 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         public static OpResult QueryScene(JObject args)
         {
+            args = args ?? new JObject();
             var tag = (string)args["tag"];
-            var layerArg = args["layer"];
-            int? layerFilter = ParseLayerInt(layerArg);
-            var componentTypes = (args["componentTypes"] as JArray)?.Select(t => (string)t).ToArray();
+            if (!string.IsNullOrEmpty(tag) && !UnityEditorInternal.InternalEditorUtility.tags.Contains(tag))
+                return OpResult.Fail($"INVALID_ARG: unknown tag '{tag}'");
             var nameContains = (string)args["nameContains"];
             var pathContains = (string)args["pathContains"];
-            var withinRadius = args["withinRadius"] as JObject;
-            Vector3? center = null;
-            float radius = 0;
-            if (withinRadius != null)
-            {
-                center = JsonHelpers.ParseVector3(withinRadius["center"]);
-                radius = (float?)withinRadius["radius"] ?? 0f;
-            }
-            var limit = (int?)args["limit"] ?? 100;
-            var sortBy = ((string)args["sortBy"] ?? "name").ToLowerInvariant();
 
-            // Pre-resolve componentTypes once (was inside the per-GO loop, dominating cost).
-            // Fail fast on bad names so the agent gets a clear error instead of an empty result.
+            int? layerFilter = null;
+            if (args["layer"] != null && args["layer"].Type != JTokenType.Null)
+            {
+                if (!TryParseLayerIndex(args["layer"], out var layer, out var layerError))
+                    return OpResult.Fail("INVALID_ARG: " + layerError);
+                layerFilter = layer;
+            }
+
+            string[] componentTypes = null;
+            if (args["componentTypes"] != null && args["componentTypes"].Type != JTokenType.Null)
+            {
+                if (!(args["componentTypes"] is JArray componentArray) || componentArray.Count == 0)
+                    return OpResult.Fail("INVALID_ARG: componentTypes must be a non-empty array of type names");
+                componentTypes = new string[componentArray.Count];
+                for (var index = 0; index < componentArray.Count; index++)
+                {
+                    if (componentArray[index].Type != JTokenType.String || string.IsNullOrWhiteSpace((string)componentArray[index]))
+                        return OpResult.Fail("INVALID_ARG: componentTypes entries must be non-empty strings");
+                    componentTypes[index] = ((string)componentArray[index]).Trim();
+                }
+            }
+
+            Vector3? center = null;
+            float radius = 0f;
+            if (args["withinRadius"] != null && args["withinRadius"].Type != JTokenType.Null)
+            {
+                if (!(args["withinRadius"] is JObject withinRadius))
+                    return OpResult.Fail("INVALID_ARG: withinRadius must be an object");
+                if (!TryParseFiniteVector3(withinRadius["center"], "withinRadius.center", Vector3.zero, true, out var parsedCenter, out var centerError))
+                    return OpResult.Fail("INVALID_ARG: " + centerError);
+                if (!TryReadFiniteFloat(withinRadius["radius"], out radius) || radius < 0f)
+                    return OpResult.Fail("INVALID_ARG: withinRadius.radius must be finite and non-negative");
+                center = parsedCenter;
+            }
+
+            var limit = 100;
+            if (args["limit"] != null && args["limit"].Type != JTokenType.Null)
+            {
+                if (args["limit"].Type != JTokenType.Integer || (long)args["limit"] < 1 || (long)args["limit"] > 1000)
+                    return OpResult.Fail("INVALID_ARG: limit must be an integer between 1 and 1000");
+                limit = (int)args["limit"];
+            }
+            var sortBy = ((string)args["sortBy"] ?? "name").Trim().ToLowerInvariant();
+            if (sortBy != "name" && sortBy != "distance" && sortBy != "depth")
+                return OpResult.Fail("INVALID_ARG: sortBy must be name, distance or depth");
+
             Type[] resolvedTypes = null;
-            if (componentTypes != null && componentTypes.Length > 0)
+            if (componentTypes != null)
             {
                 resolvedTypes = new Type[componentTypes.Length];
                 for (int i = 0; i < componentTypes.Length; i++)
                 {
                     var ct = componentTypes[i];
-                    var t = ComponentTypeInspector.ResolveType(ct);
-                    if (t == null) return OpResult.Fail($"INVALID_ARG: unknown component type '{ct}'");
-                    if (!typeof(Component).IsAssignableFrom(t))
-                        return OpResult.Fail($"INVALID_ARG: '{ct}' is not a Component subtype (resolved to {t.FullName})");
-                    resolvedTypes[i] = t;
+                    var type = ComponentTypeInspector.ResolveType(ct);
+                    if (type == null) return OpResult.Fail($"INVALID_ARG: unknown component type '{ct}'");
+                    if (!typeof(Component).IsAssignableFrom(type))
+                        return OpResult.Fail($"INVALID_ARG: '{ct}' is not a Component subtype (resolved to {type.FullName})");
+                    resolvedTypes[i] = type;
                 }
             }
 
             var snapshot = Bootstrap.Snapshot;
             snapshot.RefreshIfNeeded();
 
-            // Aux filters shared between the two iteration strategies.
             bool TryMatchAux(GameObject go, out float distance, out int depth)
             {
-                distance = 0; depth = 0;
+                distance = 0f;
+                depth = 0;
                 if (!string.IsNullOrEmpty(tag) && go.tag != tag) return false;
                 if (layerFilter.HasValue && go.layer != layerFilter.Value) return false;
                 if (!string.IsNullOrEmpty(nameContains)
@@ -361,44 +395,34 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 if (center.HasValue)
                 {
                     distance = Vector3.Distance(center.Value, go.transform.position);
-                    if (radius > 0 && distance > radius) return false;
+                    if (distance > radius) return false;
                 }
                 if (!string.IsNullOrEmpty(pathContains))
                 {
                     var path = snapshot.GetPath(go.GetInstanceID());
                     if (path == null || path.IndexOf(pathContains, StringComparison.OrdinalIgnoreCase) < 0) return false;
                 }
-                var p = go.transform.parent;
-                while (p != null) { depth++; p = p.parent; }
+                var parent = go.transform.parent;
+                while (parent != null) { depth++; parent = parent.parent; }
                 return true;
             }
 
             var matches = new List<(GameObject go, float dist, int depth)>();
-
-            if (resolvedTypes != null && resolvedTypes.Length > 0)
+            if (resolvedTypes != null)
             {
-                // Algorithmic flip: when filtering by componentType, seed from FindObjectsByType
-                // (~K results) instead of walking every GO in the snapshot (~N). For custom MBs,
-                // K is typically 10-100 vs N=5000+.
                 var seeds = UnityEngine.Object.FindObjectsByType(resolvedTypes[0], FindObjectsInactive.Include, FindObjectsSortMode.None);
                 var seenIds = new HashSet<int>();
                 foreach (var seed in seeds)
                 {
-                    var seedComp = seed as Component;
-                    if (seedComp == null) continue;
-                    var go = seedComp.gameObject;
-                    if (go == null) continue;
-                    // A GO may carry multiple instances of the seed type (e.g. 2 BoxColliders); process once.
-                    if (!seenIds.Add(go.GetInstanceID())) continue;
-
-                    bool hasAll = true;
+                    var seedComponent = seed as Component;
+                    var go = seedComponent?.gameObject;
+                    if (go == null || snapshot.Get(go.GetInstanceID()) == null || !seenIds.Add(go.GetInstanceID())) continue;
+                    var hasAll = true;
                     for (int i = 1; i < resolvedTypes.Length; i++)
                     {
                         if (go.GetComponent(resolvedTypes[i]) == null) { hasAll = false; break; }
                     }
-                    if (!hasAll) continue;
-
-                    if (TryMatchAux(go, out float distance, out int depth))
+                    if (hasAll && TryMatchAux(go, out var distance, out var depth))
                         matches.Add((go, distance, depth));
                 }
             }
@@ -407,31 +431,77 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 foreach (var info in snapshot.All())
                 {
                     var go = EditorUtility.InstanceIDToObject(info.InstanceID) as GameObject;
-                    if (go == null) continue;
-                    if (TryMatchAux(go, out float distance, out int depth))
+                    if (go != null && TryMatchAux(go, out var distance, out var depth))
                         matches.Add((go, distance, depth));
                 }
             }
 
+            Comparison<(GameObject go, float dist, int depth)> compareByName =
+                (a, b) => string.Compare(a.go.name, b.go.name, StringComparison.Ordinal);
             switch (sortBy)
             {
-                case "distance": matches.Sort((a, b) => a.dist.CompareTo(b.dist)); break;
-                case "depth": matches.Sort((a, b) => a.depth.CompareTo(b.depth)); break;
-                default: matches.Sort((a, b) => string.Compare(a.go.name, b.go.name, StringComparison.Ordinal)); break;
+                case "distance":
+                    matches.Sort((a, b) =>
+                    {
+                        var result = a.dist.CompareTo(b.dist);
+                        return result != 0 ? result : compareByName(a, b);
+                    });
+                    break;
+                case "depth":
+                    matches.Sort((a, b) =>
+                    {
+                        var result = a.depth.CompareTo(b.depth);
+                        return result != 0 ? result : compareByName(a, b);
+                    });
+                    break;
+                default:
+                    matches.Sort(compareByName);
+                    break;
             }
 
-            var sb = new System.Text.StringBuilder();
-            sb.AppendLine($"query_scene: {matches.Count} match(es) (showing up to {limit}, sortBy={sortBy})");
-            int shown = 0;
-            foreach (var m in matches)
+            var rows = new JArray();
+            var returned = Math.Min(limit, matches.Count);
+            for (var index = 0; index < returned; index++)
             {
-                if (shown++ >= limit) { sb.AppendLine($"  [+{matches.Count - limit} more]"); break; }
-                var pos = m.go.transform.position;
-                sb.AppendLine($"  #{m.go.GetInstanceID()} '{m.go.name}'  tag={m.go.tag} layer={m.go.layer}"
-                    + (center.HasValue ? $"  d={m.dist:F2}" : "")
-                    + $"  pos=[{pos.x:F1},{pos.y:F1},{pos.z:F1}]");
+                var match = matches[index];
+                var info = snapshot.Get(match.go.GetInstanceID());
+                var position = match.go.transform.position;
+                rows.Add(new JObject
+                {
+                    ["instanceId"] = match.go.GetInstanceID(),
+                    ["target"] = ToolTargetRef.Capture(match.go)?.ToJson(),
+                    ["name"] = match.go.name,
+                    ["hierarchyPath"] = snapshot.GetPath(match.go.GetInstanceID()),
+                    ["sceneName"] = info?.SceneName,
+                    ["scenePath"] = info?.ScenePath,
+                    ["sceneGuid"] = info?.SceneGuid,
+                    ["sceneHandle"] = info?.SceneHandle ?? 0,
+                    ["isPrefabStage"] = info?.IsPrefabStage ?? false,
+                    ["tag"] = match.go.tag,
+                    ["layer"] = match.go.layer,
+                    ["layerName"] = LayerMask.LayerToName(match.go.layer),
+                    ["activeSelf"] = match.go.activeSelf,
+                    ["activeInHierarchy"] = match.go.activeInHierarchy,
+                    ["depth"] = match.depth,
+                    ["position"] = new JArray { position.x, position.y, position.z },
+                    ["distance"] = center.HasValue ? match.dist : (JToken)null,
+                });
             }
-            return new OpResult { Ok = true, Summary = sb.ToString() };
+
+            var summary = $"query_scene: {matches.Count} match(es), returned {rows.Count}, sortBy={sortBy}";
+            return new OpResult
+            {
+                Ok = true,
+                Summary = summary,
+                Data = new JObject
+                {
+                    ["matchCount"] = matches.Count,
+                    ["returnedCount"] = rows.Count,
+                    ["truncated"] = rows.Count < matches.Count,
+                    ["sortBy"] = sortBy,
+                    ["matches"] = rows,
+                },
+            };
         }
 
         public static OpResult ClassifyScene(JObject args)
@@ -443,8 +513,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var byLayer = new Dictionary<int, int>();
             var byComponent = new Dictionary<string, int>(StringComparer.Ordinal);
             int rootCount = 0, leafCount = 0, maxDepth = 0;
-            var aggBounds = new Bounds(Vector3.zero, Vector3.zero);
-            bool hasAnyBounds = false;
+            var aggregateBounds = new Bounds(Vector3.zero, Vector3.zero);
+            bool hasBounds = false;
             int prefabLinked = 0, prefabBroken = 0, prefabUnlinked = 0;
             int nearOrigin = 0, farFromOrigin = 0;
             const float nearRadius = 50f, farRadius = 200f;
@@ -455,31 +525,31 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 if (go == null) continue;
 
                 Bump(byTag, go.tag);
-                if (!byLayer.TryGetValue(go.layer, out var lc)) byLayer[go.layer] = 1; else byLayer[go.layer] = lc + 1;
+                if (!byLayer.TryGetValue(go.layer, out var layerCount)) byLayer[go.layer] = 1;
+                else byLayer[go.layer] = layerCount + 1;
 
-                foreach (var c in go.GetComponents<Component>())
+                foreach (var component in go.GetComponents<Component>())
                 {
-                    if (c == null) { Bump(byComponent, "[Missing]"); continue; }
-                    Bump(byComponent, c.GetType().Name);
+                    if (component == null) { Bump(byComponent, "[Missing]"); continue; }
+                    Bump(byComponent, component.GetType().FullName);
                 }
 
                 if (info.ParentId == 0) rootCount++;
                 if (info.ChildIds == null || info.ChildIds.Count == 0) leafCount++;
 
                 int depth = 0;
-                var p = go.transform.parent;
-                while (p != null) { depth++; p = p.parent; }
+                var parent = go.transform.parent;
+                while (parent != null) { depth++; parent = parent.parent; }
                 if (depth > maxDepth) maxDepth = depth;
 
-                var d = go.transform.position.magnitude;
-                if (d <= nearRadius) nearOrigin++;
-                else if (d > farRadius) farFromOrigin++;
+                var distanceFromOrigin = go.transform.position.magnitude;
+                if (distanceFromOrigin <= nearRadius) nearOrigin++;
+                else if (distanceFromOrigin > farRadius) farFromOrigin++;
 
-                var renderer = go.GetComponent<Renderer>();
-                if (renderer != null)
+                foreach (var renderer in go.GetComponents<Renderer>())
                 {
-                    if (!hasAnyBounds) { aggBounds = renderer.bounds; hasAnyBounds = true; }
-                    else aggBounds.Encapsulate(renderer.bounds);
+                    if (!hasBounds) { aggregateBounds = renderer.bounds; hasBounds = true; }
+                    else aggregateBounds.Encapsulate(renderer.bounds);
                 }
 
                 var prefabType = PrefabUtility.GetPrefabAssetType(go);
@@ -489,26 +559,68 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 else if (prefabType == PrefabAssetType.NotAPrefab) prefabUnlinked++;
             }
 
-            var sb = new System.Text.StringBuilder();
-            sb.AppendLine($"classify_scene — {snapshot.Count} GameObject(s) total");
-            sb.AppendLine();
-            sb.AppendLine("Tags:");
-            foreach (var kv in byTag.OrderByDescending(k => k.Value).Take(20))
-                sb.AppendLine($"  {kv.Key}: {kv.Value}");
-            sb.AppendLine();
-            sb.AppendLine("Layers:");
-            foreach (var kv in byLayer.OrderByDescending(k => k.Value).Take(20))
-                sb.AppendLine($"  {LayerMask.LayerToName(kv.Key)} (#{kv.Key}): {kv.Value}");
-            sb.AppendLine();
-            sb.AppendLine("Top components:");
-            foreach (var kv in byComponent.OrderByDescending(k => k.Value).Take(30))
-                sb.AppendLine($"  {kv.Key}: {kv.Value}");
-            sb.AppendLine();
-            sb.AppendLine($"Hierarchy: roots={rootCount}  leaves={leafCount}  maxDepth={maxDepth}");
-            sb.AppendLine($"Spatial: bounds={(hasAnyBounds ? $"min=[{aggBounds.min.x:F1},{aggBounds.min.y:F1},{aggBounds.min.z:F1}] max=[{aggBounds.max.x:F1},{aggBounds.max.y:F1},{aggBounds.max.z:F1}]" : "(no renderers)")}");
-            sb.AppendLine($"  near origin (≤{nearRadius}u): {nearOrigin}  far (>{farRadius}u): {farFromOrigin}");
-            sb.AppendLine($"Prefab: linked={prefabLinked}  broken={prefabBroken}  unlinked={prefabUnlinked}");
-            return new OpResult { Ok = true, Summary = sb.ToString() };
+            var tags = new JArray();
+            foreach (var entry in byTag.OrderByDescending(item => item.Value).ThenBy(item => item.Key, StringComparer.Ordinal))
+                tags.Add(new JObject { ["name"] = entry.Key, ["count"] = entry.Value });
+
+            var layers = new JArray();
+            foreach (var entry in byLayer.OrderByDescending(item => item.Value).ThenBy(item => item.Key))
+                layers.Add(new JObject
+                {
+                    ["index"] = entry.Key,
+                    ["name"] = LayerMask.LayerToName(entry.Key),
+                    ["count"] = entry.Value,
+                });
+
+            var components = new JArray();
+            foreach (var entry in byComponent.OrderByDescending(item => item.Value).ThenBy(item => item.Key, StringComparer.Ordinal))
+                components.Add(new JObject { ["type"] = entry.Key, ["count"] = entry.Value });
+
+            var bounds = hasBounds
+                ? new JObject
+                {
+                    ["center"] = new JArray { aggregateBounds.center.x, aggregateBounds.center.y, aggregateBounds.center.z },
+                    ["size"] = new JArray { aggregateBounds.size.x, aggregateBounds.size.y, aggregateBounds.size.z },
+                    ["min"] = new JArray { aggregateBounds.min.x, aggregateBounds.min.y, aggregateBounds.min.z },
+                    ["max"] = new JArray { aggregateBounds.max.x, aggregateBounds.max.y, aggregateBounds.max.z },
+                }
+                : null;
+
+            var data = new JObject
+            {
+                ["totalGameObjects"] = snapshot.Count,
+                ["tags"] = tags,
+                ["layers"] = layers,
+                ["components"] = components,
+                ["hierarchy"] = new JObject
+                {
+                    ["rootCount"] = rootCount,
+                    ["leafCount"] = leafCount,
+                    ["maxDepth"] = maxDepth,
+                },
+                ["spatial"] = new JObject
+                {
+                    ["hasRendererBounds"] = hasBounds,
+                    ["bounds"] = bounds,
+                    ["nearRadius"] = nearRadius,
+                    ["nearOriginCount"] = nearOrigin,
+                    ["farRadius"] = farRadius,
+                    ["farFromOriginCount"] = farFromOrigin,
+                },
+                ["prefabs"] = new JObject
+                {
+                    ["linkedCount"] = prefabLinked,
+                    ["brokenCount"] = prefabBroken,
+                    ["unlinkedCount"] = prefabUnlinked,
+                },
+            };
+
+            return new OpResult
+            {
+                Ok = true,
+                Summary = $"classify_scene: {snapshot.Count} GameObject(s), {rootCount} root(s), maxDepth={maxDepth}",
+                Data = data,
+            };
         }
 
         public static OpResult QueryCollisionLayers(JObject args)
@@ -580,6 +692,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var id = (int?)args["instanceId"] ?? 0;
             var go = EditorUtility.InstanceIDToObject(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+            if (PrefabUtility.IsPartOfPrefabAsset(go))
+                return OpResult.Fail("Prefab assets must be opened in Prefab Mode or edited through prefab asset tools");
 
             var kind = ((string)args["kind"] ?? "box").Trim().ToLowerInvariant();
             if (!IsColliderKind(kind))
@@ -655,6 +769,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var id = (int?)args["instanceId"] ?? 0;
             var rootGo = EditorUtility.InstanceIDToObject(id) as GameObject;
             if (rootGo == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+            if (PrefabUtility.IsPartOfPrefabAsset(rootGo))
+                return OpResult.Fail("Prefab assets must be opened in Prefab Mode or edited through prefab asset tools");
 
             var kind = ((string)args["kind"] ?? "box").Trim().ToLowerInvariant();
             if (!IsColliderKind(kind))
@@ -734,6 +850,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var id = (int?)args["instanceId"] ?? 0;
             var go = EditorUtility.InstanceIDToObject(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+            if (PrefabUtility.IsPartOfPrefabAsset(go))
+                return OpResult.Fail("Prefab assets must be opened in Prefab Mode or edited through prefab asset tools");
 
             var colliderId = (int?)args["colliderInstanceId"] ?? 0;
             Collider collider;

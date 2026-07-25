@@ -9,24 +9,52 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
     {
         public static OpResult Create(JObject args)
         {
-            var kindStr = (string)args["kind"] ?? "Cube";
-            if (!Enum.TryParse(kindStr, true, out PrimitiveType kind))
-                return OpResult.Fail($"unknown primitive kind '{kindStr}'");
+            args ??= new JObject();
+            var kindText = ((string)args["kind"] ?? "Cube").Trim();
+            if (!Enum.TryParse(kindText, true, out PrimitiveType kind) || !Enum.IsDefined(typeof(PrimitiveType), kind))
+                return OpResult.Fail($"INVALID_ARG: unknown primitive kind '{kindText}'");
+            if (!SceneAuthoringSupport.TryResolveParent(args["parent"], out var parent, out var error))
+                return OpResult.Fail(error);
+            if (!TryOptionalVector(args, "position", Vector3.zero, out var position, out error)
+                || !TryOptionalRotation(args, "rotation", out var rotation, out error)
+                || !TryOptionalVector(args, "scale", Vector3.one, out var scale, out error))
+                return OpResult.Fail(error);
 
-            var go = GameObject.CreatePrimitive(kind);
-            Undo.RegisterCreatedObjectUndo(go, $"Create {kind}");
+            using (var mutation = new MutationScope($"Create {kind}"))
+            {
+                var gameObject = GameObject.CreatePrimitive(kind);
+                mutation.RegisterCreated(gameObject, $"Create {kind}");
+                var name = ((string)args["name"])?.Trim();
+                if (!string.IsNullOrEmpty(name)) gameObject.name = name;
+                if (parent != null) mutation.SetParent(gameObject.transform, parent.transform, "Parent");
+                gameObject.transform.localPosition = position;
+                gameObject.transform.localRotation = rotation;
+                gameObject.transform.localScale = scale;
+                mutation.Complete();
+                return OpResult.Success(gameObject.GetInstanceID(), $"created {kind} '{gameObject.name}'");
+            }
+        }
 
-            var name = (string)args["name"];
-            if (!string.IsNullOrEmpty(name)) go.name = name;
+        internal static bool TryOptionalVector(
+            JObject args, string property, Vector3 fallback, out Vector3 value, out string error)
+        {
+            value = fallback;
+            error = null;
+            if (args[property] == null) return true;
+            if (JsonHelpers.TryParseFiniteVector3(args[property], out value)) return true;
+            error = $"INVALID_ARG: {property} must be exactly three finite numbers";
+            return false;
+        }
 
-            var parent = JsonHelpers.ResolveParent(args["parent"]);
-            if (parent != null) Undo.SetTransformParent(go.transform, parent.transform, "Parent");
-
-            go.transform.localPosition = JsonHelpers.ParseVector3(args["position"]);
-            go.transform.localRotation = JsonHelpers.ParseRotation(args["rotation"]);
-            go.transform.localScale = JsonHelpers.ParseVector3(args["scale"], Vector3.one);
-
-            return OpResult.Success(go.GetInstanceID(), $"created {kind} '{go.name}'");
+        internal static bool TryOptionalRotation(
+            JObject args, string property, out Quaternion value, out string error)
+        {
+            value = Quaternion.identity;
+            error = null;
+            if (args[property] == null) return true;
+            if (JsonHelpers.TryParseFiniteRotation(args[property], out value)) return true;
+            error = $"INVALID_ARG: {property} must be finite Euler [x,y,z] or a non-zero quaternion [x,y,z,w]";
+            return false;
         }
     }
 }

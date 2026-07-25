@@ -62,6 +62,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         }
 
         public bool IsWrite => true;
+        public JObject OutputSchema => GameObjectAuthoringSchemas.ChangesetResult;
 
         public ToolResult Execute(JObject args)
         {

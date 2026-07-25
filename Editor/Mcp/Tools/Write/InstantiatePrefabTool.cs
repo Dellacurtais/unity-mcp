@@ -29,16 +29,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         };
 
         public bool IsWrite => true;
+        public JObject OutputSchema => GameObjectAuthoringSchemas.TargetResult;
 
         public ToolResult Execute(JObject args)
         {
             var result = PrefabFactory.Instantiate(args);
             if (!result.Ok) return ToolResult.Error("OP_FAILED", result.Error);
 
-            return ToolResult.Ok(result.Summary, new JObject
-            {
-                ["instanceId"] = result.InstanceID,
-            });
+            return ToolResult.Ok(result.Summary, SceneAuthoringSupport.TargetResult(result.InstanceID, result.Data));
         }
     }
 }

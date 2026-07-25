@@ -1,5 +1,4 @@
 using Newtonsoft.Json.Linq;
-using UnityEditor;
 using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Authoring
@@ -8,62 +7,75 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
     {
         public static OpResult SetTransform(JObject args)
         {
-            var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (go == null) return OpResult.Fail($"REF_BROKEN: GameObject not found: instanceId={id}");
+            args ??= new JObject();
+            var instanceId = (int?)args["instanceId"] ?? 0;
+            if (!SceneAuthoringSupport.TryResolveEditableGameObject(instanceId, out var gameObject, out var error))
+                return OpResult.Fail(error);
 
-            Undo.RecordObject(go.transform, "Set Transform");
+            var space = ((string)args["space"] ?? "World").Trim();
+            var world = string.Equals(space, "World", System.StringComparison.OrdinalIgnoreCase);
+            if (!world && !string.Equals(space, "Local", System.StringComparison.OrdinalIgnoreCase))
+                return OpResult.Fail("INVALID_ARG: space must be World or Local");
 
-            var space = (string)args["space"] ?? "World";
-            bool world = string.Equals(space, "World", System.StringComparison.OrdinalIgnoreCase);
+            var hasPosition = args["position"] != null;
+            var hasRotation = args["rotation"] != null;
+            var hasScale = args["scale"] != null;
+            if (!hasPosition && !hasRotation && !hasScale)
+                return OpResult.Fail("INVALID_ARG: provide position, rotation, or scale");
+            if (!PrimitiveFactory.TryOptionalVector(args, "position", Vector3.zero, out var position, out error)
+                || !PrimitiveFactory.TryOptionalRotation(args, "rotation", out var rotation, out error)
+                || !PrimitiveFactory.TryOptionalVector(args, "scale", Vector3.one, out var scale, out error))
+                return OpResult.Fail(error);
 
-            if (args["position"] != null)
+            using (var mutation = new MutationScope("Set Transform"))
             {
-                var p = JsonHelpers.ParseVector3(args["position"]);
-                if (world) go.transform.position = p; else go.transform.localPosition = p;
+                mutation.Record(gameObject.transform, "Set Transform");
+                if (hasPosition)
+                {
+                    if (world) gameObject.transform.position = position;
+                    else gameObject.transform.localPosition = position;
+                }
+                if (hasRotation)
+                {
+                    if (world) gameObject.transform.rotation = rotation;
+                    else gameObject.transform.localRotation = rotation;
+                }
+                if (hasScale) gameObject.transform.localScale = scale;
+                mutation.Complete();
             }
-            if (args["rotation"] != null)
-            {
-                var r = JsonHelpers.ParseRotation(args["rotation"]);
-                if (world) go.transform.rotation = r; else go.transform.localRotation = r;
-            }
-            if (args["scale"] != null)
-            {
-                go.transform.localScale = JsonHelpers.ParseVector3(args["scale"], Vector3.one);
-            }
-
-            return OpResult.Success(id, "transform updated");
+            return OpResult.Success(instanceId, "transform updated");
         }
 
         public static OpResult Parent(JObject args)
         {
-            var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (go == null) return OpResult.Fail($"REF_BROKEN: GameObject not found: instanceId={id}");
+            args ??= new JObject();
+            var instanceId = (int?)args["instanceId"] ?? 0;
+            if (!SceneAuthoringSupport.TryResolveEditableGameObject(instanceId, out var gameObject, out var error))
+                return OpResult.Fail(error);
+            if (!SceneAuthoringSupport.TryResolveParent(args["newParentId"], out var parent, out error))
+                return OpResult.Fail(error);
+            if (!SceneAuthoringSupport.ValidateParent(gameObject, parent, out error))
+                return OpResult.Fail(error);
+            if (parent != null && parent.scene != gameObject.scene)
+                return OpResult.Fail("INVALID_HIERARCHY: child and parent must belong to the same Scene or Prefab Stage");
 
-            var newParentArg = args["newParentId"];
-            var parent = JsonHelpers.ResolveParent(newParentArg);
-            // Caller passed an explicit non-null/non-zero newParentId but it didn't
-            // resolve. Refuse rather than silently unparenting — silent is the bug
-            // the caller will spend the next hour debugging.
-            if (newParentArg != null
-                && newParentArg.Type != Newtonsoft.Json.Linq.JTokenType.Null
-                && parent == null)
+            var worldPositionStays = (bool?)args["worldPositionStays"] ?? true;
+            var localPosition = gameObject.transform.localPosition;
+            var localRotation = gameObject.transform.localRotation;
+            var localScale = gameObject.transform.localScale;
+            using (var mutation = new MutationScope("Reparent"))
             {
-                bool isExplicitUnparent =
-                    newParentArg.Type == Newtonsoft.Json.Linq.JTokenType.Integer && (int)newParentArg == 0;
-                if (!isExplicitUnparent)
-                    return OpResult.Fail($"REF_BROKEN: newParentId={newParentArg} does not resolve to a live GameObject");
+                mutation.Record(gameObject.transform, "Reparent");
+                mutation.SetParent(gameObject.transform, parent != null ? parent.transform : null, "Reparent");
+                if (!worldPositionStays)
+                {
+                    gameObject.transform.localPosition = localPosition;
+                    gameObject.transform.localRotation = localRotation;
+                    gameObject.transform.localScale = localScale;
+                }
+                mutation.Complete();
             }
-
-            bool worldStays = (bool?)args["worldPositionStays"] ?? true;
-            Undo.SetTransformParent(go.transform, parent != null ? parent.transform : null, "Reparent");
-            if (!worldStays)
-            {
-                go.transform.localPosition = Vector3.zero;
-                go.transform.localRotation = Quaternion.identity;
-            }
-            return OpResult.Success(id, "reparented");
+            return OpResult.Success(instanceId, "reparented");
         }
     }
 }

@@ -1,8 +1,5 @@
+using Maicon.SceneAnalyzer.Editor.Authoring;
 using Newtonsoft.Json.Linq;
-using UnityEditor;
-using UnityEditor.SceneManagement;
-using UnityEngine;
-using UnityEngine.SceneManagement;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
 {
@@ -25,22 +22,15 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         };
 
         public bool IsWrite => true;
+        public JObject OutputSchema => SceneAuthoringSupport.DeletedResultSchema;
 
         public ToolResult Execute(JObject args)
         {
-            var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (go == null) return ToolResult.Error("NOT_FOUND", $"GameObject not found: instanceId={id}");
-
-            int childCount = go.transform.childCount;
-            bool force = (bool?)args["force"] ?? false;
-            if (childCount > 8 && !force)
-                return ToolResult.Error("REFUSED",
-                    $"refusing to delete '{go.name}' with {childCount} children — pass force=true to override");
-
-            var name = go.name;
-            Undo.DestroyObjectImmediate(go);
-            return ToolResult.Ok($"deleted '{name}' (id={id})");
+            var result = GameObjectEditor.Delete(args);
+            if (!result.Ok) return ToolResult.Error("OP_FAILED", result.Error);
+            var data = result.Data as JObject ?? new JObject();
+            data["instanceId"] = result.InstanceID;
+            return ToolResult.Ok(result.Summary, data);
         }
     }
 }

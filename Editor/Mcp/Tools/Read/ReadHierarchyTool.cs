@@ -17,6 +17,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
         };
 
         public bool IsWrite => false;
+        public JObject OutputSchema => SceneToolSchemas.ReadHierarchy;
 
         public ToolResult Execute(JObject args)
         {
@@ -38,6 +39,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                     ["name"] = info.Name,
                     ["parentId"] = info.ParentId,
                     ["sceneName"] = info.SceneName,
+                    ["scenePath"] = info.ScenePath,
+                    ["sceneGuid"] = info.SceneGuid,
+                    ["sceneHandle"] = info.SceneHandle,
+                    ["hierarchyPath"] = info.HierarchyPath,
+                    ["globalObjectId"] = info.GlobalObjectId,
+                    ["isPrefabStage"] = info.IsPrefabStage,
                     ["tag"] = info.Tag,
                     ["layer"] = info.Layer,
                     ["isActive"] = info.IsActive,
@@ -57,7 +64,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                 {
                     ["name"] = s.Name,
                     ["path"] = s.Path,
+                    ["guid"] = s.Guid,
+                    ["handle"] = s.Handle,
                     ["isActive"] = s.IsActive,
+                    ["isPrefabStage"] = s.IsPrefabStage,
                 });
             }
 

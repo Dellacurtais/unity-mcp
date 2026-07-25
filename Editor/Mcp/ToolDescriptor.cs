@@ -132,6 +132,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             name.Contains("prefab") || name.Contains("import_settings") ||
             name.Contains("asset") || name.Contains("material") || name.Contains("terrain") ||
             name.Contains("avatar_mask") || name.Contains("animation_float_curve") ||
+            name == "save_scene" || name == "save_all_scenes" ||
             name.Contains("panel_settings") || name.Contains("input_action") ||
             name.Contains("input_binding") || name.Contains("input_control_scheme") ||
             name.Contains("addressable") || name.Contains("localization") || name.Contains("localized_") || name.Contains("shader_graph") ||

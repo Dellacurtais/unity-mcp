@@ -6,20 +6,23 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
     public sealed class ListNavMeshAreasTool : IMcpTool
     {
         public string Name => "list_navmesh_areas";
-        public string Description =>
-            "Lists every named NavMesh area (Project Settings > Navigation > Areas) with its index and traversal cost. The indices map directly to bit positions in NavMesh.areaMask, so use them with set_navmesh_agent / navmesh_calculate_path / navmesh_sample_position. Run this BEFORE passing area names to other NavMesh tools so you know what's defined in the project.";
-
-        public JObject InputSchema => new JObject
+        public string Description => "Lists every defined NavMesh area with its true numeric index and traversal cost. Use these names or indices with NavMesh query and authoring tools.";
+        public JObject InputSchema => new JObject { ["type"] = "object", ["properties"] = new JObject(), ["additionalProperties"] = false };
+        public JObject OutputSchema => new JObject
         {
             ["type"] = "object",
-            ["properties"] = new JObject(),
-            ["additionalProperties"] = false,
+            ["properties"] = new JObject
+            {
+                ["count"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["areas"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            },
+            ["required"] = new JArray { "count", "areas" },
         };
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
-            var r = NavMeshAuthor.ListAreas(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            var result = NavMeshAuthor.ListAreas(args);
+            return result.Ok ? ToolResult.Ok(result.Summary, result.Data) : ToolResult.Error("OP_FAILED", result.Error);
         }
     }
 }

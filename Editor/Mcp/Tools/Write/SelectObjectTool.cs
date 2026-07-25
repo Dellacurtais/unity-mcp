@@ -1,6 +1,6 @@
+using Maicon.SceneAnalyzer.Editor.Authoring;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
-using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
 {
@@ -25,20 +25,21 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
         // Selection isn't a destructive write but we mark it so it respects the
         // "Allow writes" toggle — clearer for the user.
         public bool IsWrite => true;
+        public JObject OutputSchema => SceneAuthoringSupport.TargetResultSchema;
 
         public ToolResult Execute(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (go == null) return ToolResult.Error("NOT_FOUND", $"GameObject with instanceId={id} not found");
+            if (!SceneAuthoringSupport.TryResolveEditableGameObject(id, out var gameObject, out var error))
+                return ToolResult.Error("INVALID_TARGET", error);
 
-            Selection.activeGameObject = go;
-            EditorGUIUtility.PingObject(go);
+            Selection.activeGameObject = gameObject;
+            EditorGUIUtility.PingObject(gameObject);
 
             if ((bool?)args["frameInScene"] == true && SceneView.lastActiveSceneView != null)
                 SceneView.lastActiveSceneView.FrameSelected();
 
-            return ToolResult.Ok($"selected '{go.name}' (id={id})");
+            return ToolResult.Ok($"selected '{gameObject.name}' (id={id})", SceneAuthoringSupport.TargetResult(id));
         }
     }
 }

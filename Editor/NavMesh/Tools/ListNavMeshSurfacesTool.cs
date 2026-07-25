@@ -6,20 +6,23 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh.Tools
     public sealed class ListNavMeshSurfacesTool : IMcpTool
     {
         public string Name => "list_navmesh_surfaces";
-        public string Description =>
-            "Finds all NavMeshSurface components in the active scene. Returns instanceId, name, agentTypeID, collectObjects mode, layerMask, useGeometry mode, and bake status. Use to audit which surfaces exist before invoking bake_navmesh_surface.";
-
-        public JObject InputSchema => new JObject
+        public string Description => "Lists every NavMeshSurface on loaded scene objects, including inactive objects, with collection/build settings and persisted NavMeshData asset state.";
+        public JObject InputSchema => new JObject { ["type"] = "object", ["properties"] = new JObject(), ["additionalProperties"] = false };
+        public JObject OutputSchema => new JObject
         {
             ["type"] = "object",
-            ["properties"] = new JObject(),
-            ["additionalProperties"] = false,
+            ["properties"] = new JObject
+            {
+                ["count"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["surfaces"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            },
+            ["required"] = new JArray { "count", "surfaces" },
         };
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
-            var r = NavMeshSurfaceAuthor.ListSurfaces(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            var result = NavMeshSurfaceAuthor.ListSurfaces(args);
+            return result.Ok ? ToolResult.Ok(result.Summary, result.Data) : ToolResult.Error("OP_FAILED", result.Error);
         }
     }
 }

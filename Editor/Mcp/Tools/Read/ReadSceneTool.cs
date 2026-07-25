@@ -8,7 +8,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
     {
         public string Name => "read_scene";
         public string Description =>
-            "Returns the active scene as a hierarchical tree (parents → children) including transforms and component types. Use depth/maxNodes to bound payload size; use includeProperties=true sparingly (large) — prefer read_component for per-object detail.";
+            "Returns all loaded scenes (active + additive, plus Prefab Stage when open) as hierarchical trees including transforms and component types. sceneName/scenePath identify the active scene; every node carries its own scene identity. Use depth/maxNodes to bound payload size and includeProperties=true sparingly.";
 
         public JObject InputSchema => new JObject
         {
@@ -24,6 +24,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
         };
 
         public bool IsWrite => false;
+        public JObject OutputSchema => SceneToolSchemas.ReadScene;
 
         public ToolResult Execute(JObject args)
         {
@@ -51,7 +52,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                 {
                     ["name"] = s.Name,
                     ["path"] = s.Path,
+                    ["guid"] = s.Guid,
+                    ["handle"] = s.Handle,
                     ["isActive"] = s.IsActive,
+                    ["isPrefabStage"] = s.IsPrefabStage,
                 });
             }
 
@@ -62,7 +66,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                 ["loadedScenes"] = loadedScenes,
                 ["totalGameObjects"] = snapshot.Count,
                 ["emitted"] = emitted,
-                ["truncated"] = emitted >= maxNodes,
+                ["truncated"] = emitted < snapshot.Count,
                 ["roots"] = roots,
             };
             return ToolResult.Ok($"scene tree (emitted {emitted} of {snapshot.Count})", payload);
@@ -78,6 +82,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                 ["instanceId"] = instanceId,
                 ["name"] = info.Name,
                 ["sceneName"] = info.SceneName,
+                ["scenePath"] = info.ScenePath,
+                ["sceneGuid"] = info.SceneGuid,
+                ["sceneHandle"] = info.SceneHandle,
+                ["hierarchyPath"] = info.HierarchyPath,
+                ["globalObjectId"] = info.GlobalObjectId,
+                ["isPrefabStage"] = info.IsPrefabStage,
                 ["tag"] = info.Tag,
                 ["layer"] = info.Layer,
                 ["isActive"] = info.IsActive,

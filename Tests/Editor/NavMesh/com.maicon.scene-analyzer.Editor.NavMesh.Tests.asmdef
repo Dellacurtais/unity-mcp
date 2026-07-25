@@ -1,0 +1,26 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.NavMesh.Tests",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.NavMesh.Tests",
+  "references": [
+    "com.maicon.scene-analyzer.Editor",
+    "com.maicon.scene-analyzer.Editor.NavMesh",
+    "Unity.AI.Navigation",
+    "Unity.AI.Navigation.Editor"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": ["Newtonsoft.Json.dll"],
+  "autoReferenced": false,
+  "defineConstraints": ["SCENE_ANALYZER_HAS_NAVMESH"],
+  "versionDefines": [
+    {
+      "name": "com.unity.ai.navigation",
+      "expression": "2.0.0",
+      "define": "SCENE_ANALYZER_HAS_NAVMESH"
+    }
+  ],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "noEngineReferences": false
+}

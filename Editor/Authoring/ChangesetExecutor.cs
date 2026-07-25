@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -31,7 +32,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             = new(StringComparer.OrdinalIgnoreCase)
         {
             ["create_primitive"]       = PrimitiveFactory.Create,
-            ["create_empty"]           = CreateEmpty,
+            ["create_empty"]           = GameObjectFactory.CreateEmpty,
             ["instantiate_prefab"]     = PrefabFactory.Instantiate,
             ["create_light"]           = LightFactory.Create,
             ["create_camera"]          = CameraFactory.Create,
@@ -53,7 +54,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             ["rename_object"]          = GameObjectEditor.Rename,
             ["set_tag"]                = GameObjectEditor.SetTag,
             ["set_layer"]              = GameObjectEditor.SetLayer,
-            ["delete_object"]          = DeleteObject,
+            ["delete_object"]          = GameObjectEditor.Delete,
             ["set_render_settings"]    = RenderSettingsEditor.Apply,
             // ScriptableObject + array helper
             ["create_scriptable_object"]    = ScriptableObjectAuthor.Create,
@@ -112,57 +113,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var report = new Report();
             var labels = new Dictionary<string, int>(StringComparer.Ordinal);
-
-            if (preview)
-            {
-                for (int i = 0; i < ops.Count; i++)
-                {
-                    if (!(ops[i] is JObject op))
-                    {
-                        report.Failed = true;
-                        report.FailedAtIndex = i;
-                        report.Results.Add(OpResult.Fail($"op #{i}: not an object"));
-                        continue;
-                    }
-
-                    var clone = (JObject)op.DeepClone();
-                    ResolveRefs(clone, labels);
-
-                    var kind = (string)clone["kind"];
-                    if (string.IsNullOrEmpty(kind))
-                    {
-                        report.Failed = true;
-                        report.FailedAtIndex = i;
-                        report.Results.Add(OpResult.Fail("INVALID_ARG: missing kind"));
-                        continue;
-                    }
-                    if (!Handlers.ContainsKey(kind))
-                    {
-                        report.Failed = true;
-                        report.FailedAtIndex = i;
-                        report.Results.Add(OpResult.Fail($"REF_BROKEN: unknown kind '{kind}'"));
-                        continue;
-                    }
-
-                    var args = clone["args"] as JObject ?? clone;
-                    var refErr = ValidateRefsAndIds(args, labels);
-                    if (refErr != null)
-                    {
-                        report.Failed = true;
-                        report.FailedAtIndex = i;
-                        report.Results.Add(OpResult.Fail(refErr));
-                        continue;
-                    }
-
-                    report.Results.Add(OpResult.Success(0, $"would apply: {kind}"));
-                    report.OpsApplied++;
-
-                    var label = (string)clone["label"];
-                    if (!string.IsNullOrEmpty(label) && !labels.ContainsKey(label))
-                        labels[label] = -1; // sentinel: later refs validate against it
-                }
-                return report;
-            }
+            var preflight = Preflight(ops);
+            if (preview || preflight.Failed) return preflight;
 
             Undo.IncrementCurrentGroup();
             Undo.SetCurrentGroupName(string.IsNullOrEmpty(name) ? "Apply Changeset" : name);
@@ -309,7 +261,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var kind = (string)op["kind"];
             if (string.IsNullOrEmpty(kind)) return OpResult.Fail("op missing 'kind'");
-            var args = op["args"] as JObject ?? op;
+            var args = OperationArgs(op);
             if (Handlers.TryGetValue(kind, out var fn)) return fn(args);
             return OpResult.Fail($"unknown op kind '{kind}'. Known kinds: {string.Join(", ", Handlers.Keys)}");
         }
@@ -317,6 +269,88 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         /// Recursively replaces { "ref": "labelName" } objects inside the op's
         /// args with the labeled instanceId. Lets a batch chain ops that depend
         /// on the result of an earlier op (typically `parent`).
+        private static Report Preflight(JArray ops)
+        {
+            var report = new Report();
+            var labels = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (var index = 0; index < ops.Count; index++)
+            {
+                if (!(ops[index] is JObject op))
+                {
+                    AddPreflightFailure(report, index, $"INVALID_ARG: op #{index} must be an object");
+                    continue;
+                }
+
+                var clone = (JObject)op.DeepClone();
+                var kind = ((string)clone["kind"] ?? string.Empty).Trim();
+                if (string.IsNullOrEmpty(kind))
+                {
+                    AddPreflightFailure(report, index, "INVALID_ARG: missing kind");
+                    continue;
+                }
+                if (!Handlers.ContainsKey(kind))
+                {
+                    AddPreflightFailure(report, index, $"INVALID_ARG: unknown kind '{kind}'");
+                    continue;
+                }
+
+                var labelToken = clone["label"];
+                var label = labelToken?.Type == JTokenType.String ? ((string)labelToken)?.Trim() : null;
+                if (labelToken != null && string.IsNullOrEmpty(label))
+                {
+                    AddPreflightFailure(report, index, "INVALID_ARG: label must be a non-empty string");
+                    continue;
+                }
+                if (label != null && labels.ContainsKey(label))
+                {
+                    AddPreflightFailure(report, index, $"INVALID_ARG: duplicate label '{label}'");
+                    continue;
+                }
+
+                ResolveRefs(clone, labels);
+                var arguments = OperationArgs(clone);
+                var referenceError = ValidateRefsAndIds(arguments, labels);
+                if (referenceError != null)
+                {
+                    AddPreflightFailure(report, index, referenceError);
+                    continue;
+                }
+
+                if (Bootstrap.ToolRegistry != null
+                    && Bootstrap.ToolRegistry.TryGet(kind, out var tool)
+                    && !ToolSchemaValidator.ValidateArguments(arguments, tool.InputSchema, out var schemaError))
+                {
+                    AddPreflightFailure(report, index, $"INVALID_ARG: {schemaError}");
+                    continue;
+                }
+
+                report.Results.Add(OpResult.Success(0, $"would apply: {kind}"));
+                report.OpsApplied++;
+                if (label != null) labels[label] = -1;
+            }
+            return report;
+        }
+
+        private static void AddPreflightFailure(Report report, int index, string error)
+        {
+            report.Failed = true;
+            if (report.FailedAtIndex < 0)
+            {
+                report.FailedAtIndex = index;
+                report.Error = $"op #{index} failed preflight: {error}";
+            }
+            report.Results.Add(OpResult.Fail(error));
+        }
+
+        private static JObject OperationArgs(JObject op)
+        {
+            if (op["args"] is JObject nested) return nested;
+            var inline = (JObject)op.DeepClone();
+            inline.Remove("kind");
+            inline.Remove("label");
+            return inline;
+        }
+
         private static void ResolveRefs(JToken token, Dictionary<string, int> labels)
         {
             if (token is JObject obj)
@@ -341,31 +375,5 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             }
         }
 
-        private static OpResult CreateEmpty(JObject args)
-        {
-            var name = (string)args["name"] ?? "GameObject";
-            var go = new UnityEngine.GameObject(name);
-            Undo.RegisterCreatedObjectUndo(go, "Create Empty");
-            var parent = JsonHelpers.ResolveParent(args["parent"]);
-            if (parent != null) Undo.SetTransformParent(go.transform, parent.transform, "Parent");
-            go.transform.localPosition = JsonHelpers.ParseVector3(args["position"]);
-            go.transform.localRotation = JsonHelpers.ParseRotation(args["rotation"]);
-            return OpResult.Success(go.GetInstanceID(), $"created empty '{name}'");
-        }
-
-        private static OpResult DeleteObject(JObject args)
-        {
-            var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as UnityEngine.GameObject;
-            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
-
-            int childCount = go.transform.childCount;
-            bool force = (bool?)args["force"] ?? false;
-            if (childCount > 8 && !force)
-                return OpResult.Fail($"refusing to delete '{go.name}' with {childCount} children without force=true");
-
-            Undo.DestroyObjectImmediate(go);
-            return OpResult.Success(id, "deleted");
-        }
     }
 }

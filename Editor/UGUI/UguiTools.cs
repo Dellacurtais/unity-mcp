@@ -414,6 +414,7 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
             ["offsetMax"] = SchemaHelpers.Vec3Schema,
         });
         public bool IsWrite => true;
+        public JObject OutputSchema => GameObjectAuthoringSchemas.RectTransformResult;
 
         public ToolResult Execute(JObject args)
         {

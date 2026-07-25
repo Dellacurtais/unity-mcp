@@ -1,341 +1,631 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.AI;
-// `NavMeshBuilder` exists in BOTH UnityEditor.AI (legacy bake API we want)
-// AND UnityEngine.AI (lower-level data builder); avoid the ambiguity by
-// aliasing exclusively the editor one we use here.
 using LegacyBuilder = UnityEditor.AI.NavMeshBuilder;
 
 namespace Maicon.SceneAnalyzer.Editor.Authoring
 {
-    /// Built-in NavMesh queries + legacy bake + NavMeshAgent runtime control.
-    /// Uses `UnityEngine.AI.NavMesh` (always present) and
-    /// `UnityEditor.AI.NavMeshBuilder` (legacy bake, also built-in).
-    /// The modern per-surface system lives in the secondary NavMesh asmdef
-    /// gated by `com.unity.ai.navigation`.
+#pragma warning disable CS0618
     public static class NavMeshAuthor
     {
-        // ============== Queries ==============
-
         public static OpResult SamplePosition(JObject args)
         {
-            var pos = JsonHelpers.ParseVector3(args["position"]);
-            var maxDistance = (float?)args["maxDistance"] ?? 1f;
-            var areaMask = ParseAreaMask(args["areaMask"]);
+            if (!TryParseVector3(args["position"], out var position, out var vectorError))
+                return OpResult.Fail($"position: {vectorError}");
+            if (!TryReadNonNegative(args["maxDistance"], 1f, out var maxDistance, out var distanceError))
+                return OpResult.Fail($"maxDistance: {distanceError}");
+            if (!TryBuildQuery(args, out var areaMask, out var agentTypeId, out var filter, out var queryError))
+                return OpResult.Fail(queryError);
 
-            if (!NavMesh.SamplePosition(pos, out var hit, maxDistance, areaMask))
-                return new OpResult
-                {
-                    Ok = true,
-                    Summary = $"sample_position: NO navmesh within {maxDistance}u of [{pos.x:F2},{pos.y:F2},{pos.z:F2}]",
-                };
+            var found = agentTypeId.HasValue
+                ? NavMesh.SamplePosition(position, out var hit, maxDistance, filter)
+                : NavMesh.SamplePosition(position, out hit, maxDistance, areaMask);
+            var data = new JObject
+            {
+                ["found"] = found,
+                ["requestedPosition"] = JsonHelpers.Vec3(position),
+                ["maxDistance"] = maxDistance,
+                ["areaMask"] = areaMask,
+            };
+            if (agentTypeId.HasValue) data["agentTypeID"] = agentTypeId.Value;
+            if (found) data["hit"] = HitJson(hit);
 
             return new OpResult
             {
                 Ok = true,
-                Summary = $"sample_position: HIT  projected=[{hit.position.x:F2},{hit.position.y:F2},{hit.position.z:F2}]" +
-                          $"  distance={hit.distance:F3}  area={DescribeArea(hit.mask)}  normal=[{hit.normal.x:F2},{hit.normal.y:F2},{hit.normal.z:F2}]",
+                Data = data,
+                Summary = found
+                    ? $"sample_position: HIT projected={Format(hit.position)} distance={hit.distance:F3} area={DescribeArea(hit.mask)}"
+                    : $"sample_position: no NavMesh within {maxDistance:F3} units of {Format(position)}",
             };
         }
 
         public static OpResult CalculatePath(JObject args)
         {
-            var start = JsonHelpers.ParseVector3(args["start"]);
-            var end = JsonHelpers.ParseVector3(args["end"]);
-            var areaMask = ParseAreaMask(args["areaMask"]);
+            if (!TryParseVector3(args["start"], out var start, out var startError))
+                return OpResult.Fail($"start: {startError}");
+            if (!TryParseVector3(args["end"], out var end, out var endError))
+                return OpResult.Fail($"end: {endError}");
+            if (!TryBuildQuery(args, out var areaMask, out var agentTypeId, out var filter, out var queryError))
+                return OpResult.Fail(queryError);
 
             var path = new NavMeshPath();
-            bool ok = NavMesh.CalculatePath(start, end, areaMask, path);
+            var found = agentTypeId.HasValue
+                ? NavMesh.CalculatePath(start, end, filter, path)
+                : NavMesh.CalculatePath(start, end, areaMask, path);
+            var corners = new JArray(path.corners.Select(JsonHelpers.Vec3));
+            var totalDistance = 0f;
+            for (var i = 0; i + 1 < path.corners.Length; i++)
+                totalDistance += Vector3.Distance(path.corners[i], path.corners[i + 1]);
 
-            var sb = new System.Text.StringBuilder();
-            sb.AppendLine($"calculate_path: ok={ok}  status={path.status}  corners={path.corners.Length}");
-            float total = 0f;
-            for (int i = 0; i + 1 < path.corners.Length; i++)
-                total += Vector3.Distance(path.corners[i], path.corners[i + 1]);
-            sb.AppendLine($"  totalDistance={total:F2}");
-            int max = Mathf.Min(path.corners.Length, 30);
-            for (int i = 0; i < max; i++)
+            var data = new JObject
             {
-                var c = path.corners[i];
-                sb.AppendLine($"    [{i}] [{c.x:F2}, {c.y:F2}, {c.z:F2}]");
-            }
-            if (path.corners.Length > 30) sb.AppendLine($"    [+{path.corners.Length - 30} more corners]");
-            return new OpResult { Ok = true, Summary = sb.ToString() };
+                ["found"] = found,
+                ["status"] = path.status.ToString(),
+                ["corners"] = corners,
+                ["totalDistance"] = totalDistance,
+                ["areaMask"] = areaMask,
+            };
+            if (agentTypeId.HasValue) data["agentTypeID"] = agentTypeId.Value;
+            return new OpResult
+            {
+                Ok = true,
+                Data = data,
+                Summary = $"calculate_path: found={found} status={path.status} corners={path.corners.Length} totalDistance={totalDistance:F3}",
+            };
         }
 
         public static OpResult Raycast(JObject args)
         {
-            var start = JsonHelpers.ParseVector3(args["start"]);
-            var end = JsonHelpers.ParseVector3(args["end"]);
-            var areaMask = ParseAreaMask(args["areaMask"]);
+            if (!TryParseVector3(args["start"], out var start, out var startError))
+                return OpResult.Fail($"start: {startError}");
+            if (!TryParseVector3(args["end"], out var end, out var endError))
+                return OpResult.Fail($"end: {endError}");
+            if (!TryReadNonNegative(args["sampleDistance"], 0.1f, out var sampleDistance, out var sampleError))
+                return OpResult.Fail($"sampleDistance: {sampleError}");
+            if (!TryBuildQuery(args, out var areaMask, out var agentTypeId, out var filter, out var queryError))
+                return OpResult.Fail(queryError);
 
-            // NavMesh.Raycast returns true when blocked — the hit data describes
-            // where the line was severed. This naming is the opposite of
-            // Physics.Raycast, document carefully.
-            bool blocked = NavMesh.Raycast(start, end, out var hit, areaMask);
-            var sb = new System.Text.StringBuilder();
-            if (blocked)
+            var startFound = agentTypeId.HasValue
+                ? NavMesh.SamplePosition(start, out var mappedStart, sampleDistance, filter)
+                : NavMesh.SamplePosition(start, out mappedStart, sampleDistance, areaMask);
+            var data = new JObject
             {
-                sb.AppendLine("navmesh_raycast: BLOCKED (line crosses non-walkable / off-navmesh)");
-                sb.AppendLine($"  block point=[{hit.position.x:F2}, {hit.position.y:F2}, {hit.position.z:F2}]  distance={hit.distance:F3}");
-            }
-            else
+                ["found"] = startFound,
+                ["blocked"] = false,
+                ["clear"] = false,
+                ["start"] = JsonHelpers.Vec3(start),
+                ["end"] = JsonHelpers.Vec3(end),
+                ["areaMask"] = areaMask,
+                ["sampleDistance"] = sampleDistance,
+            };
+            if (agentTypeId.HasValue) data["agentTypeID"] = agentTypeId.Value;
+            if (!startFound)
+                return new OpResult { Ok = true, Data = data, Summary = $"navmesh_raycast: start is not on a matching NavMesh within {sampleDistance:F3} units" };
+
+            var blocked = agentTypeId.HasValue
+                ? NavMesh.Raycast(mappedStart.position, end, out var hit, filter)
+                : NavMesh.Raycast(mappedStart.position, end, out hit, areaMask);
+            data["blocked"] = blocked;
+            data["clear"] = !blocked;
+            data["mappedStart"] = JsonHelpers.Vec3(mappedStart.position);
+            if (blocked) data["hit"] = HitJson(hit);
+            return new OpResult
             {
-                sb.AppendLine("navmesh_raycast: clear (entire line is on walkable navmesh)");
-            }
-            return new OpResult { Ok = true, Summary = sb.ToString() };
+                Ok = true,
+                Data = data,
+                Summary = blocked
+                    ? $"navmesh_raycast: BLOCKED at {Format(hit.position)} distance={hit.distance:F3}"
+                    : "navmesh_raycast: CLEAR",
+            };
         }
 
         public static OpResult FindClosestEdge(JObject args)
         {
-            var pos = JsonHelpers.ParseVector3(args["position"]);
-            var areaMask = ParseAreaMask(args["areaMask"]);
+            if (!TryParseVector3(args["position"], out var position, out var vectorError))
+                return OpResult.Fail($"position: {vectorError}");
+            if (!TryBuildQuery(args, out var areaMask, out var agentTypeId, out var filter, out var queryError))
+                return OpResult.Fail(queryError);
 
-            if (!NavMesh.FindClosestEdge(pos, out var hit, areaMask))
-                return new OpResult { Ok = true, Summary = $"find_closest_edge: no edge found near [{pos.x:F2},{pos.y:F2},{pos.z:F2}]" };
-
+            var found = agentTypeId.HasValue
+                ? NavMesh.FindClosestEdge(position, out var hit, filter)
+                : NavMesh.FindClosestEdge(position, out hit, areaMask);
+            var data = new JObject
+            {
+                ["found"] = found,
+                ["requestedPosition"] = JsonHelpers.Vec3(position),
+                ["areaMask"] = areaMask,
+            };
+            if (agentTypeId.HasValue) data["agentTypeID"] = agentTypeId.Value;
+            if (found) data["hit"] = HitJson(hit);
             return new OpResult
             {
                 Ok = true,
-                Summary = $"find_closest_edge: edge at [{hit.position.x:F2},{hit.position.y:F2},{hit.position.z:F2}]" +
-                          $"  distance={hit.distance:F3}  normal=[{hit.normal.x:F2},{hit.normal.y:F2},{hit.normal.z:F2}]  area={DescribeArea(hit.mask)}",
+                Data = data,
+                Summary = found
+                    ? $"find_closest_edge: edge={Format(hit.position)} distance={hit.distance:F3} area={DescribeArea(hit.mask)}"
+                    : $"find_closest_edge: no matching edge near {Format(position)}",
             };
         }
-
-        // ============== Legacy bake ==============
 
         public static OpResult BakeLegacy(JObject args)
         {
-            // Cancel any running bake first to avoid stacking.
-            if (LegacyBuilder.isRunning) LegacyBuilder.Cancel();
-
-            var asyncBake = (bool?)args["async"] ?? false;
-            if (asyncBake) LegacyBuilder.BuildNavMeshAsync();
-            else LegacyBuilder.BuildNavMesh();
-
+            if (LegacyBuilder.isRunning)
+                return OpResult.Fail("a legacy NavMesh bake is already running");
+            LegacyBuilder.BuildNavMesh();
             return new OpResult
             {
                 Ok = true,
-                Summary = asyncBake
-                    ? "legacy NavMesh bake started (async). No MCP polling endpoint yet — re-issue with `async: false` if you need a synchronous wait."
-                    : "legacy NavMesh bake completed (sync)",
+                Summary = "legacy NavMesh bake completed synchronously",
+                Data = new JObject { ["completed"] = true, ["mode"] = "synchronous" },
             };
         }
-
-        // ============== Agent runtime + state read ==============
 
         public static OpResult SetAgent(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+            if (!TryResolveSceneGameObject(id, out var go, out var targetError)) return OpResult.Fail(targetError);
             var agent = go.GetComponent<NavMeshAgent>();
-            if (agent == null) return OpResult.Fail("no NavMeshAgent on GameObject — add_component NavMeshAgent first");
+            if (agent == null) return OpResult.Fail("no NavMeshAgent on GameObject");
+
+            if (!TryReadOptionalNonNegative(args, "speed", out var speed, out var error) ||
+                !TryReadOptionalNonNegative(args, "acceleration", out var acceleration, out error) ||
+                !TryReadOptionalNonNegative(args, "angularSpeed", out var angularSpeed, out error) ||
+                !TryReadOptionalNonNegative(args, "stoppingDistance", out var stoppingDistance, out error) ||
+                !TryReadOptionalNonNegative(args, "radius", out var radius, out error) ||
+                !TryReadOptionalNonNegative(args, "height", out var height, out error))
+                return OpResult.Fail(error);
+            if (!TryReadOptionalFinite(args, "baseOffset", out var baseOffset, out error)) return OpResult.Fail(error);
+
+            var areaMask = agent.areaMask;
+            if (args["areaMask"] != null && !TryParseAreaMask(args["areaMask"], out areaMask, out error))
+                return OpResult.Fail($"areaMask: {error}");
+
+            var hasDestination = args["destination"] != null;
+            var hasRuntimeCommand = hasDestination || args["isStopped"] != null || ((bool?)args["resetPath"] ?? false);
+            var onNavMesh = agent.isActiveAndEnabled && agent.isOnNavMesh;
+            if (hasRuntimeCommand && !onNavMesh)
+                return OpResult.Fail("destination, isStopped, and resetPath require an active NavMeshAgent placed on a NavMesh");
+
+            var destination = default(Vector3);
+            if (hasDestination)
+            {
+                if (!TryParseVector3(args["destination"], out destination, out error))
+                    return OpResult.Fail($"destination: {error}");
+                if (!TryValidateAgentType(agent.agentTypeID, out error)) return OpResult.Fail(error);
+                var path = new NavMeshPath();
+                var filter = new NavMeshQueryFilter { agentTypeID = agent.agentTypeID, areaMask = areaMask };
+                if (!NavMesh.CalculatePath(agent.nextPosition, destination, filter, path))
+                    return OpResult.Fail("destination does not produce a complete or partial path for the agent's type and area mask");
+            }
 
             Undo.RecordObject(agent, "Set NavMeshAgent");
-
-            // Track destination warning so the response surfaces silent failures
-            // (SetDestination returns false when the agent isn't on the NavMesh).
-            string destWarning = null;
-            if (args["destination"] != null)
-            {
-                var dest = JsonHelpers.ParseVector3(args["destination"]);
-                bool setOk = agent.SetDestination(dest);
-                if (!setOk || !agent.isOnNavMesh)
-                    destWarning = $"WARNING: SetDestination failed (isOnNavMesh={agent.isOnNavMesh}). Bake the NavMesh and ensure the agent's spawn point is within sampling distance.";
-            }
+            if (speed.HasValue) agent.speed = speed.Value;
+            if (acceleration.HasValue) agent.acceleration = acceleration.Value;
+            if (angularSpeed.HasValue) agent.angularSpeed = angularSpeed.Value;
+            if (stoppingDistance.HasValue) agent.stoppingDistance = stoppingDistance.Value;
+            if (radius.HasValue) agent.radius = radius.Value;
+            if (height.HasValue) agent.height = height.Value;
+            if (baseOffset.HasValue) agent.baseOffset = baseOffset.Value;
+            if (args["areaMask"] != null) agent.areaMask = areaMask;
             if (args["isStopped"] != null) agent.isStopped = (bool)args["isStopped"];
-            if (args["speed"] != null) agent.speed = (float)args["speed"];
-            if (args["acceleration"] != null) agent.acceleration = (float)args["acceleration"];
-            if (args["angularSpeed"] != null) agent.angularSpeed = (float)args["angularSpeed"];
-            if (args["stoppingDistance"] != null) agent.stoppingDistance = (float)args["stoppingDistance"];
-            if (args["radius"] != null) agent.radius = (float)args["radius"];
-            if (args["height"] != null) agent.height = (float)args["height"];
-            if (args["baseOffset"] != null) agent.baseOffset = (float)args["baseOffset"];
-            if (args["areaMask"] != null) agent.areaMask = ParseAreaMask(args["areaMask"]);
-            if (args["resetPath"] != null && (bool)args["resetPath"]) agent.ResetPath();
+            if ((bool?)args["resetPath"] ?? false) agent.ResetPath();
+            if (hasDestination && !agent.SetDestination(destination))
+                return OpResult.Fail("SetDestination failed after path preflight");
 
-            // State read — always returned.
-            var sb = new System.Text.StringBuilder();
-            sb.AppendLine($"NavMeshAgent on '{go.name}'");
-            sb.AppendLine($"  isOnNavMesh={agent.isOnNavMesh}  hasPath={agent.hasPath}  pathPending={agent.pathPending}  isStopped={agent.isStopped}");
-            sb.AppendLine($"  destination=[{agent.destination.x:F2},{agent.destination.y:F2},{agent.destination.z:F2}]" +
-                          $"  remainingDistance={agent.remainingDistance:F3}  velocity={agent.velocity.magnitude:F2}");
-            sb.AppendLine($"  speed={agent.speed}  accel={agent.acceleration}  angSpeed={agent.angularSpeed}  stopDist={agent.stoppingDistance}");
-            sb.AppendLine($"  radius={agent.radius}  height={agent.height}  baseOffset={agent.baseOffset}  areaMask=0x{agent.areaMask:X8}");
-            if (agent.path != null) sb.AppendLine($"  pathStatus={agent.path.status}  corners={agent.path.corners.Length}");
-            if (destWarning != null) sb.AppendLine($"  {destWarning}");
-
-            // Without SetDirty + scene-dirty, prefab-stage edits and unsaved-scene
-            // changes don't trigger a Save prompt and the Inspector may not refresh.
             EditorUtility.SetDirty(agent);
+            PrefabUtility.RecordPrefabInstancePropertyModifications(agent);
             EditorSceneManager.MarkSceneDirty(go.scene);
-            return new OpResult { Ok = true, Summary = sb.ToString(), InstanceID = id };
+            var data = AgentJson(go, agent);
+            return new OpResult { Ok = true, Summary = $"configured NavMeshAgent on '{go.name}'", InstanceID = id, Data = data };
         }
-
-        // ============== Discovery: areas + agent types ==============
 
         public static OpResult ListAreas(JObject args)
         {
-            // GetNavMeshAreaNames maps directly to bit positions in NavMesh.areaMask;
-            // the indices are stable across all queries that take an area mask.
-            var names = GameObjectUtility.GetNavMeshAreaNames();
-            var sb = new System.Text.StringBuilder();
-            int count = 0;
-            for (int i = 0; i < names.Length; i++)
+            var areas = new JArray();
+            foreach (var pair in DefinedAreas())
             {
-                var n = names[i];
-                if (string.IsNullOrEmpty(n)) continue;
-                float cost = NavMesh.GetAreaCost(i);
-                sb.AppendLine($"  #{i}  '{n}'  cost={cost:F2}");
-                count++;
+                areas.Add(new JObject
+                {
+                    ["index"] = pair.Key,
+                    ["name"] = pair.Value,
+                    ["cost"] = NavMesh.GetAreaCost(pair.Key),
+                });
             }
-            return new OpResult { Ok = true, Summary = $"{count} NavMesh area(s):\n{sb}" };
+            return new OpResult
+            {
+                Ok = true,
+                Summary = $"{areas.Count} NavMesh area(s)",
+                Data = new JObject { ["count"] = areas.Count, ["areas"] = areas },
+            };
         }
 
         public static OpResult ListAgentTypes(JObject args)
         {
-            var sb = new System.Text.StringBuilder();
-            int n = NavMesh.GetSettingsCount();
-            for (int i = 0; i < n; i++)
+            var agents = new JArray();
+            for (var i = 0; i < NavMesh.GetSettingsCount(); i++)
             {
-                var s = NavMesh.GetSettingsByIndex(i);
-                string name = NavMesh.GetSettingsNameFromID(s.agentTypeID);
-                sb.AppendLine($"  agentTypeID={s.agentTypeID}  '{name}'  radius={s.agentRadius:F2}  height={s.agentHeight:F2}  slope={s.agentSlope:F1}  climb={s.agentClimb:F2}");
+                var settings = NavMesh.GetSettingsByIndex(i);
+                if (settings.agentTypeID < 0) continue;
+                agents.Add(new JObject
+                {
+                    ["agentTypeID"] = settings.agentTypeID,
+                    ["name"] = NavMesh.GetSettingsNameFromID(settings.agentTypeID),
+                    ["radius"] = settings.agentRadius,
+                    ["height"] = settings.agentHeight,
+                    ["slope"] = settings.agentSlope,
+                    ["climb"] = settings.agentClimb,
+                });
             }
-            return new OpResult { Ok = true, Summary = $"{n} NavMesh agent type(s):\n{sb}" };
+            return new OpResult
+            {
+                Ok = true,
+                Summary = $"{agents.Count} NavMesh agent type(s)",
+                Data = new JObject { ["count"] = agents.Count, ["agentTypes"] = agents },
+            };
         }
-
-        // ============== OffMeshLink + NavMeshObstacle (built-in components) ==============
 
         public static OpResult AddOffMeshLink(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var host = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (host == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+            if (!TryResolveSceneGameObject(id, out var host, out var targetError)) return OpResult.Fail(targetError);
 
-            var link = Undo.AddComponent<OffMeshLink>(host);
-
-            Transform startT = host.transform;
-            Transform endT = null;
-            var startId = (int?)args["startInstanceId"] ?? 0;
-            if (startId != 0)
+            var startTransform = host.transform;
+            if (args["startInstanceId"] != null)
             {
-                var startGo = EditorUtility.InstanceIDToObject(startId) as GameObject;
-                if (startGo == null) return OpResult.Fail($"start GameObject not found: instanceId={startId}");
-                startT = startGo.transform;
+                if (!TryResolveSceneGameObject((int)args["startInstanceId"], out var start, out targetError)) return OpResult.Fail($"start: {targetError}");
+                startTransform = start.transform;
             }
-            var endId = (int?)args["endInstanceId"] ?? 0;
-            if (endId != 0)
+            if (args["endInstanceId"] == null) return OpResult.Fail("endInstanceId is required for a usable OffMeshLink");
+            if (!TryResolveSceneGameObject((int)args["endInstanceId"], out var end, out targetError)) return OpResult.Fail($"end: {targetError}");
+
+            var area = 0;
+            if (args["area"] != null && !TryParseAreaIndex(args["area"], out area, out var error)) return OpResult.Fail($"area: {error}");
+            float? costOverride = null;
+            if (args["costOverride"] != null)
             {
-                var endGo = EditorUtility.InstanceIDToObject(endId) as GameObject;
-                if (endGo == null) return OpResult.Fail($"end GameObject not found: instanceId={endId}");
-                endT = endGo.transform;
+                if (!TryReadFinite(args["costOverride"], out var parsedCost, out error)) return OpResult.Fail($"costOverride: {error}");
+                costOverride = parsedCost;
             }
 
-            link.startTransform = startT;
-            link.endTransform = endT;
-            if (args["costOverride"] != null) link.costOverride = (float)args["costOverride"];
+            var link = host.GetComponent<OffMeshLink>();
+            if (link == null) link = Undo.AddComponent<OffMeshLink>(host);
+            else Undo.RecordObject(link, "Configure OffMeshLink");
+            link.startTransform = startTransform;
+            link.endTransform = end.transform;
+            if (costOverride.HasValue) link.costOverride = costOverride.Value;
             if (args["biDirectional"] != null) link.biDirectional = (bool)args["biDirectional"];
             if (args["activated"] != null) link.activated = (bool)args["activated"];
             if (args["autoUpdatePositions"] != null) link.autoUpdatePositions = (bool)args["autoUpdatePositions"];
-            if (args["area"] != null)
-            {
-                // OffMeshLink.area is an index, not a mask. Reuse the area-name resolution
-                // that NavMeshAuthor.ParseAreaMask uses for the single-name path.
-                var t = args["area"];
-                if (t.Type == JTokenType.Integer) link.area = (int)t;
-                else if (t.Type == JTokenType.String)
-                {
-                    var idx = NavMesh.GetAreaFromName((string)t);
-                    if (idx >= 0) link.area = idx;
-                }
-            }
+            if (args["area"] != null) link.area = area;
+            link.UpdatePositions();
 
             EditorUtility.SetDirty(link);
+            PrefabUtility.RecordPrefabInstancePropertyModifications(link);
             EditorSceneManager.MarkSceneDirty(host.scene);
-            return OpResult.Success(link.GetInstanceID(),
-                $"OffMeshLink on '{host.name}'  start='{(startT != null ? startT.name : "null")}'  end='{(endT != null ? endT.name : "null")}'  area=#{link.area}  biDirectional={link.biDirectional}");
+            var data = new JObject
+            {
+                ["instanceId"] = link.GetInstanceID(),
+                ["hostInstanceId"] = host.GetInstanceID(),
+                ["startInstanceId"] = startTransform.gameObject.GetInstanceID(),
+                ["endInstanceId"] = end.GetInstanceID(),
+                ["area"] = link.area,
+                ["areaName"] = AreaName(link.area),
+                ["costOverride"] = link.costOverride,
+                ["biDirectional"] = link.biDirectional,
+                ["activated"] = link.activated,
+                ["autoUpdatePositions"] = link.autoUpdatePositions,
+                ["deprecated"] = true,
+            };
+            return new OpResult { Ok = true, InstanceID = link.GetInstanceID(), Data = data, Summary = $"configured deprecated OffMeshLink on '{host.name}'" };
         }
 
         public static OpResult AddObstacle(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
-            if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
+            if (!TryResolveSceneGameObject(id, out var go, out var targetError)) return OpResult.Fail(targetError);
+
+            NavMeshObstacleShape? shape = null;
+            if (args["shape"] != null)
+            {
+                if (!Enum.TryParse((string)args["shape"], true, out NavMeshObstacleShape parsed) || !Enum.IsDefined(typeof(NavMeshObstacleShape), parsed))
+                    return OpResult.Fail($"unknown NavMeshObstacle shape '{(string)args["shape"]}'");
+                shape = parsed;
+            }
+            Vector3? center = null;
+            if (args["center"] != null)
+            {
+                if (!TryParseVector3(args["center"], out var parsed, out var error)) return OpResult.Fail($"center: {error}");
+                center = parsed;
+            }
+            Vector3? size = null;
+            if (args["size"] != null)
+            {
+                if (!TryParseVector3(args["size"], out var parsed, out var error) || parsed.x < 0f || parsed.y < 0f || parsed.z < 0f)
+                    return OpResult.Fail("size must contain three non-negative finite values");
+                size = parsed;
+            }
+            if (!TryReadOptionalNonNegative(args, "radius", out var radius, out var numericError) ||
+                !TryReadOptionalNonNegative(args, "height", out var height, out numericError) ||
+                !TryReadOptionalNonNegative(args, "carvingMoveThreshold", out var moveThreshold, out numericError) ||
+                !TryReadOptionalNonNegative(args, "carvingTimeToStationary", out var stationaryTime, out numericError))
+                return OpResult.Fail(numericError);
 
             var obstacle = go.GetComponent<NavMeshObstacle>();
             if (obstacle == null) obstacle = Undo.AddComponent<NavMeshObstacle>(go);
             else Undo.RecordObject(obstacle, "Configure NavMeshObstacle");
-
-            if (args["shape"] != null
-                && Enum.TryParse<NavMeshObstacleShape>((string)args["shape"], true, out var shape))
-                obstacle.shape = shape;
-            if (args["center"] != null) obstacle.center = JsonHelpers.ParseVector3(args["center"]);
-            if (args["size"] != null) obstacle.size = JsonHelpers.ParseVector3(args["size"], Vector3.one);
-            if (args["radius"] != null) obstacle.radius = (float)args["radius"];
-            if (args["height"] != null) obstacle.height = (float)args["height"];
+            if (shape.HasValue) obstacle.shape = shape.Value;
+            if (center.HasValue) obstacle.center = center.Value;
+            if (size.HasValue) obstacle.size = size.Value;
+            if (radius.HasValue) obstacle.radius = radius.Value;
+            if (height.HasValue) obstacle.height = height.Value;
             if (args["carving"] != null) obstacle.carving = (bool)args["carving"];
             if (args["carveOnlyStationary"] != null) obstacle.carveOnlyStationary = (bool)args["carveOnlyStationary"];
-            if (args["carvingMoveThreshold"] != null) obstacle.carvingMoveThreshold = (float)args["carvingMoveThreshold"];
-            if (args["carvingTimeToStationary"] != null) obstacle.carvingTimeToStationary = (float)args["carvingTimeToStationary"];
+            if (moveThreshold.HasValue) obstacle.carvingMoveThreshold = moveThreshold.Value;
+            if (stationaryTime.HasValue) obstacle.carvingTimeToStationary = stationaryTime.Value;
 
             EditorUtility.SetDirty(obstacle);
+            PrefabUtility.RecordPrefabInstancePropertyModifications(obstacle);
             EditorSceneManager.MarkSceneDirty(go.scene);
-            return OpResult.Success(obstacle.GetInstanceID(),
-                $"NavMeshObstacle on '{go.name}'  shape={obstacle.shape}  carving={obstacle.carving}  size={obstacle.size}  center={obstacle.center}");
+            var data = new JObject
+            {
+                ["instanceId"] = obstacle.GetInstanceID(),
+                ["hostInstanceId"] = go.GetInstanceID(),
+                ["shape"] = obstacle.shape.ToString(),
+                ["center"] = JsonHelpers.Vec3(obstacle.center),
+                ["size"] = JsonHelpers.Vec3(obstacle.size),
+                ["radius"] = obstacle.radius,
+                ["height"] = obstacle.height,
+                ["carving"] = obstacle.carving,
+                ["carveOnlyStationary"] = obstacle.carveOnlyStationary,
+                ["carvingMoveThreshold"] = obstacle.carvingMoveThreshold,
+                ["carvingTimeToStationary"] = obstacle.carvingTimeToStationary,
+            };
+            return new OpResult { Ok = true, InstanceID = obstacle.GetInstanceID(), Data = data, Summary = $"configured NavMeshObstacle on '{go.name}'" };
         }
 
-        // ============== Helpers ==============
-
-        public static int ParseAreaMask(JToken t)
+        public static int ParseAreaMask(JToken token)
         {
-            if (t == null || t.Type == JTokenType.Null) return NavMesh.AllAreas;
-            if (t.Type == JTokenType.Integer) return (int)t;
-            if (t.Type == JTokenType.String)
+            if (TryParseAreaMask(token, out var mask, out var error)) return mask;
+            throw new ArgumentException(error, nameof(token));
+        }
+
+        public static bool TryParseAreaMask(JToken token, out int mask, out string error)
+        {
+            mask = NavMesh.AllAreas;
+            error = null;
+            if (token == null || token.Type == JTokenType.Null) return true;
+            if (token.Type == JTokenType.Integer)
             {
-                var area = NavMesh.GetAreaFromName((string)t);
-                return area >= 0 ? (1 << area) : NavMesh.AllAreas;
+                var raw = token.Value<long>();
+                if (raw < int.MinValue || raw > int.MaxValue) { error = "raw mask is outside Int32 range"; return false; }
+                mask = (int)raw;
+                return true;
             }
-            if (t is JArray arr)
+            if (token.Type == JTokenType.String)
             {
-                int mask = 0;
-                foreach (var n in arr)
+                if (!TryParseAreaIndex(token, out var index, out error)) return false;
+                mask = 1 << index;
+                return true;
+            }
+            if (token is JArray array)
+            {
+                if (array.Count == 0) { error = "area array cannot be empty"; return false; }
+                mask = 0;
+                foreach (var item in array)
                 {
-                    if (n.Type == JTokenType.String)
-                    {
-                        var area = NavMesh.GetAreaFromName((string)n);
-                        if (area >= 0) mask |= (1 << area);
-                    }
-                    else if (n.Type == JTokenType.Integer)
-                    {
-                        mask |= (1 << (int)n);
-                    }
+                    if (!TryParseAreaIndex(item, out var index, out error)) return false;
+                    mask |= 1 << index;
                 }
-                return mask != 0 ? mask : NavMesh.AllAreas;
+                return true;
             }
-            return NavMesh.AllAreas;
+            error = "expected an Int32 mask, area name, or non-empty array of names/indices";
+            return false;
         }
 
-        private static string DescribeArea(int mask)
+        public static bool TryParseAreaIndex(JToken token, out int index, out string error)
         {
-            if (mask == NavMesh.AllAreas) return "All";
-            string[] names = null;
-            try { names = GameObjectUtility.GetNavMeshAreaNames(); }
-            catch { /* names lookup is editor-only and best-effort */ }
-
-            var sb = new System.Text.StringBuilder();
-            for (int i = 0; i < 32; i++)
+            index = -1;
+            error = null;
+            if (token == null || token.Type == JTokenType.Null) { error = "area is required"; return false; }
+            if (token.Type == JTokenType.Integer)
             {
-                if ((mask & (1 << i)) == 0) continue;
-                string n = (names != null && i < names.Length) ? names[i] : null;
-                if (sb.Length > 0) sb.Append(',');
-                sb.Append(string.IsNullOrEmpty(n) ? $"#{i}" : n);
+                var raw = token.Value<long>();
+                if (raw < 0 || raw > 31) { error = "area index must be between 0 and 31"; return false; }
+                index = (int)raw;
             }
-            return sb.Length > 0 ? $"{sb} (mask=0x{mask:X8})" : $"none (0x{mask:X8})";
+            else if (token.Type == JTokenType.String)
+            {
+                var name = ((string)token)?.Trim();
+                if (string.IsNullOrEmpty(name)) { error = "area name cannot be empty"; return false; }
+                index = NavMesh.GetAreaFromName(name);
+                if (index < 0) { error = $"unknown NavMesh area '{name}'"; return false; }
+            }
+            else
+            {
+                error = "expected an area name or numeric index";
+                return false;
+            }
+            if (!DefinedAreas().ContainsKey(index)) { error = $"NavMesh area index {index} is not defined"; return false; }
+            return true;
         }
+
+        private static bool TryBuildQuery(JObject args, out int areaMask, out int? agentTypeId, out NavMeshQueryFilter filter, out string error)
+        {
+            filter = default;
+            agentTypeId = null;
+            if (!TryParseAreaMask(args["areaMask"], out areaMask, out error)) { error = $"areaMask: {error}"; return false; }
+            if (args["agentTypeID"] == null) return true;
+            var id = (int)args["agentTypeID"];
+            if (!TryValidateAgentType(id, out error)) return false;
+            agentTypeId = id;
+            filter = new NavMeshQueryFilter { agentTypeID = id, areaMask = areaMask };
+            return true;
+        }
+
+        private static bool TryValidateAgentType(int agentTypeId, out string error)
+        {
+            var settings = NavMesh.GetSettingsByID(agentTypeId);
+            if (settings.agentTypeID == -1)
+            {
+                error = $"unknown NavMesh agentTypeID {agentTypeId}";
+                return false;
+            }
+            error = null;
+            return true;
+        }
+
+        private static bool TryResolveSceneGameObject(int id, out GameObject go, out string error)
+        {
+            var target = EditorUtility.InstanceIDToObject(id);
+            go = target as GameObject ?? (target as Component)?.gameObject;
+            if (go == null) { error = $"GameObject not found: instanceId={id}"; return false; }
+            if (EditorUtility.IsPersistent(go) || PrefabUtility.IsPartOfPrefabAsset(go))
+            {
+                error = "persistent prefab assets are not scene-edit targets; instantiate the prefab or open Prefab Mode";
+                return false;
+            }
+            if (!go.scene.IsValid() || !go.scene.isLoaded)
+            {
+                error = "target must belong to a loaded scene or Prefab Stage";
+                return false;
+            }
+            error = null;
+            return true;
+        }
+
+        private static bool TryParseVector3(JToken token, out Vector3 value, out string error)
+        {
+            value = default;
+            error = null;
+            if (token is JArray array && array.Count == 3 && array.All(IsNumber))
+            {
+                value = new Vector3((float)array[0], (float)array[1], (float)array[2]);
+            }
+            else if (token is JObject obj && obj["x"] != null && obj["y"] != null && obj["z"] != null && IsNumber(obj["x"]) && IsNumber(obj["y"]) && IsNumber(obj["z"]))
+            {
+                value = new Vector3((float)obj["x"], (float)obj["y"], (float)obj["z"]);
+            }
+            else
+            {
+                error = "expected [x,y,z] or {x,y,z}";
+                return false;
+            }
+            if (!IsFinite(value.x) || !IsFinite(value.y) || !IsFinite(value.z))
+            {
+                error = "coordinates must be finite";
+                return false;
+            }
+            return true;
+        }
+
+        private static bool TryReadOptionalNonNegative(JObject args, string name, out float? value, out string error)
+        {
+            value = null;
+            error = null;
+            if (args[name] == null) return true;
+            if (!TryReadNonNegative(args[name], 0f, out var parsed, out error)) { error = $"{name}: {error}"; return false; }
+            value = parsed;
+            return true;
+        }
+
+        private static bool TryReadOptionalFinite(JObject args, string name, out float? value, out string error)
+        {
+            value = null;
+            error = null;
+            if (args[name] == null) return true;
+            if (!TryReadFinite(args[name], out var parsed, out error)) { error = $"{name}: {error}"; return false; }
+            value = parsed;
+            return true;
+        }
+
+        private static bool TryReadNonNegative(JToken token, float fallback, out float value, out string error)
+        {
+            if (token == null) { value = fallback; error = null; return true; }
+            if (!TryReadFinite(token, out value, out error)) return false;
+            if (value < 0f) { error = "must be non-negative"; return false; }
+            return true;
+        }
+
+        private static bool TryReadFinite(JToken token, out float value, out string error)
+        {
+            value = 0f;
+            if (!IsNumber(token)) { error = "must be a number"; return false; }
+            value = (float)token;
+            if (!IsFinite(value)) { error = "must be finite"; return false; }
+            error = null;
+            return true;
+        }
+
+        private static JObject AgentJson(GameObject go, NavMeshAgent agent)
+        {
+            var onNavMesh = agent.isActiveAndEnabled && agent.isOnNavMesh;
+            var data = new JObject
+            {
+                ["instanceId"] = go.GetInstanceID(),
+                ["agentInstanceId"] = agent.GetInstanceID(),
+                ["name"] = go.name,
+                ["isOnNavMesh"] = onNavMesh,
+                ["speed"] = agent.speed,
+                ["acceleration"] = agent.acceleration,
+                ["angularSpeed"] = agent.angularSpeed,
+                ["stoppingDistance"] = agent.stoppingDistance,
+                ["radius"] = agent.radius,
+                ["height"] = agent.height,
+                ["baseOffset"] = agent.baseOffset,
+                ["areaMask"] = agent.areaMask,
+            };
+            if (onNavMesh)
+            {
+                data["hasPath"] = agent.hasPath;
+                data["pathPending"] = agent.pathPending;
+                data["isStopped"] = agent.isStopped;
+                data["destination"] = JsonHelpers.Vec3(agent.destination);
+                data["remainingDistance"] = agent.remainingDistance;
+                data["velocity"] = JsonHelpers.Vec3(agent.velocity);
+                data["pathStatus"] = agent.path.status.ToString();
+                data["cornerCount"] = agent.path.corners.Length;
+            }
+            return data;
+        }
+
+        private static JObject HitJson(NavMeshHit hit) => new JObject
+        {
+            ["position"] = JsonHelpers.Vec3(hit.position),
+            ["normal"] = JsonHelpers.Vec3(hit.normal),
+            ["distance"] = hit.distance,
+            ["areaMask"] = hit.mask,
+            ["areas"] = new JArray(AreaNames(hit.mask)),
+        };
+
+        private static SortedDictionary<int, string> DefinedAreas()
+        {
+            var result = new SortedDictionary<int, string>();
+            foreach (var name in GameObjectUtility.GetNavMeshAreaNames())
+            {
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                var index = NavMesh.GetAreaFromName(name);
+                if (index >= 0 && index <= 31) result[index] = name;
+            }
+            return result;
+        }
+
+        private static IEnumerable<string> AreaNames(int mask)
+        {
+            foreach (var pair in DefinedAreas())
+                if ((mask & (1 << pair.Key)) != 0) yield return pair.Value;
+        }
+
+        private static string AreaName(int index) => DefinedAreas().TryGetValue(index, out var name) ? name : $"#{index}";
+        private static string DescribeArea(int mask) => string.Join(",", AreaNames(mask));
+        private static string Format(Vector3 value) => $"[{value.x:F2},{value.y:F2},{value.z:F2}]";
+        private static bool IsNumber(JToken token) => token != null && (token.Type == JTokenType.Integer || token.Type == JTokenType.Float);
+        private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
     }
+#pragma warning restore CS0618
 }

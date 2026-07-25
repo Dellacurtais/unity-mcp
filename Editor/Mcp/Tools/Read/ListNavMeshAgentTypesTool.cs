@@ -6,20 +6,23 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
     public sealed class ListNavMeshAgentTypesTool : IMcpTool
     {
         public string Name => "list_navmesh_agent_types";
-        public string Description =>
-            "Lists every NavMesh agent type registered in the project (Project Settings > Navigation > Agents) with its agentTypeID, name, radius, height, slope, and climb. agentTypeID=0 is conventionally Humanoid but custom projects may register more. Run this BEFORE add_navmesh_surface or add_navmesh_link so you can pick the correct agentTypeID instead of guessing.";
-
-        public JObject InputSchema => new JObject
+        public string Description => "Lists every registered NavMesh build setting with agentTypeID, name, radius, height, slope, and climb. Resolve agentTypeID here instead of assuming zero in custom projects.";
+        public JObject InputSchema => new JObject { ["type"] = "object", ["properties"] = new JObject(), ["additionalProperties"] = false };
+        public JObject OutputSchema => new JObject
         {
             ["type"] = "object",
-            ["properties"] = new JObject(),
-            ["additionalProperties"] = false,
+            ["properties"] = new JObject
+            {
+                ["count"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["agentTypes"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            },
+            ["required"] = new JArray { "count", "agentTypes" },
         };
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
-            var r = NavMeshAuthor.ListAgentTypes(args);
-            return r.Ok ? ToolResult.Ok(r.Summary) : ToolResult.Error("OP_FAILED", r.Error);
+            var result = NavMeshAuthor.ListAgentTypes(args);
+            return result.Ok ? ToolResult.Ok(result.Summary, result.Data) : ToolResult.Error("OP_FAILED", result.Error);
         }
     }
 }

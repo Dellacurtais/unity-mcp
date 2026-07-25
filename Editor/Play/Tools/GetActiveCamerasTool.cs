@@ -1,5 +1,7 @@
 using Maicon.SceneAnalyzer.Editor.Mcp;
+using Maicon.SceneAnalyzer.Editor.Mcp.Tools;
 using Newtonsoft.Json.Linq;
+using UnityEditor;
 using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Play.Tools
@@ -20,6 +22,7 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
         };
 
         public bool IsWrite => false;
+        public JObject OutputSchema => SceneToolSchemas.ActiveCameras;
 
         public ToolResult Execute(JObject args)
         {
@@ -29,10 +32,16 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             {
                 if (c == null) continue;
                 var t = c.transform;
+                var scene = c.gameObject.scene;
+                var scenePath = scene.path ?? string.Empty;
                 var entry = new JObject
                 {
                     ["instanceId"] = c.GetInstanceID(),
                     ["name"] = c.name,
+                    ["sceneName"] = scene.name,
+                    ["scenePath"] = scenePath,
+                    ["sceneGuid"] = string.IsNullOrEmpty(scenePath) ? null : AssetDatabase.AssetPathToGUID(scenePath),
+                    ["sceneHandle"] = (int)scene.handle,
                     ["enabled"] = c.enabled,
                     ["tag"] = c.tag,
                     ["depth"] = c.depth,
@@ -49,9 +58,15 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
                 arr.Add(entry);
             }
 
-            string summary = $"{cams.Length} active camera(s)";
-            if (Camera.main != null) summary += $" (main: '{Camera.main.name}')";
-            return ToolResult.Ok(summary, new JObject { ["cameras"] = arr });
+            var main = Camera.main;
+            string summary = $"{arr.Count} enabled camera(s)";
+            if (main != null) summary += $" (main: '{main.name}')";
+            return ToolResult.Ok(summary, new JObject
+            {
+                ["count"] = arr.Count,
+                ["mainCameraInstanceId"] = main != null ? main.GetInstanceID() : (JToken)null,
+                ["cameras"] = arr,
+            });
         }
 
         private static string TryGetUrpRenderType(Camera c)
