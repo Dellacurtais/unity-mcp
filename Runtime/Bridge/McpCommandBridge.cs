@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 
@@ -45,7 +46,15 @@ namespace Maicon.SceneAnalyzer.Bridge
         public int RunningScriptId => _runningScript != null ? _runningScript.Id : 0;
         public IReadOnlyCollection<string> RegisteredHandlerNames
         {
-            get { lock (_handlersLock) return new List<string>(_handlers.Keys); }
+            get
+            {
+                lock (_handlersLock)
+                {
+                    var names = new List<string>(_handlers.Keys);
+                    names.Sort(StringComparer.Ordinal);
+                    return names;
+                }
+            }
         }
 
         public static void Register(string name, CommandHandler handler)
@@ -54,7 +63,7 @@ namespace Maicon.SceneAnalyzer.Bridge
             if (handler == null) throw new ArgumentNullException(nameof(handler));
             if (Instance == null)
             {
-                Debug.LogWarning($"[scene-analyzer] McpCommandBridge.Register('{name}') called before the bridge exists.");
+                Debug.LogWarning($"[unity-mcp] McpCommandBridge.Register('{name}') called before the bridge exists.");
                 return;
             }
             lock (Instance._handlersLock) Instance._handlers[name] = handler;
@@ -113,7 +122,7 @@ namespace Maicon.SceneAnalyzer.Bridge
         {
             if (Instance != null && Instance != this)
             {
-                Debug.LogWarning("[scene-analyzer] Duplicate McpCommandBridge detected; destroying the new one.");
+                Debug.LogWarning("[unity-mcp] Duplicate McpCommandBridge detected; destroying the new one.");
                 Destroy(gameObject);
                 return;
             }
@@ -243,7 +252,7 @@ namespace Maicon.SceneAnalyzer.Bridge
             {
                 if (script.CancelRequested) { outcome.Status = BridgeScriptStatus.Cancelled; outcome.Error = script.TerminalError ?? "CANCELLED"; yield break; }
                 var step = script.Steps[i];
-                var result = new BridgeStepResult { Name = step.Name, FrameAtStart = Time.frameCount };
+                var result = new BridgeStepResult { Name = step.Name };
 
                 for (int frame = 0; frame < Mathf.Max(0, step.DelayFrames); frame++)
                 {
@@ -251,6 +260,7 @@ namespace Maicon.SceneAnalyzer.Bridge
                     yield return null;
                 }
                 if (script.CancelRequested) { outcome.Status = BridgeScriptStatus.Cancelled; outcome.Error = script.TerminalError ?? "CANCELLED"; yield break; }
+                result.FrameAtStart = Time.frameCount;
 
                 if (step.MarkLogAnchorBefore) result.LogAnchorSeq = TryGetEditorLogSeq();
                 CommandHandler handler;
@@ -263,6 +273,7 @@ namespace Maicon.SceneAnalyzer.Bridge
                 }
 
                 var stopwatch = Stopwatch.StartNew();
+                var callbackGate = new object();
                 bool completed = false;
                 bool succeeded = false;
                 bool acceptCallback = true;
@@ -271,28 +282,39 @@ namespace Maicon.SceneAnalyzer.Bridge
                 {
                     handler(step.PayloadJson ?? string.Empty, (ok, message) =>
                     {
-                        if (!acceptCallback || completed) return;
-                        completed = true;
-                        succeeded = ok;
-                        error = message;
+                        lock (callbackGate)
+                        {
+                            if (!acceptCallback || completed) return;
+                            completed = true;
+                            succeeded = ok;
+                            error = message;
+                        }
                     });
                 }
                 catch (Exception exception)
                 {
-                    completed = true;
-                    error = $"handler threw: {exception.GetType().Name}: {exception.Message}";
+                    lock (callbackGate)
+                    {
+                        completed = true;
+                        error = $"handler threw: {exception.GetType().Name}: {exception.Message}";
+                    }
                 }
 
                 int timeoutFrames = step.TimeoutFrames > 0 ? step.TimeoutFrames : Mathf.Max(1, defaultHandlerTimeoutFrames);
                 float timeoutSeconds = step.TimeoutSeconds > 0f ? step.TimeoutSeconds : Mathf.Max(0.1f, defaultHandlerTimeoutSeconds);
                 int startFrame = Time.frameCount;
                 float startRealtime = Time.realtimeSinceStartup;
-                while (!completed && !script.CancelRequested
-                    && Time.frameCount - startFrame < timeoutFrames
-                    && Time.realtimeSinceStartup - startRealtime < timeoutSeconds)
+                for (;;)
+                {
+                    bool isCompleted;
+                    lock (callbackGate) isCompleted = completed;
+                    if (isCompleted || script.CancelRequested
+                        || Time.frameCount - startFrame >= timeoutFrames
+                        || Time.realtimeSinceStartup - startRealtime >= timeoutSeconds) break;
                     yield return null;
+                }
 
-                acceptCallback = false;
+                lock (callbackGate) acceptCallback = false;
                 stopwatch.Stop();
                 if (script.CancelRequested)
                 {
@@ -300,14 +322,16 @@ namespace Maicon.SceneAnalyzer.Bridge
                     outcome.Error = script.TerminalError ?? "CANCELLED";
                     yield break;
                 }
-                if (!completed)
+                lock (callbackGate)
                 {
-                    error = $"HANDLER_TIMEOUT: no completion callback within {timeoutFrames} frames/{timeoutSeconds:F1}s";
-                    succeeded = false;
+                    if (!completed)
+                    {
+                        error = $"HANDLER_TIMEOUT: no completion callback within {timeoutFrames} frames/{timeoutSeconds:F1}s";
+                        succeeded = false;
+                    }
+                    result.Ok = completed && succeeded;
+                    result.Error = result.Ok ? null : error ?? "HANDLER_FAILED";
                 }
-
-                result.Ok = completed && succeeded;
-                result.Error = result.Ok ? null : error ?? "HANDLER_FAILED";
                 result.DurationMs = (float)stopwatch.Elapsed.TotalMilliseconds;
                 result.FrameAtEnd = Time.frameCount;
 
@@ -381,7 +405,7 @@ namespace Maicon.SceneAnalyzer.Bridge
             catch (Exception exception)
             {
                 result.Error = result.Error ?? $"SCREENSHOT_FAILED: {exception.Message}";
-                Debug.LogWarning($"[scene-analyzer] bridge screenshot failed: {exception.Message}");
+                Debug.LogWarning($"[unity-mcp] bridge screenshot failed: {exception.Message}");
             }
             finally
             {

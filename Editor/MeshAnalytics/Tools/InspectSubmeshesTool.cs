@@ -22,35 +22,33 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ["type"] = "object",
             ["properties"] = new JObject
             {
+                ["target"] = MeshToolSchemas.Target,
                 ["instanceId"] = new JObject { ["type"] = "integer", ["description"] = "GameObject instance id (from read_hierarchy)." },
             },
-            ["required"] = new JArray { "instanceId" },
+            ["oneOf"] = MeshToolSchemas.TargetOrInstance,
             ["additionalProperties"] = false,
         };
+
+        public JObject OutputSchema => MeshToolSchemas.SubmeshesOutput;
 
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
         {
-            int instanceId = (int?)args["instanceId"] ?? 0;
-            if (!MeshResolver.TryGetMeshAndTransforms(instanceId, out var go, out var mesh, out var ltw))
-                return ToolResult.Error("NOT_FOUND",
-                    $"no MeshFilter/SkinnedMeshRenderer mesh on GameObject {instanceId}");
+            if (!MeshResolver.TryGetMeshAndTransforms(args, out var go, out var mesh, out var ltw, out var targetError))
+                return ToolResult.Error("NOT_FOUND", targetError);
+            int instanceId = go.GetInstanceID();
             if (!MeshResolver.IsReadable(mesh, out var notReadable))
                 return ToolResult.Error("MESH_NOT_READABLE", notReadable);
 
             string meshKey = MeshResolver.MakeMeshKey(mesh);
+            string analysisKey = MeshResolver.MakeAnalysisKey(mesh, go);
             string paramsHash = "submesh";
-            if (!MeshAnalysisCache.TryGetWithFallback(meshKey, paramsHash, ltw, out var bundle))
+            if (!MeshAnalysisCache.TryGetWithFallback(analysisKey, paramsHash, go, ltw, out var bundle))
             {
-                bundle = new AnalysisResult
-                {
-                    MeshGuid = meshKey,
-                    OwnerInstanceId = instanceId,
-                    OwnerLocalToWorld = ltw,
-                };
-                BuildSubmeshes(go, mesh, ltw, meshKey, paramsHash, instanceId, bundle);
-                MeshAnalysisCache.StoreAndPersist(meshKey, paramsHash, bundle);
+                bundle = MeshAnalysisCache.CreateResult(meshKey, analysisKey, go, ltw);
+                BuildSubmeshes(go, mesh, ltw, analysisKey, paramsHash, instanceId, bundle);
+                MeshAnalysisCache.StoreAndPersist(analysisKey, paramsHash, bundle);
             }
 
             var arr = new JArray();
@@ -84,6 +82,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 
             // We need world bounds per submesh — Mesh.GetSubMesh(i).bounds is
             // local, so transform its 8 corners by localToWorld and Encapsulate.
+            int globalTriangleStart = 0;
             for (int i = 0; i < mesh.subMeshCount; i++)
             {
                 var sub = mesh.GetSubMesh(i);
@@ -97,10 +96,10 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 // Build the global triangle index array for this submesh.
                 // GetIndices returns vertex indices; convert to global triangle
                 // indices (sub.indexStart / 3 .. + sub.indexCount / 3).
-                int triStart = sub.indexStart / 3;
-                int triCount = sub.indexCount / 3;
+                int triCount = sub.topology == MeshTopology.Triangles ? sub.indexCount / 3 : 0;
                 var faceIdx = new int[triCount];
-                for (int t = 0; t < triCount; t++) faceIdx[t] = triStart + t;
+                for (int t = 0; t < triCount; t++) faceIdx[t] = globalTriangleStart + t;
+                globalTriangleStart += triCount;
 
                 bundle.Submeshes.Add(new SubmeshRegion
                 {

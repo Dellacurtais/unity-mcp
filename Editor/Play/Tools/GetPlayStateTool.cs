@@ -20,26 +20,33 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
         };
 
         public bool IsWrite => false;
+        public JObject OutputSchema => PlayToolSchemas.State;
 
         public ToolResult Execute(JObject args)
         {
+            var isPlaying = EditorApplication.isPlaying;
+            var isPlayingOrWillChange = EditorApplication.isPlayingOrWillChangePlaymode;
+            var isTransitioning = isPlaying != isPlayingOrWillChange;
+            var transitionDirection = isTransitioning ? (isPlayingOrWillChange ? "entering" : "exiting") : null;
             var json = new JObject
             {
                 ["isPlaying"] = EditorApplication.isPlaying,
                 ["isPaused"] = EditorApplication.isPaused,
                 ["isCompiling"] = EditorApplication.isCompiling,
                 ["isUpdating"] = EditorApplication.isUpdating,
-                ["willChangePlaymode"] = EditorApplication.isPlayingOrWillChangePlaymode && !EditorApplication.isPlaying,
+                ["isTransitioning"] = isTransitioning,
+                ["transitionDirection"] = transitionDirection,
                 ["applicationIsPlaying"] = Application.isPlaying,
                 ["frameCount"] = EditorApplication.isPlaying ? Time.frameCount : 0,
                 ["time"] = EditorApplication.isPlaying ? Time.time : 0f,
                 ["timeScale"] = Time.timeScale,
             };
 
-            string summary = EditorApplication.isPlaying
-                ? $"playing (frame {Time.frameCount}, t={Time.time:F2}s, scale={Time.timeScale:F2}{(EditorApplication.isPaused ? ", paused" : "")})"
-                : EditorApplication.isCompiling ? "edit mode — compiling"
-                : (EditorApplication.isPlayingOrWillChangePlaymode ? "transitioning to play mode" : "edit mode");
+            string summary = isTransitioning
+                ? $"transitioning: {transitionDirection} play mode"
+                : isPlaying
+                    ? $"playing (frame {Time.frameCount}, t={Time.time:F2}s, scale={Time.timeScale:F2}{(EditorApplication.isPaused ? ", paused" : "")})"
+                    : EditorApplication.isCompiling ? "edit mode — compiling" : "edit mode";
 
             return ToolResult.Ok(summary, json);
         }

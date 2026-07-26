@@ -21,7 +21,8 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             ["additionalProperties"] = false,
         };
 
-        public bool IsWrite => false;
+        public bool IsWrite => true;
+        public JObject OutputSchema => PlayToolSchemas.Paused;
 
         public ToolResult Execute(JObject args)
         {
@@ -29,6 +30,8 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
                 return ToolResult.Error("BAD_REQUEST", "missing required boolean 'paused'");
             bool paused = (bool)args["paused"];
 
+            if (EditorApplication.isPlaying != EditorApplication.isPlayingOrWillChangePlaymode)
+                return ToolResult.Error("TRANSITIONING", "wait for the play-mode transition to settle");
             if (!EditorApplication.isPlaying)
                 return ToolResult.Error("NOT_PLAYING",
                     "set_play_paused only has effect during play mode — call enter_play_mode first.");

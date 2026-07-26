@@ -5,6 +5,26 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-07-26
+
+### Added
+
+- Persistent external FastAPI MCP broker with an outbound Unity WebSocket bridge, durable SQLite request/job ledger, explicit multi-project activation, and generation-aware reconnect handling through compilation and Domain Reload.
+- Unity-managed broker installation and supervision outside the immutable package, including Python 3.10+ discovery, versioned virtual environments, Install/Repair/Start/Stop/Logs controls, PID ownership checks, and persistent process discovery.
+- Python unit and process-integration coverage for installation, bridge routing, MCP transport, persistence, restart recovery, authentication, payload limits, and uncertain mutation outcomes.
+- Static release CI for broker tests, Python compilation, package identity checks, C# syntax/semantic compilation, and diff hygiene without launching the Unity Editor.
+
+### Changed
+
+- The editor window is now **Unity MCP Transport**, with Embedded remaining the default/fallback and Broker mode available explicitly.
+- The stable UPM identifier remains `com.maicon.scene-analyzer`; the display name changes without breaking existing package references or asmdefs.
+- Package and server fallback versions advance to `0.16.0`.
+
+### Fixed
+
+- Embedded listener startup now releases local HTTP, cancellation, and request-processor resources when binding fails.
+- Managed process control rejects stale/reused PIDs, serializes lifecycle operations across Unity Editors, and preserves ownership metadata when shutdown cannot be confirmed.
+
 ## [0.15.8] - 2026-07-24
 
 ### Added

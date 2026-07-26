@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
 {
@@ -113,7 +114,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                     RenderTexture.active = rt;
 
                     if (wireframe) GL.wireframe = true;
-                    try { camera.Render(); }
+                    try { RenderCamera(camera, rt); }
                     finally { if (wireframe) GL.wireframe = false; }
 
                     if (painter != null) painter.DrawAfterScene(camera);
@@ -145,6 +146,21 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                 UnityEngine.Object.DestroyImmediate(camGo);
             }
             return results;
+        }
+
+        private static void RenderCamera(Camera camera, RenderTexture destination)
+        {
+            if (GraphicsSettings.currentRenderPipeline == null)
+            {
+                camera.Render();
+                return;
+            }
+
+            var request = new RenderPipeline.StandardRequest { destination = destination };
+            if (!RenderPipeline.SupportsRenderRequest(camera, request))
+                throw new NotSupportedException(
+                    $"active render pipeline '{GraphicsSettings.currentRenderPipeline.name}' does not support StandardRequest for the offscreen camera");
+            RenderPipeline.SubmitRenderRequest(camera, request);
         }
 
         // ---- pose presets ----

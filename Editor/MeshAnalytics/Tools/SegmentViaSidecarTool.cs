@@ -30,6 +30,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ["type"] = "object",
             ["properties"] = new JObject
             {
+                ["target"] = MeshToolSchemas.Target,
                 ["instanceId"] = new JObject { ["type"] = "integer" },
                 ["sidecarUrl"] = new JObject { ["type"] = "string", ["default"] = MeshSidecarClient.DefaultUrl },
                 ["method"] = new JObject
@@ -47,9 +48,11 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 ["timeoutSeconds"] = new JObject { ["type"] = "integer", ["default"] = 60, ["minimum"] = 1, ["maximum"] = 600 },
                 ["maxFaceIndicesInResponse"] = new JObject { ["type"] = "integer", ["default"] = 0, ["minimum"] = 0, ["maximum"] = 50000 },
             },
-            ["required"] = new JArray { "instanceId" },
+            ["oneOf"] = MeshToolSchemas.TargetOrInstance,
             ["additionalProperties"] = false,
         };
+
+        public JObject OutputSchema => MeshToolSchemas.SidecarSegmentOutput;
 
         public bool IsWrite => false;
 
@@ -60,7 +63,6 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 
         public async Task<ToolResult> ExecuteAsync(JObject args)
         {
-            int instanceId = (int?)args["instanceId"] ?? 0;
             var p = new MeshSidecarClient.SegmentParams
             {
                 Method = (string)args["method"] ?? "semantic",
@@ -88,14 +90,19 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             {
                 await MainThreadDispatcher.RunAsync(() =>
                 {
-                    if (!MeshResolver.TryGetMeshAndTransforms(instanceId, out go, out mesh, out ltw))
+                    if (!MeshResolver.TryGetMeshAndTransforms(args, out go, out mesh, out ltw, out var targetError))
                     {
-                        captureError = $"NOT_FOUND: no MeshFilter/SkinnedMeshRenderer mesh on GameObject {instanceId}";
+                        captureError = "NOT_FOUND: " + targetError;
                         return;
                     }
                     if (!MeshResolver.IsReadable(mesh, out var notReadable))
                     {
                         captureError = "MESH_NOT_READABLE: " + notReadable;
+                        return;
+                    }
+                    if (!MeshResolver.HasTriangleTopology(mesh, out var topologyError))
+                    {
+                        captureError = "UNSUPPORTED_TOPOLOGY: " + topologyError;
                         return;
                     }
                     gameObjectName = go.name;
@@ -129,17 +136,15 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             if (!string.IsNullOrEmpty(result.Error))
                 return ToolResult.Error(result.ErrorCode ?? "SIDECAR_ERROR", result.Error);
 
+            int instanceId = go.GetInstanceID();
             string meshKey = await MainThreadDispatcher.RunAsync(() => MeshResolver.MakeMeshKey(mesh), cancellationToken);
+            string analysisKey = await MainThreadDispatcher.RunAsync(() => MeshResolver.MakeAnalysisKey(mesh, go), cancellationToken);
             string paramsHash = string.Format(System.Globalization.CultureInfo.InvariantCulture,
                 "sidecar:{0}:{1}:{2:F2}:{3:F4}:{4}:{5:F2}:{6}", p.Method, p.MinFaceCount,
                 p.RansacAngleToleranceDeg, p.RansacDistanceTolerance, p.RansacMaxPlanes,
                 p.RegionGrowingFrontierDeg, p.NormalBuckets);
-            var bundle = new AnalysisResult
-            {
-                MeshGuid = meshKey,
-                OwnerInstanceId = instanceId,
-                OwnerLocalToWorld = ltw,
-            };
+            var bundle = await MainThreadDispatcher.RunAsync(
+                () => MeshAnalysisCache.CreateResult(meshKey, analysisKey, go, ltw), cancellationToken);
 
             for (int i = 0; i < result.Regions.Count; i++)
             {
@@ -149,7 +154,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 {
                     Kind = RegionKind.Plane,
                     OwnerInstanceId = instanceId,
-                    RegionId = MeshAnalysisCache.MakeRegionId(meshKey, paramsHash, RegionKind.Plane, i),
+                    RegionId = MeshAnalysisCache.MakeRegionId(analysisKey, paramsHash, RegionKind.Plane, i),
                     FaceIndices = src.FaceIndices,
                     FaceCount = src.FaceCount,
                     NormalWorld = src.AvgNormal,
@@ -161,7 +166,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 });
             }
             await MainThreadDispatcher.RunAsync(
-                () => MeshAnalysisCache.StoreAndPersist(meshKey, paramsHash, bundle), cancellationToken);
+                () => MeshAnalysisCache.StoreAndPersist(analysisKey, paramsHash, bundle), cancellationToken);
 
             var arr = new JArray();
             foreach (var r in bundle.Planes)

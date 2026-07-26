@@ -24,6 +24,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ["additionalProperties"] = false,
         };
 
+        public JObject OutputSchema => MeshToolSchemas.SidecarHealthOutput;
+
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args) => ToolResult.Error(

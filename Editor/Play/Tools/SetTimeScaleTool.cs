@@ -25,7 +25,8 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             ["additionalProperties"] = false,
         };
 
-        public bool IsWrite => false;
+        public bool IsWrite => true;
+        public JObject OutputSchema => PlayToolSchemas.TimeScale;
 
         private static bool _resetSubscriberInstalled;
 
@@ -33,7 +34,14 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
         {
             if (args["value"] == null)
                 return ToolResult.Error("BAD_REQUEST", "missing required number 'value'");
-            float value = Mathf.Clamp((float)(double)args["value"], 0f, 100f);
+            if (EditorApplication.isPlaying != EditorApplication.isPlayingOrWillChangePlaymode)
+                return ToolResult.Error("TRANSITIONING", "wait for the play-mode transition to settle");
+            if (!EditorApplication.isPlaying)
+                return ToolResult.Error("NOT_PLAYING", "set_time_scale only works during play mode — call enter_play_mode first.");
+            var numeric = (double)args["value"];
+            if (double.IsNaN(numeric) || double.IsInfinity(numeric) || numeric < 0 || numeric > 100)
+                return ToolResult.Error("BAD_VALUE", "value must be finite and between 0 and 100");
+            float value = (float)numeric;
 
             float previous = Time.timeScale;
             Time.timeScale = value;
@@ -58,21 +66,12 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             Action<PlayModeStateChange> handler = null;
             handler = (change) =>
             {
-                if (change == PlayModeStateChange.ExitingPlayMode)
-                {
-                    // Reset only if we actually tampered (i.e. not at 1.0). The
-                    // user might have set it manually in the inspector to 1.0 —
-                    // that's already the safe state, no-op.
-                    if (!Mathf.Approximately(Time.timeScale, 1f))
-                    {
-                        Time.timeScale = 1f;
-                    }
-                }
+                if (change != PlayModeStateChange.ExitingPlayMode) return;
+                EditorApplication.playModeStateChanged -= handler;
+                _resetSubscriberInstalled = false;
+                if (!Mathf.Approximately(Time.timeScale, 1f)) Time.timeScale = 1f;
             };
             EditorApplication.playModeStateChanged += handler;
-            // Subscription is process-lived; no Unsubscribe needed. Static
-            // field gets reset on assembly reload, so we'll re-install once
-            // after each reload — idempotent.
         }
     }
 }

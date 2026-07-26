@@ -22,7 +22,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics
         {
             try
             {
-                if (Bootstrap.ToolRegistry == null || Bootstrap.ToolRegistry.TryGet("inspect_submeshes", out _)) return;
+                if (Bootstrap.ToolRegistry == null || Bootstrap.ToolRegistry.TryGet("mesh_inspect_submeshes", out _)) return;
 
                 Bootstrap.ToolRegistry.RegisterRange(new Maicon.SceneAnalyzer.Editor.Mcp.IMcpTool[]
                 {

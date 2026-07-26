@@ -66,7 +66,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             if (!wait)
             {
                 bool stillCompiling = await MainThreadDispatcher.RunAsync(() => EditorApplication.isCompiling);
-                double elapsed = await MainThreadDispatcher.RunAsync(() => EditorApplication.timeSinceStartup) - startTime;
+                double noWaitElapsed = await MainThreadDispatcher.RunAsync(() => EditorApplication.timeSinceStartup) - startTime;
                 return ToolResult.Ok(stillCompiling
                     ? "AssetDatabase.Refresh() completed asset import; script compilation is still in progress"
                     : "AssetDatabase.Refresh() completed asset import; no script compilation is currently running", new JObject
@@ -74,7 +74,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
                     ["refreshed"] = true,
                     ["waited"] = false,
                     ["compiling"] = stillCompiling,
-                    ["elapsedSeconds"] = Math.Max(0d, elapsed),
+                    ["elapsedSeconds"] = Math.Max(0d, noWaitElapsed),
                 });
             }
 

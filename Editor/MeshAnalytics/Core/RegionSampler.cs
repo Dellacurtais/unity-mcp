@@ -76,6 +76,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             public Vector3 Normal;
             public float Area;
             public float CumArea;
+            public bool BoundaryAB, BoundaryBC, BoundaryCA;
         }
 
         private static float ComputeAreaWorld(MeshRegion region, Mesh mesh, Matrix4x4 ltw, out TriW[] tris)
@@ -84,6 +85,14 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             var idx = mesh.triangles;
             var faces = region.FaceIndices;
             tris = new TriW[faces.Length];
+            var edgeCounts = new Dictionary<EdgeKey, int>();
+            for (int i = 0; i < faces.Length; i++)
+            {
+                int face = faces[i];
+                AddEdge(edgeCounts, idx[3 * face], idx[3 * face + 1]);
+                AddEdge(edgeCounts, idx[3 * face + 1], idx[3 * face + 2]);
+                AddEdge(edgeCounts, idx[3 * face + 2], idx[3 * face]);
+            }
             float cum = 0f;
             for (int i = 0; i < faces.Length; i++)
             {
@@ -98,11 +107,39 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                     A = a, B = b, C = c,
                     Area = area,
                     Normal = area > 1e-9f ? cross / (2f * area) : Vector3.up,
+                    BoundaryAB = edgeCounts[new EdgeKey(idx[3 * f], idx[3 * f + 1])] == 1,
+                    BoundaryBC = edgeCounts[new EdgeKey(idx[3 * f + 1], idx[3 * f + 2])] == 1,
+                    BoundaryCA = edgeCounts[new EdgeKey(idx[3 * f + 2], idx[3 * f])] == 1,
                 };
                 cum += area;
                 tris[i].CumArea = cum;
             }
             return cum;
+        }
+
+        private readonly struct EdgeKey
+        {
+            private readonly int _min;
+            private readonly int _max;
+
+            public EdgeKey(int a, int b)
+            {
+                _min = Mathf.Min(a, b);
+                _max = Mathf.Max(a, b);
+            }
+
+            public override bool Equals(object obj)
+                => obj is EdgeKey other && _min == other._min && _max == other._max;
+
+            public override int GetHashCode()
+                => unchecked((_min * 397) ^ _max);
+        }
+
+        private static void AddEdge(Dictionary<EdgeKey, int> counts, int a, int b)
+        {
+            var key = new EdgeKey(a, b);
+            counts.TryGetValue(key, out int count);
+            counts[key] = count + 1;
         }
 
         private static int ResolveCount(Params p, float areaWorld)
@@ -130,18 +167,26 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             return tris.Length - 1;
         }
 
-        private static bool PassesInset(MeshRegion region, Vector3 p, float inset)
+        private static bool PassesInset(TriW[] triangles, Vector3 point, float inset)
         {
             if (inset <= 0f) return true;
-            // Distance from p to each AABB face. Reject if any is below inset.
-            var b = region.WorldBounds;
-            if (p.x - b.min.x < inset) return false;
-            if (b.max.x - p.x < inset) return false;
-            if (p.z - b.min.z < inset) return false;
-            if (b.max.z - p.z < inset) return false;
-            // Y is intentionally not insetted — for thin regions like the top
-            // of a sidewalk, the AABB is essentially planar in Y.
+            float insetSquared = inset * inset;
+            for (int i = 0; i < triangles.Length; i++)
+            {
+                if (triangles[i].BoundaryAB && DistanceToSegmentSquared(point, triangles[i].A, triangles[i].B) < insetSquared) return false;
+                if (triangles[i].BoundaryBC && DistanceToSegmentSquared(point, triangles[i].B, triangles[i].C) < insetSquared) return false;
+                if (triangles[i].BoundaryCA && DistanceToSegmentSquared(point, triangles[i].C, triangles[i].A) < insetSquared) return false;
+            }
             return true;
+        }
+
+        private static float DistanceToSegmentSquared(Vector3 point, Vector3 start, Vector3 end)
+        {
+            var segment = end - start;
+            float lengthSquared = segment.sqrMagnitude;
+            if (lengthSquared <= 1e-12f) return (point - start).sqrMagnitude;
+            float t = Mathf.Clamp01(Vector3.Dot(point - start, segment) / lengthSquared);
+            return (point - (start + segment * t)).sqrMagnitude;
         }
 
         private static void UniformRandom(MeshRegion region, TriW[] tris, int n, Params p, List<Point> outList)
@@ -155,7 +200,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                 attempts++;
                 int ti = PickTriByArea(tris, totalArea, rng);
                 var pt = SamplePointOnTri(tris[ti], rng);
-                if (!PassesInset(region, pt, p.Inset)) continue;
+                if (!PassesInset(tris, pt, p.Inset)) continue;
                 outList.Add(new Point { Position = pt, Normal = tris[ti].Normal });
             }
         }
@@ -179,7 +224,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                 attempts++;
                 int ti = PickTriByArea(tris, totalArea, rng);
                 var pt = SamplePointOnTri(tris[ti], rng);
-                if (!PassesInset(region, pt, p.Inset)) continue;
+                if (!PassesInset(tris, pt, p.Inset)) continue;
 
                 bool ok = true;
                 for (int k = 0; k < outList.Count; k++)
@@ -197,45 +242,76 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         /// inherit the triangle normal.
         private static void GridOnDominantPlane(MeshRegion region, TriW[] tris, Params p, List<Point> outList)
         {
-            var b = region.WorldBounds;
-            float spacing = p.Spacing ?? Mathf.Max(0.1f, Mathf.Sqrt(b.size.x * b.size.z / 64f));
-
-            for (float x = b.min.x + spacing * 0.5f; x <= b.max.x; x += spacing)
+            var normal = AverageNormal(tris);
+            var tangent = Vector3.Cross(normal, Mathf.Abs(Vector3.Dot(normal, Vector3.up)) < 0.9f
+                ? Vector3.up
+                : Vector3.right).normalized;
+            var bitangent = Vector3.Cross(normal, tangent).normalized;
+            var center = region.WorldBounds.center;
+            float minU = float.PositiveInfinity, maxU = float.NegativeInfinity;
+            float minV = float.PositiveInfinity, maxV = float.NegativeInfinity;
+            float minN = float.PositiveInfinity, maxN = float.NegativeInfinity;
+            for (int i = 0; i < tris.Length; i++)
             {
-                for (float z = b.min.z + spacing * 0.5f; z <= b.max.z; z += spacing)
+                EncapsulateProjected(tris[i].A, center, tangent, bitangent, normal, ref minU, ref maxU, ref minV, ref maxV, ref minN, ref maxN);
+                EncapsulateProjected(tris[i].B, center, tangent, bitangent, normal, ref minU, ref maxU, ref minV, ref maxV, ref minN, ref maxN);
+                EncapsulateProjected(tris[i].C, center, tangent, bitangent, normal, ref minU, ref maxU, ref minV, ref maxV, ref minN, ref maxN);
+            }
+            float area = Mathf.Max(0f, (maxU - minU) * (maxV - minV));
+            float spacing = p.Spacing ?? Mathf.Max(0.1f, Mathf.Sqrt(area / 64f));
+            float rayOffset = Mathf.Max(1f, maxN - minN + spacing);
+            var direction = -normal;
+
+            for (float u = minU + spacing * 0.5f; u <= maxU; u += spacing)
+            {
+                for (float v = minV + spacing * 0.5f; v <= maxV; v += spacing)
                 {
-                    var probeOrigin = new Vector3(x, b.max.y + 1f, z);
-                    if (RaycastDown(tris, probeOrigin, out var hitPt, out var hitN))
-                    {
-                        if (!PassesInset(region, hitPt, p.Inset)) continue;
-                        outList.Add(new Point { Position = hitPt, Normal = hitN });
-                        if (outList.Count >= p.MaxSamples) return;
-                    }
+                    var origin = center + tangent * u + bitangent * v + normal * (maxN + rayOffset);
+                    if (!Raycast(tris, origin, direction, out var hitPoint, out var hitNormal)) continue;
+                    if (!PassesInset(tris, hitPoint, p.Inset)) continue;
+                    outList.Add(new Point { Position = hitPoint, Normal = hitNormal });
+                    if (outList.Count >= p.MaxSamples) return;
                 }
             }
+        }
+
+        private static Vector3 AverageNormal(TriW[] triangles)
+        {
+            var normal = Vector3.zero;
+            for (int i = 0; i < triangles.Length; i++) normal += triangles[i].Normal * triangles[i].Area;
+            return normal.sqrMagnitude > 1e-12f ? normal.normalized : Vector3.up;
+        }
+
+        private static void EncapsulateProjected(Vector3 point, Vector3 center,
+            Vector3 tangent, Vector3 bitangent, Vector3 normal,
+            ref float minU, ref float maxU, ref float minV, ref float maxV, ref float minN, ref float maxN)
+        {
+            var relative = point - center;
+            float u = Vector3.Dot(relative, tangent);
+            float v = Vector3.Dot(relative, bitangent);
+            float n = Vector3.Dot(relative, normal);
+            minU = Mathf.Min(minU, u); maxU = Mathf.Max(maxU, u);
+            minV = Mathf.Min(minV, v); maxV = Mathf.Max(maxV, v);
+            minN = Mathf.Min(minN, n); maxN = Mathf.Max(maxN, n);
         }
 
         /// Cheap ray-vs-triangles for the grid sampler. Tests every triangle;
         /// returns the closest hit. Loop is O(faces) per cell — fine for the
         /// few hundred cells a sidewalk produces.
-        private static bool RaycastDown(TriW[] tris, Vector3 origin, out Vector3 hitPt, out Vector3 hitN)
+        private static bool Raycast(TriW[] tris, Vector3 origin, Vector3 direction,
+            out Vector3 hitPoint, out Vector3 hitNormal)
         {
-            hitPt = default; hitN = default;
-            float closestT = float.PositiveInfinity;
-            var dir = Vector3.down;
+            hitPoint = default; hitNormal = default;
+            float closestDistance = float.PositiveInfinity;
             for (int i = 0; i < tris.Length; i++)
             {
-                if (IntersectTri(origin, dir, tris[i].A, tris[i].B, tris[i].C, out float tHit, out var pt))
-                {
-                    if (tHit < closestT)
-                    {
-                        closestT = tHit;
-                        hitPt = pt;
-                        hitN = tris[i].Normal;
-                    }
-                }
+                if (!IntersectTri(origin, direction, tris[i].A, tris[i].B, tris[i].C, out float distance, out var point)) continue;
+                if (distance >= closestDistance) continue;
+                closestDistance = distance;
+                hitPoint = point;
+                hitNormal = tris[i].Normal;
             }
-            return !float.IsPositiveInfinity(closestT);
+            return !float.IsPositiveInfinity(closestDistance);
         }
 
         /// Möller–Trumbore. Returns true if `origin + t*dir` (t > 0) hits the

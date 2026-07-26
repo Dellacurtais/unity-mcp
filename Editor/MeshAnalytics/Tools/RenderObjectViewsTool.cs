@@ -26,6 +26,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ["type"] = "object",
             ["properties"] = new JObject
             {
+                ["target"] = MeshToolSchemas.Target,
                 ["instanceId"] = new JObject { ["type"] = "integer" },
                 ["views"] = new JObject
                 {
@@ -48,17 +49,18 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 ["height"] = new JObject { ["type"] = "integer", ["default"] = 768, ["minimum"] = 64, ["maximum"] = 2048 },
                 ["overlay"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "lit_default", "wireframe", "submesh_color" }, ["default"] = "lit_default" },
             },
-            ["required"] = new JArray { "instanceId" },
+            ["oneOf"] = MeshToolSchemas.TargetOrInstance,
             ["additionalProperties"] = false,
         };
+
+        public JObject OutputSchema => MeshToolSchemas.RenderViewsOutput;
 
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
         {
-            int instanceId = (int?)args["instanceId"] ?? 0;
-            var go = MeshResolver.ResolveGameObject(instanceId);
-            if (go == null) return ToolResult.Error("NOT_FOUND", $"no GameObject with instanceId {instanceId}");
+            var go = MeshResolver.ResolveGameObject(args, out var targetError);
+            if (go == null) return ToolResult.Error("NOT_FOUND", targetError);
 
             int width = Mathf.Clamp((int?)args["width"] ?? 1024, 64, 2048);
             int height = Mathf.Clamp((int?)args["height"] ?? 768, 64, 2048);
@@ -122,6 +124,14 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             return new ToolResult
             {
                 Text = $"rendered {renders.Count} view(s) of '{go.name}'",
+                Json = new JObject
+                {
+                    ["target"] = MeshResolver.TargetData(go),
+                    ["width"] = width,
+                    ["height"] = height,
+                    ["overlay"] = overlay.ToString().ToLowerInvariant(),
+                    ["views"] = metaArr,
+                },
                 ContentBlocks = content,
             };
         }

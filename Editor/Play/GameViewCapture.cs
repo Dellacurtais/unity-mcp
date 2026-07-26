@@ -82,7 +82,7 @@ namespace Maicon.SceneAnalyzer.Editor.Play
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[scene-analyzer] GameView reflection failed: {e.Message}");
+                Debug.LogWarning($"[unity-mcp] GameView reflection failed: {e.Message}");
                 return null;
             }
         }

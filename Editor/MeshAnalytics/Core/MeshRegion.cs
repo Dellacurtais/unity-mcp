@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Maicon.SceneAnalyzer.Editor.Core;
 using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
@@ -84,8 +85,10 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
     /// and assigns fresh ids on recompute.
     public sealed class AnalysisResult
     {
-        public string MeshGuid;            // empty if mesh is not an asset (built-in)
+        public string MeshGuid;            // mesh subasset key (GUID + local file id when persistent)
+        public string AnalysisKey;         // mesh key scoped to the scene/prefab owner
         public int OwnerInstanceId;
+        public ToolTargetRef OwnerTarget;
         /// localToWorld of the GameObject at the moment the regions were
         /// computed. World-space data inside the regions is only valid as
         /// long as the runtime instance's transform matches this. The cache

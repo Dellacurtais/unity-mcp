@@ -26,26 +26,30 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ["type"] = "object",
             ["properties"] = new JObject
             {
+                ["target"] = MeshToolSchemas.Target,
                 ["instanceId"] = new JObject { ["type"] = "integer" },
                 ["dihedralAngleMin"] = new JObject { ["type"] = "number", ["default"] = 30.0, ["minimum"] = 1.0, ["maximum"] = 179.0, ["description"] = "Degrees. Edges with face normals diverging more than this are 'sharp'." },
                 ["minChainLength"] = new JObject { ["type"] = "number", ["default"] = 0.1, ["minimum"] = 0.0, ["description"] = "World-space metres. Chains shorter than this are dropped." },
                 ["maxChains"] = new JObject { ["type"] = "integer", ["default"] = 64, ["minimum"] = 1, ["maximum"] = 512 },
                 ["maxChainVerticesInResponse"] = new JObject { ["type"] = "integer", ["default"] = 128, ["minimum"] = 8, ["maximum"] = 4096, ["description"] = "Cap on vertex positions echoed back per chain; full chain is kept in the cache for render_region_highlight." },
             },
-            ["required"] = new JArray { "instanceId" },
+            ["oneOf"] = MeshToolSchemas.TargetOrInstance,
             ["additionalProperties"] = false,
         };
+
+        public JObject OutputSchema => MeshToolSchemas.SharpEdgesOutput;
 
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
         {
-            int instanceId = (int?)args["instanceId"] ?? 0;
-            if (!MeshResolver.TryGetMeshAndTransforms(instanceId, out var go, out var mesh, out var ltw))
-                return ToolResult.Error("NOT_FOUND",
-                    $"no MeshFilter/SkinnedMeshRenderer mesh on GameObject {instanceId}");
+            if (!MeshResolver.TryGetMeshAndTransforms(args, out var go, out var mesh, out var ltw, out var targetError))
+                return ToolResult.Error("NOT_FOUND", targetError);
+            int instanceId = go.GetInstanceID();
             if (!MeshResolver.IsReadable(mesh, out var notReadable))
                 return ToolResult.Error("MESH_NOT_READABLE", notReadable);
+            if (!MeshResolver.HasTriangleTopology(mesh, out var topologyError))
+                return ToolResult.Error("UNSUPPORTED_TOPOLOGY", topologyError);
 
             var p = new SharpEdgeDetector.Params
             {
@@ -56,18 +60,14 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             int vertexCap = (int?)args["maxChainVerticesInResponse"] ?? 128;
 
             string meshKey = MeshResolver.MakeMeshKey(mesh);
+            string analysisKey = MeshResolver.MakeAnalysisKey(mesh, go);
             string paramsHash = $"edge:{p.DihedralAngleMinDeg:F2}:{p.MinChainLength:F3}:{p.MaxChains}";
 
-            if (!MeshAnalysisCache.TryGetWithFallback(meshKey, paramsHash, ltw, out var bundle))
+            if (!MeshAnalysisCache.TryGetWithFallback(analysisKey, paramsHash, go, ltw, out var bundle))
             {
-                bundle = new AnalysisResult
-                {
-                    MeshGuid = meshKey,
-                    OwnerInstanceId = instanceId,
-                    OwnerLocalToWorld = ltw,
-                };
-                bundle.EdgeChains.AddRange(SharpEdgeDetector.Detect(mesh, ltw, meshKey, paramsHash, instanceId, p));
-                MeshAnalysisCache.StoreAndPersist(meshKey, paramsHash, bundle);
+                bundle = MeshAnalysisCache.CreateResult(meshKey, analysisKey, go, ltw);
+                bundle.EdgeChains.AddRange(SharpEdgeDetector.Detect(mesh, ltw, analysisKey, paramsHash, instanceId, p));
+                MeshAnalysisCache.StoreAndPersist(analysisKey, paramsHash, bundle);
             }
 
             var arr = new JArray();

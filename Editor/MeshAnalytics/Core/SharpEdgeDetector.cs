@@ -31,16 +31,15 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             var tris = mesh.triangles;
             if (verts.Length == 0 || tris.Length < 3) return result;
 
-            // 1. Compute per-triangle face normals (local space — normals
-            //    transform with the inverse-transpose; for angle comparison
-            //    direction-only suffices, so we can keep them local).
+            // Compute angles in world space: non-uniform Transform scale can
+            // change dihedral angles, so local-space normals are insufficient.
             int triCount = tris.Length / 3;
             var faceNormals = new Vector3[triCount];
             for (int t = 0; t < triCount; t++)
             {
-                var a = verts[tris[3 * t + 0]];
-                var b = verts[tris[3 * t + 1]];
-                var c = verts[tris[3 * t + 2]];
+                var a = localToWorld.MultiplyPoint3x4(verts[tris[3 * t + 0]]);
+                var b = localToWorld.MultiplyPoint3x4(verts[tris[3 * t + 1]]);
+                var c = localToWorld.MultiplyPoint3x4(verts[tris[3 * t + 2]]);
                 faceNormals[t] = Vector3.Cross(b - a, c - a).normalized;
             }
 

@@ -13,10 +13,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 {
     public static class SceneAnalyzerVersion
     {
-        public const string Fallback = "0.15.8";
+        public const string Fallback = "0.16.0";
         private static string _current;
+        private static string _packageName;
 
         public static string Current => string.IsNullOrEmpty(_current) ? Fallback : _current;
+        public static string PackageName => string.IsNullOrEmpty(_packageName) ? "com.maicon.scene-analyzer" : _packageName;
 
         public static void Initialize()
         {
@@ -24,10 +26,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             {
                 var package = PackageInfo.FindForAssembly(typeof(SceneAnalyzerVersion).Assembly);
                 _current = string.IsNullOrWhiteSpace(package?.version) ? Fallback : package.version;
+                _packageName = string.IsNullOrWhiteSpace(package?.name) ? "com.maicon.scene-analyzer" : package.name;
             }
             catch
             {
                 _current = Fallback;
+                _packageName = "com.maicon.scene-analyzer";
             }
         }
     }
@@ -136,6 +140,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             var selfTest = SelfTest();
             var compileErrors = compileEntries.Count(entry => entry.Severity == LogType.Error || entry.Severity == LogType.Exception);
             var loadedUtc = Bootstrap.DomainLoadedUtc;
+            var bridge = Bootstrap.BrokerBridgeState;
             return new JObject
             {
                 ["status"] = registry != null && compatibilityIssues == 0 && compileErrors == 0 && (bool)selfTest["valid"]
@@ -143,10 +148,27 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     : "degraded",
                 ["package"] = new JObject
                 {
-                    ["name"] = "com.maicon.scene-analyzer",
+                    ["name"] = SceneAnalyzerVersion.PackageName,
                     ["version"] = SceneAnalyzerVersion.Current,
                     ["unityVersion"] = Application.unityVersion,
                     ["supportedUnity"] = "6000.1-6000.3",
+                },
+                ["transport"] = new JObject
+                {
+                    ["mode"] = Settings.TransportMode.ToString(),
+                    ["embeddedRunning"] = Bootstrap.Server?.IsRunning ?? false,
+                    ["embeddedPort"] = Bootstrap.Server?.Port ?? Settings.Port,
+                    ["brokerUrl"] = Settings.BrokerUrl,
+                    ["bridgeConnected"] = bridge.IsConnected,
+                    ["bridgeState"] = bridge.State,
+                    ["bridgeError"] = bridge.Error,
+                    ["projectKey"] = bridge.ProjectKey,
+                    ["processId"] = bridge.ProcessId,
+                    ["generationId"] = bridge.GenerationId,
+                    ["registryHash"] = bridge.RegistryHash,
+                    ["updatedUtc"] = bridge.UpdatedUtc == DateTimeOffset.MinValue
+                        ? null
+                        : bridge.UpdatedUtc.ToString("O"),
                 },
                 ["server"] = new JObject
                 {

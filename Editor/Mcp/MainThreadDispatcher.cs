@@ -98,7 +98,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 catch (Exception e) { Debug.LogException(e); }
                 var elapsed = sw.Elapsed.TotalMilliseconds - start;
                 if (elapsed > SlowClosureWarnMs)
-                    Debug.LogWarning($"[scene-analyzer] dispatcher closure took {elapsed:F1}ms; move long work to a cooperative async tool.");
+                    Debug.LogWarning($"[unity-mcp] dispatcher closure took {elapsed:F1}ms; move long work to a cooperative async tool.");
             }
         }
     }

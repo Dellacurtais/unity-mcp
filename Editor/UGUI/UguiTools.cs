@@ -63,8 +63,9 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
 
         public static Font DefaultFont()
         {
-            try { return Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf"); }
-            catch { return null; }
+            var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (font == null) throw new InvalidOperationException("Unity built-in LegacyRuntime.ttf font is unavailable");
+            return font;
         }
 
         public static JObject ElementJson(Component component)
@@ -96,12 +97,50 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
 
         public static Component AddInputModule(GameObject eventSystem)
         {
+#if ENABLE_INPUT_SYSTEM
             var inputType = AppDomain.CurrentDomain.GetAssemblies()
                 .Select(assembly => assembly.GetType("UnityEngine.InputSystem.UI.InputSystemUIInputModule", false))
                 .FirstOrDefault(type => type != null && typeof(BaseInputModule).IsAssignableFrom(type));
-            return inputType != null
-                ? Undo.AddComponent(eventSystem, inputType)
-                : Undo.AddComponent<StandaloneInputModule>(eventSystem);
+            if (inputType == null)
+                throw new InvalidOperationException("ENABLE_INPUT_SYSTEM is active but InputSystemUIInputModule is unavailable");
+            return Undo.AddComponent(eventSystem, inputType);
+#else
+            return Undo.AddComponent<StandaloneInputModule>(eventSystem);
+#endif
+        }
+
+        public static JObject OutputSchema(JObject properties, params string[] required) => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = properties ?? new JObject(),
+            ["required"] = new JArray(required ?? Array.Empty<string>()),
+            ["additionalProperties"] = true,
+        };
+
+        public static bool TryFinite(JToken token, out float value)
+        {
+            value = 0f;
+            if (token == null || (token.Type != JTokenType.Integer && token.Type != JTokenType.Float)) return false;
+            value = (float)token;
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        public static bool TryVector2(JToken token, out Vector2 value)
+        {
+            value = Vector2.zero;
+            if (token is JArray array && array.Count >= 2
+                && TryFinite(array[0], out var x) && TryFinite(array[1], out var y))
+            {
+                value = new Vector2(x, y);
+                return true;
+            }
+            if (token is JObject obj
+                && TryFinite(obj["x"], out x) && TryFinite(obj["y"], out y))
+            {
+                value = new Vector2(x, y);
+                return true;
+            }
+            return false;
         }
 
         public static JObject EventJson(string name, UnityEventBase unityEvent)
@@ -127,6 +166,11 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
         public string Description => "Lists loaded uGUI Canvas, Graphic, Selectable and layout components with stable target references.";
         public JObject InputSchema => UguiToolSupport.EmptySchema();
         public bool IsWrite => false;
+        public JObject OutputSchema => UguiToolSupport.OutputSchema(new JObject
+        {
+            ["canvases"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            ["elements"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+        }, "canvases", "elements");
 
         public ToolResult Execute(JObject args)
         {
@@ -173,14 +217,25 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
             ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public JObject OutputSchema => UguiToolSupport.OutputSchema(new JObject
+        {
+            ["canvas"] = new JObject { ["type"] = "object" },
+            ["eventSystem"] = new JObject { ["type"] = new JArray { "object", "null" } },
+        }, "canvas", "eventSystem");
 
         public ToolResult Execute(JObject args)
         {
-            var parent = args["parentInstanceId"] != null
-                ? EditorUtility.InstanceIDToObject((int)args["parentInstanceId"]) as GameObject
-                : null;
+            GameObject parent = null;
+            if (args["parentInstanceId"] != null)
+            {
+                parent = EditorUtility.EntityIdToObject((EntityId)(int)args["parentInstanceId"]) as GameObject;
+                if (parent == null) return ToolResult.Error("PARENT_NOT_FOUND", "parentInstanceId must reference a GameObject");
+            }
             if (!Enum.TryParse((string)args["renderMode"] ?? "ScreenSpaceOverlay", true, out RenderMode mode))
                 return ToolResult.Error("BAD_RENDER_MODE", (string)args["renderMode"]);
+            if (!UguiToolSupport.TryFinite(args["referenceWidth"] ?? 1920f, out var referenceWidth) || referenceWidth < 1
+                || !UguiToolSupport.TryFinite(args["referenceHeight"] ?? 1080f, out var referenceHeight) || referenceHeight < 1)
+                return ToolResult.Error("BAD_REFERENCE_RESOLUTION", "reference dimensions must be finite and at least 1");
 
             var gameObject = new GameObject((string)args["name"] ?? "Canvas",
                 typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
@@ -188,9 +243,7 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
             canvas.renderMode = mode;
             var scaler = gameObject.GetComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(
-                (float?)args["referenceWidth"] ?? 1920f,
-                (float?)args["referenceHeight"] ?? 1080f);
+            scaler.referenceResolution = new Vector2(referenceWidth, referenceHeight);
             GameObject eventSystemObject = null;
             try
             {
@@ -262,16 +315,24 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
             ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public JObject OutputSchema => UguiToolSupport.OutputSchema(new JObject
+        {
+            ["element"] = new JObject { ["type"] = "object" },
+        }, "element");
 
         public ToolResult Execute(JObject args)
         {
-            var parent = EditorUtility.InstanceIDToObject((int)args["parentInstanceId"]) as GameObject;
+            var parent = EditorUtility.EntityIdToObject((EntityId)(int)args["parentInstanceId"]) as GameObject;
             if (parent == null || parent.GetComponent<RectTransform>() == null)
                 return ToolResult.Error("PARENT_NOT_RECT_TRANSFORM", "parentInstanceId must resolve to a RectTransform GameObject");
             var kind = (string)args["kind"];
+            if (string.IsNullOrEmpty(kind)) return ToolResult.Error("BAD_KIND", "kind is required");
+            if (!UguiToolSupport.TryFinite(args["width"] ?? 160f, out var width) || width < 0
+                || !UguiToolSupport.TryFinite(args["height"] ?? 40f, out var height) || height < 0)
+                return ToolResult.Error("BAD_SIZE", "width and height must be finite and non-negative");
             var name = (string)args["name"] ?? char.ToUpperInvariant(kind[0]) + kind.Substring(1).Replace('_', ' ');
             var rect = UguiToolSupport.CreateRect(name, parent.transform);
-            rect.sizeDelta = new Vector2((float?)args["width"] ?? 160f, (float?)args["height"] ?? 40f);
+            rect.sizeDelta = new Vector2(width, height);
             try
             {
                 var primary = Build(kind, rect, args);
@@ -422,35 +483,23 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
             if (gameObject == null) return error;
             var rect = gameObject.GetComponent<RectTransform>();
             if (rect == null) return ToolResult.Error("RECT_TRANSFORM_NOT_FOUND", gameObject.name);
+            var vectors = new Dictionary<string, Vector2>();
+            foreach (var property in new[] { "pivot", "anchoredPosition", "sizeDelta", "offsetMin", "offsetMax" })
+            {
+                if (args[property] == null) continue;
+                if (!UguiToolSupport.TryVector2(args[property], out var value))
+                    return ToolResult.Error("BAD_RECT_VALUE", $"{property} must contain finite x/y numbers");
+                vectors[property] = value;
+            }
             using (var mutation = new MutationScope("Set RectTransform"))
             {
                 mutation.Record(rect);
                 if (args["anchorPreset"] != null) ApplyPreset(rect, (string)args["anchorPreset"]);
-                if (args["pivot"] != null)
-                {
-                    var value = JsonHelpers.ParseVector3(args["pivot"]);
-                    rect.pivot = new Vector2(value.x, value.y);
-                }
-                if (args["anchoredPosition"] != null)
-                {
-                    var value = JsonHelpers.ParseVector3(args["anchoredPosition"]);
-                    rect.anchoredPosition = new Vector2(value.x, value.y);
-                }
-                if (args["sizeDelta"] != null)
-                {
-                    var value = JsonHelpers.ParseVector3(args["sizeDelta"]);
-                    rect.sizeDelta = new Vector2(value.x, value.y);
-                }
-                if (args["offsetMin"] != null)
-                {
-                    var value = JsonHelpers.ParseVector3(args["offsetMin"]);
-                    rect.offsetMin = new Vector2(value.x, value.y);
-                }
-                if (args["offsetMax"] != null)
-                {
-                    var value = JsonHelpers.ParseVector3(args["offsetMax"]);
-                    rect.offsetMax = new Vector2(value.x, value.y);
-                }
+                if (vectors.TryGetValue("pivot", out var pivot)) rect.pivot = pivot;
+                if (vectors.TryGetValue("anchoredPosition", out var anchoredPosition)) rect.anchoredPosition = anchoredPosition;
+                if (vectors.TryGetValue("sizeDelta", out var sizeDelta)) rect.sizeDelta = sizeDelta;
+                if (vectors.TryGetValue("offsetMin", out var offsetMin)) rect.offsetMin = offsetMin;
+                if (vectors.TryGetValue("offsetMax", out var offsetMax)) rect.offsetMax = offsetMax;
                 mutation.Complete();
             }
             return ToolResult.Ok("updated RectTransform", UguiToolSupport.ElementJson(rect));
@@ -497,6 +546,13 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
             ["childAlignment"] = new JObject { ["type"] = "string", ["default"] = "UpperLeft" },
         }, "layoutType");
         public bool IsWrite => true;
+        public JObject OutputSchema => UguiToolSupport.OutputSchema(new JObject
+        {
+            ["target"] = new JObject { ["type"] = new JArray { "object", "null" } },
+            ["gameObject"] = new JObject { ["type"] = new JArray { "object", "null" } },
+            ["componentType"] = new JObject { ["type"] = new JArray { "string", "null" } },
+            ["rect"] = new JObject { ["type"] = new JArray { "object", "null" } },
+        }, "target", "gameObject", "componentType", "rect");
 
         public ToolResult Execute(JObject args)
         {
@@ -506,32 +562,53 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
                 return ToolResult.Error("RECT_TRANSFORM_NOT_FOUND", gameObject.name);
             if (!Enum.TryParse((string)args["childAlignment"] ?? "UpperLeft", true, out TextAnchor alignment))
                 return ToolResult.Error("BAD_ALIGNMENT", (string)args["childAlignment"]);
-            foreach (var layout in gameObject.GetComponents<LayoutGroup>()) Undo.DestroyObjectImmediate(layout);
-            LayoutGroup group;
-            if ((string)args["layoutType"] == "Horizontal")
+            var layoutType = (string)args["layoutType"];
+            if (!string.Equals(layoutType, "Horizontal", StringComparison.Ordinal)
+                && !string.Equals(layoutType, "Vertical", StringComparison.Ordinal)
+                && !string.Equals(layoutType, "Grid", StringComparison.Ordinal))
+                return ToolResult.Error("BAD_LAYOUT_TYPE", layoutType);
+            if (!UguiToolSupport.TryFinite(args["spacing"] ?? 0f, out var spacing)
+                || !UguiToolSupport.TryFinite(args["cellWidth"] ?? 100f, out var cellWidth) || cellWidth < 0
+                || !UguiToolSupport.TryFinite(args["cellHeight"] ?? 100f, out var cellHeight) || cellHeight < 0)
+                return ToolResult.Error("BAD_LAYOUT_VALUE", "spacing and cell dimensions must be finite; cell dimensions cannot be negative");
+
+            try
             {
-                var horizontal = Undo.AddComponent<HorizontalLayoutGroup>(gameObject);
-                horizontal.spacing = (float?)args["spacing"] ?? 0;
-                group = horizontal;
+                LayoutGroup group;
+                using (var mutation = new MutationScope("Configure uGUI Layout"))
+                {
+                    foreach (var layout in gameObject.GetComponents<LayoutGroup>()) mutation.Destroy(layout);
+                    if (layoutType == "Horizontal")
+                    {
+                        var horizontal = mutation.AddComponent<HorizontalLayoutGroup>(gameObject);
+                        horizontal.spacing = spacing;
+                        group = horizontal;
+                    }
+                    else if (layoutType == "Vertical")
+                    {
+                        var vertical = mutation.AddComponent<VerticalLayoutGroup>(gameObject);
+                        vertical.spacing = spacing;
+                        group = vertical;
+                    }
+                    else
+                    {
+                        var grid = mutation.AddComponent<GridLayoutGroup>(gameObject);
+                        grid.spacing = Vector2.one * spacing;
+                        grid.cellSize = new Vector2(cellWidth, cellHeight);
+                        group = grid;
+                    }
+                    group.childAlignment = alignment;
+                    var padding = (int?)args["padding"] ?? 0;
+                    group.padding = new RectOffset(padding, padding, padding, padding);
+                    mutation.Touch(group);
+                    mutation.Complete();
+                }
+                return ToolResult.Ok($"configured {group.GetType().Name}", UguiToolSupport.ElementJson(group));
             }
-            else if ((string)args["layoutType"] == "Vertical")
+            catch (Exception exception)
             {
-                var vertical = Undo.AddComponent<VerticalLayoutGroup>(gameObject);
-                vertical.spacing = (float?)args["spacing"] ?? 0;
-                group = vertical;
+                return ToolResult.Error("CONFIGURE_LAYOUT_FAILED", exception.Message);
             }
-            else
-            {
-                var grid = Undo.AddComponent<GridLayoutGroup>(gameObject);
-                grid.spacing = Vector2.one * ((float?)args["spacing"] ?? 0);
-                grid.cellSize = new Vector2((float?)args["cellWidth"] ?? 100, (float?)args["cellHeight"] ?? 100);
-                group = grid;
-            }
-            group.childAlignment = alignment;
-            var padding = (int?)args["padding"] ?? 0;
-            group.padding = new RectOffset(padding, padding, padding, padding);
-            EditorSceneManager.MarkSceneDirty(gameObject.scene);
-            return ToolResult.Ok($"configured {group.GetType().Name}", UguiToolSupport.ElementJson(group));
         }
     }
 
@@ -541,6 +618,11 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
         public string Description => "Lists persistent UnityEvent listeners on a Button, Toggle, Slider or ScrollRect.";
         public JObject InputSchema => UguiToolSupport.TargetSchema();
         public bool IsWrite => false;
+        public JObject OutputSchema => UguiToolSupport.OutputSchema(new JObject
+        {
+            ["target"] = new JObject { ["type"] = new JArray { "object", "null" } },
+            ["events"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+        }, "target", "events");
 
         public ToolResult Execute(JObject args)
         {
@@ -574,6 +656,10 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
             ["methodName"] = new JObject { ["type"] = "string" },
         }, "listenerInstanceId", "componentType", "methodName");
         public bool IsWrite => true;
+        public JObject OutputSchema => UguiToolSupport.OutputSchema(new JObject
+        {
+            ["event"] = new JObject { ["type"] = "object" },
+        }, "event");
 
         public ToolResult Execute(JObject args)
         {
@@ -581,7 +667,7 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
             if (gameObject == null) return error;
             var button = gameObject.GetComponent<Button>();
             if (button == null) return ToolResult.Error("BUTTON_NOT_FOUND", gameObject.name);
-            var listenerObject = EditorUtility.InstanceIDToObject((int)args["listenerInstanceId"]) as GameObject;
+            var listenerObject = EditorUtility.EntityIdToObject((EntityId)(int)args["listenerInstanceId"]) as GameObject;
             if (listenerObject == null)
                 return ToolResult.Error("LISTENER_NOT_FOUND", "listenerInstanceId must reference a GameObject");
             var type = ComponentTypeInspector.ResolveType((string)args["componentType"]);
@@ -593,14 +679,24 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
                 return ToolResult.Error("LISTENER_METHOD_INVALID", "method must be instance void with no parameters");
             var action = (UnityAction)Delegate.CreateDelegate(typeof(UnityAction), component, method, false);
             if (action == null) return ToolResult.Error("LISTENER_BIND_FAILED", method.Name);
-            Undo.RecordObject(button, "Bind Button Click");
-            UnityEventTools.AddPersistentListener(button.onClick, action);
-            EditorUtility.SetDirty(button);
-            EditorSceneManager.MarkSceneDirty(button.gameObject.scene);
-            return ToolResult.Ok($"bound {type.Name}.{method.Name}", new JObject
+            try
             {
-                ["event"] = UguiToolSupport.EventJson("Button.onClick", button.onClick),
-            });
+                using (var mutation = new MutationScope("Bind Button Click"))
+                {
+                    mutation.Record(button);
+                    UnityEventTools.AddPersistentListener(button.onClick, action);
+                    mutation.Touch(button);
+                    mutation.Complete();
+                }
+                return ToolResult.Ok($"bound {type.Name}.{method.Name}", new JObject
+                {
+                    ["event"] = UguiToolSupport.EventJson("Button.onClick", button.onClick),
+                });
+            }
+            catch (Exception exception)
+            {
+                return ToolResult.Error("LISTENER_BIND_FAILED", exception.Message);
+            }
         }
     }
 }

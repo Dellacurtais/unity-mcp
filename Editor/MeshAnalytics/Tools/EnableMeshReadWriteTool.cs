@@ -7,14 +7,10 @@ using UnityEngine;
 namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 {
     /// Flips an imported model's `Read/Write Enabled` flag on, then
-    /// re-imports it. Required before any mesh-analytics detector can
-    /// read vertex / triangle data — Unity's default for FBX / glb / OBJ
-    /// is `isReadable = false` (CPU data stripped after upload to GPU to
-    /// save runtime memory).
-    ///
-    /// This is the auto-recovery path for the `MESH_NOT_READABLE` error
-    /// raised by inspect / detect / sample / sidecar tools. The LLM can
-    /// chain detector → on MESH_NOT_READABLE → enable_read_write → retry.
+    /// optionally re-imports it. Unity 6000.3 keeps imported mesh data
+    /// accessible in Edit Mode even when this importer flag is false, so this
+    /// write tool is only needed when CPU access must also work in Play Mode
+    /// or in a player build.
     ///
     /// Idempotent: if the setting is already on, returns without
     /// re-importing. Only works for assets backed by a `ModelImporter`
@@ -24,38 +20,42 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
     {
         public string Name => "mesh_enable_read_write";
         public string Description =>
-            "Re-imports the model asset behind a mesh with 'Read/Write Enabled' so mesh analytics tools can read its CPU-side data. Resolves either an instanceId (→ GameObject → mesh → asset) or an assetPath. Idempotent: a no-op when already enabled. Call this in response to a MESH_NOT_READABLE error, then retry the original detector. Only ModelImporter-backed assets (FBX/OBJ/glb/dae) are supported.";
+            "Enables the model importer's Read/Write flag for CPU mesh access in Play Mode or player builds. Edit-Mode mesh analytics in Unity 6000.3 do not require this flag for imported meshes. Resolves a stable target/instanceId or an assetPath; idempotent when already enabled. Only ModelImporter-backed assets are supported.";
 
         public JObject InputSchema => new JObject
         {
             ["type"] = "object",
             ["properties"] = new JObject
             {
+                ["target"] = MeshToolSchemas.Target,
                 ["instanceId"] = new JObject { ["type"] = "integer", ["description"] = "GameObject id whose mesh asset should be made readable. Mutually exclusive with assetPath." },
                 ["assetPath"] = new JObject { ["type"] = "string", ["description"] = "Direct asset path like 'Assets/Models/Sidewalk.fbx'. Mutually exclusive with instanceId." },
                 ["reimport"] = new JObject { ["type"] = "boolean", ["default"] = true, ["description"] = "When false, only flips the importer flag without triggering a re-import (the change applies on the next Unity asset refresh)." },
             },
+            ["oneOf"] = MeshToolSchemas.TargetInstanceOrAssetPath,
             ["additionalProperties"] = false,
         };
+
+        public JObject OutputSchema => MeshToolSchemas.EnableReadWriteOutput;
 
         public bool IsWrite => true;
 
         public ToolResult Execute(JObject args)
         {
             string assetPath = (string)args["assetPath"];
-            int instanceId = (int?)args["instanceId"] ?? 0;
+            bool hasTarget = args["target"] != null || args["instanceId"] != null;
             bool reimport = (bool?)args["reimport"] ?? true;
 
-            if (string.IsNullOrEmpty(assetPath) == (instanceId == 0))
-                return ToolResult.Error("BAD_ARGS", "provide exactly one of instanceId or assetPath");
+            if (string.IsNullOrEmpty(assetPath) == !hasTarget)
+                return ToolResult.Error("BAD_ARGS", "provide exactly one of target/instanceId or assetPath");
 
             // Resolve to an asset path. instanceId path: GameObject → mesh
             // → AssetDatabase.GetAssetPath(mesh).
             if (string.IsNullOrEmpty(assetPath))
             {
-                var go = MeshResolver.ResolveGameObject(instanceId);
+                var go = MeshResolver.ResolveGameObject(args, out var targetError);
                 if (go == null)
-                    return ToolResult.Error("NOT_FOUND", $"no GameObject with instanceId {instanceId}");
+                    return ToolResult.Error("NOT_FOUND", targetError);
                 var mesh = MeshResolver.ResolveMesh(go);
                 if (mesh == null)
                     return ToolResult.Error("NOT_FOUND", $"GameObject '{go.name}' has no mesh");

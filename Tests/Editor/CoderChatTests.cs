@@ -108,7 +108,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                     },
                 },
             };
-            var content = "[unity-context — auto-injected by the Unity Scene Analyzer plugin test]\n\n---\n\n"
+            var content = "[unity-context — auto-injected by the Unity MCP plugin test]\n\n---\n\n"
                 + "Mova o objeto\n\n\u0060\u0060\u0060unity-context\n"
                 + context.ToString(Formatting.None)
                 + "\n\u0060\u0060\u0060";

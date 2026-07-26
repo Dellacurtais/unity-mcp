@@ -1,3 +1,6 @@
+using System;
+using Maicon.SceneAnalyzer.Editor.Core;
+using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -12,7 +15,10 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
     public static class MeshResolver
     {
         public static GameObject ResolveGameObject(int instanceId)
-            => EditorUtility.InstanceIDToObject(instanceId) as GameObject;
+            => EditorUtility.EntityIdToObject((EntityId)instanceId) as GameObject;
+
+        public static GameObject ResolveGameObject(JObject arguments, out string error)
+            => ToolTargetResolver.ResolveGameObject(arguments, out error);
 
         public static Mesh ResolveMesh(GameObject go)
         {
@@ -38,6 +44,18 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             return mesh != null;
         }
 
+        public static bool TryGetMeshAndTransforms(JObject arguments,
+            out GameObject go, out Mesh mesh, out Matrix4x4 localToWorld, out string error)
+        {
+            go = ResolveGameObject(arguments, out error);
+            mesh = ResolveMesh(go);
+            localToWorld = go != null ? go.transform.localToWorldMatrix : Matrix4x4.identity;
+            if (go == null) return false;
+            if (mesh != null) return true;
+            error = $"TARGET_HAS_NO_MESH: GameObject '{go.name}' has no MeshFilter/SkinnedMeshRenderer mesh";
+            return false;
+        }
+
         /// True when the mesh's CPU-side data (vertices / triangles) is
         /// reachable. Imported FBX/glTF with "Read/Write Enabled" off can
         /// strip CPU data for builds; the Editor *usually* keeps it but not
@@ -47,12 +65,29 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         public static bool IsReadable(Mesh mesh, out string reason)
         {
             if (mesh == null) { reason = "mesh is null"; return false; }
-            if (!mesh.isReadable)
+            if (mesh.isReadable || (!EditorApplication.isPlaying && EditorUtility.IsPersistent(mesh)))
             {
-                reason = $"mesh '{mesh.name}' has Read/Write disabled at import. " +
-                         $"Call `mesh_enable_read_write` (passing the same instanceId or the asset path) then retry — " +
-                         $"or manually flip 'Read/Write Enabled' in the model importer's Inspector.";
-                return false;
+                reason = null;
+                return true;
+            }
+            reason = $"mesh '{mesh.name}' has no CPU-readable vertex/index data. " +
+                     "Imported meshes remain readable in Edit Mode in Unity 6000.3; this usually means Play Mode " +
+                     "or a procedural mesh uploaded with UploadMeshData(true). For an imported model needed at runtime, " +
+                     "call `mesh_enable_read_write`, then retry.";
+            return false;
+        }
+
+        public static bool HasTriangleTopology(Mesh mesh, out string reason)
+        {
+            if (mesh == null) { reason = "mesh is null"; return false; }
+            for (int submesh = 0; submesh < mesh.subMeshCount; submesh++)
+            {
+                var topology = mesh.GetTopology(submesh);
+                if (topology != MeshTopology.Triangles)
+                {
+                    reason = $"mesh '{mesh.name}' submesh {submesh} uses {topology}; triangle analytics require MeshTopology.Triangles for every submesh";
+                    return false;
+                }
             }
             reason = null;
             return true;
@@ -65,13 +100,24 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         public static string MakeMeshKey(Mesh mesh)
         {
             if (mesh == null) return "null";
-            var path = AssetDatabase.GetAssetPath(mesh);
-            if (!string.IsNullOrEmpty(path))
-            {
-                var guid = AssetDatabase.AssetPathToGUID(path);
-                if (!string.IsNullOrEmpty(guid)) return guid;
-            }
+            if (AssetDatabase.TryGetGUIDAndLocalFileIdentifier(mesh, out string guid, out long localFileId)
+                && !string.IsNullOrEmpty(guid))
+                return $"{guid}:{localFileId}";
             return $"runtime:{mesh.GetInstanceID()}";
         }
+
+        public static string MakeAnalysisKey(Mesh mesh, GameObject owner)
+        {
+            var meshKey = MakeMeshKey(mesh);
+            if (owner == null) return meshKey;
+            var target = ToolTargetRef.Capture(owner);
+            var ownerKey = !string.IsNullOrEmpty(target?.GlobalObjectId)
+                ? target.GlobalObjectId
+                : $"instance:{owner.GetInstanceID()}";
+            return $"{meshKey}@{ownerKey}";
+        }
+
+        public static JObject TargetData(GameObject gameObject)
+            => ToolTargetRef.Capture(gameObject)?.ToJson();
     }
 }

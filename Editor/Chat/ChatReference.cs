@@ -180,9 +180,11 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         private static string StripDefaultPreamble(string text)
         {
             if (string.IsNullOrEmpty(text)) return "";
-            const string marker = "[unity-context — auto-injected by the Unity Scene Analyzer plugin";
+            const string marker = "[unity-context — auto-injected by the Unity MCP plugin";
+            const string legacyPrefix = "[unity-context — auto-injected by the Unity ";
             const string separator = "\n\n---\n\n";
-            if (!text.StartsWith(marker, StringComparison.Ordinal)) return text;
+            if (!text.StartsWith(marker, StringComparison.Ordinal)
+                && !text.StartsWith(legacyPrefix, StringComparison.Ordinal)) return text;
             var separatorIndex = text.IndexOf(separator, StringComparison.Ordinal);
             return separatorIndex < 0 ? text : text.Substring(separatorIndex + separator.Length);
         }

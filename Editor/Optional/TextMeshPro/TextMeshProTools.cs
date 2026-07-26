@@ -22,6 +22,11 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.TextMeshPro
             ["fontSize"] = new JObject { ["type"] = "number", ["minimum"] = 0, ["default"] = 36 },
         });
         public bool IsWrite => true;
+        public JObject OutputSchema => OptionalToolSupport.OutputSchema(new JObject
+        {
+            ["target"] = new JObject { ["type"] = new JArray { "object", "null" } },
+            ["component"] = new JObject { ["type"] = "object" },
+        }, "target", "component");
 
         public ToolResult Execute(JObject arguments)
         {
@@ -32,6 +37,11 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.TextMeshPro
                 "parent",
                 out var parentError);
             if (parentError != null) return parentError;
+            if (ui && (parent == null || parent.GetComponentInParent<Canvas>(true) == null))
+                return ToolResult.Error("TMP_UI_CANVAS_REQUIRED", "UI text requires a parent under a uGUI Canvas");
+            var fontSize = (float?)arguments["fontSize"] ?? 36f;
+            if (float.IsNaN(fontSize) || float.IsInfinity(fontSize) || fontSize < 0)
+                return ToolResult.Error("BAD_FONT_SIZE", "fontSize must be finite and non-negative");
             var gameObject = ui
                 ? new GameObject((string)arguments["name"] ?? "TMP Text", typeof(RectTransform), typeof(CanvasRenderer))
                 : new GameObject((string)arguments["name"] ?? "TMP Text");
@@ -50,7 +60,7 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.TextMeshPro
                         ? (TMP_Text)mutation.AddComponent(gameObject, typeof(TextMeshProUGUI))
                         : mutation.AddComponent<TMPro.TextMeshPro>(gameObject);
                     text.text = (string)arguments["text"] ?? "Text";
-                    text.fontSize = (float?)arguments["fontSize"] ?? 36f;
+                    text.fontSize = fontSize;
                     mutation.Touch(text);
                     mutation.Complete();
                 }
@@ -74,6 +84,13 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.TextMeshPro
         public string Description => "Audits TextMeshPro text components for missing font assets.";
         public JObject InputSchema => OptionalToolSupport.EmptySchema();
         public bool IsWrite => false;
+        public JObject OutputSchema => OptionalToolSupport.OutputSchema(new JObject
+        {
+            ["valid"] = new JObject { ["type"] = "boolean" },
+            ["textCount"] = new JObject { ["type"] = "integer" },
+            ["fontAssetCount"] = new JObject { ["type"] = "integer" },
+            ["issues"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+        }, "valid", "textCount", "fontAssetCount", "issues");
         public ToolResult Execute(JObject arguments)
         {
             var issues = new JArray();
@@ -81,8 +98,15 @@ namespace Maicon.SceneAnalyzer.Editor.Optional.TextMeshPro
                 .OfType<TMP_Text>()
                 .ToArray();
             foreach (var text in texts)
+            {
+                var target = ToolTargetRef.Capture(text)?.ToJson();
                 if (text.font == null)
-                    issues.Add(new JObject { ["severity"] = "error", ["code"] = "TMP_FONT_MISSING", ["target"] = ToolTargetRef.Capture(text)?.ToJson() });
+                    issues.Add(new JObject { ["severity"] = "error", ["code"] = "TMP_FONT_MISSING", ["target"] = target });
+                else if (text.fontSharedMaterial == null)
+                    issues.Add(new JObject { ["severity"] = "error", ["code"] = "TMP_MATERIAL_MISSING", ["target"] = target });
+                if (text is TextMeshProUGUI && text.GetComponentInParent<Canvas>(true) == null)
+                    issues.Add(new JObject { ["severity"] = "error", ["code"] = "TMP_UI_CANVAS_MISSING", ["target"] = target });
+            }
             var fontCount = AssetDatabase.FindAssets("t:TMP_FontAsset").Length;
             if (fontCount == 0)
                 issues.Add(new JObject { ["severity"] = "warning", ["code"] = "NO_TMP_FONT_ASSETS" });

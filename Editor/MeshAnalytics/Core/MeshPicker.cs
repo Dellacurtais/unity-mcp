@@ -6,12 +6,9 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
     /// Converts an image-space (u,v) pick on a render produced by
     /// `render_object_views` back into a 3D point on the target mesh.
     ///
-    /// Uses Unity's built-in `MeshCollider` + `Physics.Raycast` rather than
-    /// rolling our own Möller–Trumbore against `mesh.triangles`: the
-    /// collider gives us `RaycastHit.triangleIndex` for free, handles
-    /// submesh boundaries correctly, and is faster (BVH). When the target
-    /// GameObject lacks a MeshCollider we attach a temporary one, raycast,
-    /// then strip it — so authoring is non-destructive.
+    /// Intersects the target mesh directly on the CPU. This avoids adding a
+    /// temporary MeshCollider to the scene, so the read-only MCP tool never
+    /// mutates hierarchy, prefab, physics, or scene-dirty state.
     public static class MeshPicker
     {
         public sealed class PickResult
@@ -66,48 +63,42 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             var mesh = MeshResolver.ResolveMesh(target);
             if (mesh == null) return false;
 
-            // Attach a temporary collider if the target doesn't have one.
-            // We only restrict the raycast to this object's collider so we
-            // don't accidentally hit something else in the scene.
-            var existing = target.GetComponent<MeshCollider>();
-            MeshCollider temp = null;
-            try
+            if (!MeshResolver.HasTriangleTopology(mesh, out _)) return false;
+
+            var vertices = mesh.vertices;
+            var triangles = mesh.triangles;
+            var localToWorld = target.transform.localToWorldMatrix;
+            float closestDistance = maxDistance > 0f ? maxDistance : float.PositiveInfinity;
+            int closestTriangle = -1;
+            Vector3 closestPoint = default;
+            Vector3 closestNormal = default;
+
+            for (int triangle = 0; triangle < triangles.Length / 3; triangle++)
             {
-                MeshCollider collider;
-                if (existing != null)
-                {
-                    collider = existing;
-                }
-                else
-                {
-                    temp = target.AddComponent<MeshCollider>();
-                    temp.sharedMesh = mesh;
-                    temp.convex = false;
-                    collider = temp;
-                }
-
-                if (!collider.Raycast(ray, out var hit, maxDistance > 0 ? maxDistance : 10_000f))
-                    return false;
-
-                int triIdx = hit.triangleIndex;
-                int submeshIdx = ResolveSubmesh(mesh, triIdx);
-                var regions = FindRegionsContainingTriangle(mesh, triIdx);
-
-                result = new PickResult
-                {
-                    WorldPoint = hit.point,
-                    WorldNormal = hit.normal,
-                    TriangleIndex = triIdx,
-                    SubmeshIndex = submeshIdx,
-                    DistanceFromCamera = hit.distance,
-                    RegionIds = regions.ToArray(),
-                };
-                return true;
+                var a = localToWorld.MultiplyPoint3x4(vertices[triangles[triangle * 3]]);
+                var b = localToWorld.MultiplyPoint3x4(vertices[triangles[triangle * 3 + 1]]);
+                var c = localToWorld.MultiplyPoint3x4(vertices[triangles[triangle * 3 + 2]]);
+                if (!IntersectTriangle(ray, a, b, c, out var distance)) continue;
+                if (distance >= closestDistance) continue;
+                closestDistance = distance;
+                closestTriangle = triangle;
+                closestPoint = ray.GetPoint(distance);
+                closestNormal = Vector3.Cross(b - a, c - a).normalized;
             }
-            finally
+
+            if (closestTriangle < 0) return false;
+            int submeshIdx = ResolveSubmesh(mesh, closestTriangle);
+            var regions = FindRegionsContainingTriangle(target, mesh, closestTriangle);
+            result = new PickResult
             {
-                if (temp != null) Object.DestroyImmediate(temp);
-            }
+                WorldPoint = closestPoint,
+                WorldNormal = closestNormal,
+                TriangleIndex = closestTriangle,
+                SubmeshIndex = submeshIdx,
+                DistanceFromCamera = closestDistance,
+                RegionIds = regions.ToArray(),
+            };
+            return true;
         }
 
         /// Maps a global triangle index back to its submesh by walking the
@@ -129,11 +120,13 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         /// Walks all cached AnalysisResults to find regions whose
         /// FaceIndices contain `triIdx`. Linear in the number of regions
         /// the user has materialised; bounded by their tool-call history.
-        private static List<string> FindRegionsContainingTriangle(Mesh mesh, int triIdx)
+        private static List<string> FindRegionsContainingTriangle(GameObject target, Mesh mesh, int triIdx)
         {
             var result = new List<string>();
+            var analysisKey = MeshResolver.MakeAnalysisKey(mesh, target);
             foreach (var bundle in MeshAnalysisCache.AllResults())
             {
+                if (!string.Equals(bundle.AnalysisKey, analysisKey, System.StringComparison.Ordinal)) continue;
                 AppendIfHit(bundle.Submeshes, triIdx, result);
                 AppendIfHit(bundle.EdgeChains, triIdx, result);
                 AppendIfHit(bundle.Planes, triIdx, result);
@@ -141,6 +134,25 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                 AppendIfHit(bundle.ParallelGroups, triIdx, result);
             }
             return result;
+        }
+
+        private static bool IntersectTriangle(Ray ray, Vector3 a, Vector3 b, Vector3 c, out float distance)
+        {
+            distance = 0f;
+            var edge1 = b - a;
+            var edge2 = c - a;
+            var p = Vector3.Cross(ray.direction, edge2);
+            float determinant = Vector3.Dot(edge1, p);
+            if (Mathf.Abs(determinant) < 1e-8f) return false;
+            float inverse = 1f / determinant;
+            var t = ray.origin - a;
+            float u = Vector3.Dot(t, p) * inverse;
+            if (u < 0f || u > 1f) return false;
+            var q = Vector3.Cross(t, edge1);
+            float v = Vector3.Dot(ray.direction, q) * inverse;
+            if (v < 0f || u + v > 1f) return false;
+            distance = Vector3.Dot(edge2, q) * inverse;
+            return distance > 0f;
         }
 
         private static void AppendIfHit<T>(List<T> regions, int triIdx, List<string> outList) where T : MeshRegion

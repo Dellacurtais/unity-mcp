@@ -35,6 +35,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ["additionalProperties"] = false,
         };
 
+        public JObject OutputSchema => MeshToolSchemas.SamplesOutput;
+
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
@@ -43,7 +45,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             if (string.IsNullOrEmpty(regionId))
                 return ToolResult.Error("BAD_ARGS", "regionId is required");
 
-            var region = MeshAnalysisCache.FindRegion(regionId, out _);
+            var region = MeshAnalysisCache.FindRegion(regionId, out var owner);
             if (region == null)
                 return ToolResult.Error("NOT_FOUND",
                     $"regionId '{regionId}' not in cache. Re-run the detector that produced it (mesh_inspect_submeshes / mesh_detect_planes / mesh_detect_sharp_edges).");
@@ -52,11 +54,16 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 return ToolResult.Error("BAD_REGION_KIND",
                     "sample_points_on_region works on surface regions (submesh / plane / smooth). Edge chains and parallel groups have no usable area; use their vertex / child-chain data directly.");
 
-            if (!MeshResolver.TryGetMeshAndTransforms(region.OwnerInstanceId, out _, out var mesh, out var ltw))
-                return ToolResult.Error("NOT_FOUND",
-                    $"GameObject for regionId '{regionId}' is no longer in the scene (instanceId={region.OwnerInstanceId}).");
+            var ownerGo = MeshAnalysisCache.ResolveOwner(owner, out var ownerError);
+            if (ownerGo == null)
+                return ToolResult.Error("NOT_FOUND", ownerError);
+            var mesh = MeshResolver.ResolveMesh(ownerGo);
+            var ltw = ownerGo.transform.localToWorldMatrix;
+            if (mesh == null) return ToolResult.Error("NOT_FOUND", "analysis owner no longer has a mesh");
             if (!MeshResolver.IsReadable(mesh, out var notReadable))
                 return ToolResult.Error("MESH_NOT_READABLE", notReadable);
+            if (!MeshResolver.HasTriangleTopology(mesh, out var topologyError))
+                return ToolResult.Error("UNSUPPORTED_TOPOLOGY", topologyError);
 
             var p = new RegionSampler.Params
             {

@@ -60,6 +60,37 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             ["assetPath"] = target != null ? AssetDatabase.GetAssetPath(target) : null,
         };
 
+        public static JObject OutputSchema(JObject properties, params string[] required) => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = properties ?? new JObject(),
+            ["required"] = new JArray(required ?? Array.Empty<string>()),
+            ["additionalProperties"] = true,
+        };
+
+        public static bool TryUiSourcePath(string path, out string normalized, out string absolute, out string error)
+        {
+            absolute = null;
+            if (!TryAssetPath(path, null, out normalized, out error)
+                || (!normalized.EndsWith(".uxml", StringComparison.OrdinalIgnoreCase)
+                    && !normalized.EndsWith(".uss", StringComparison.OrdinalIgnoreCase)))
+            {
+                error = error ?? "assetPath must be .uxml or .uss";
+                return false;
+            }
+
+            absolute = Path.GetFullPath(Path.Combine(Bootstrap.UnityProjectRoot, normalized));
+            var assetsRoot = Path.GetFullPath(Path.Combine(Bootstrap.UnityProjectRoot, "Assets"))
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!absolute.StartsWith(assetsRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "assetPath must stay under Assets/";
+                absolute = null;
+                return false;
+            }
+            return true;
+        }
+
         public static bool TryAssetPath(string path, string extension, out string normalized, out string error)
         {
             normalized = (path ?? string.Empty).Replace('\\', '/').Trim();
@@ -78,20 +109,32 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             return true;
         }
 
-        public static void EnsureFolder(string assetPath)
+        public static void EnsureFolder(string assetPath, List<string> createdFolders = null)
         {
             var folder = Path.GetDirectoryName(assetPath)?.Replace('\\', '/');
-            EnsureFolderPath(folder);
+            EnsureFolderPath(folder, createdFolders);
         }
 
-        private static void EnsureFolderPath(string folder)
+        private static void EnsureFolderPath(string folder, List<string> createdFolders)
         {
             if (string.IsNullOrEmpty(folder) || folder == "Assets" || AssetDatabase.IsValidFolder(folder)) return;
+            if (AssetDatabase.AssetPathExists(folder))
+                throw new InvalidOperationException($"cannot create folder because an asset already exists at '{folder}'");
             var parent = Path.GetDirectoryName(folder)?.Replace('\\', '/') ?? "Assets";
-            EnsureFolderPath(parent);
+            EnsureFolderPath(parent, createdFolders);
             var guid = AssetDatabase.CreateFolder(parent, Path.GetFileName(folder));
             if (string.IsNullOrEmpty(guid) && !AssetDatabase.IsValidFolder(folder))
                 throw new InvalidOperationException($"could not create folder '{folder}'");
+            createdFolders?.Add(folder);
+        }
+
+        public static void CleanupEmptyFolders(List<string> createdFolders)
+        {
+            if (createdFolders == null) return;
+            for (var index = createdFolders.Count - 1; index >= 0; index--)
+                if (AssetDatabase.IsValidFolder(createdFolders[index])
+                    && AssetDatabase.FindAssets(string.Empty, new[] { createdFolders[index] }).Length == 0)
+                    AssetDatabase.DeleteAsset(createdFolders[index]);
         }
 
         public static JObject Vec3(Vector3 value) => new JObject { ["x"] = value.x, ["y"] = value.y, ["z"] = value.z };
@@ -129,6 +172,30 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
                 && TryFiniteNumber(obj["y"], out y))
             {
                 value = new Vector2(x, y);
+                return true;
+            }
+            return false;
+        }
+
+        public static bool TryFiniteVector3(JToken token, out Vector3 value)
+        {
+            value = Vector3.zero;
+            if (token is JArray array && array.Count == 3
+                && TryFiniteNumber(array[0], out var x)
+                && TryFiniteNumber(array[1], out var y)
+                && TryFiniteNumber(array[2], out var z))
+            {
+                value = new Vector3(x, y, z);
+                return true;
+            }
+            if (token is JObject obj
+                && obj.Count == 3
+                && obj["x"] != null && obj["y"] != null && obj["z"] != null
+                && TryFiniteNumber(obj["x"], out x)
+                && TryFiniteNumber(obj["y"], out y)
+                && TryFiniteNumber(obj["z"], out z))
+            {
+                value = new Vector3(x, y, z);
                 return true;
             }
             return false;
@@ -1054,25 +1121,60 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             ["type"] = "object", ["properties"] = new JObject
             {
                 ["folder"] = new JObject { ["type"] = "string", ["default"] = "Assets" },
+                ["offset"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["default"] = 0 },
                 ["limit"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 5000, ["default"] = 500 },
             }, ["additionalProperties"] = false,
         };
         public bool IsWrite => false;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["sprites"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            ["total"] = new JObject { ["type"] = "integer" },
+            ["offset"] = new JObject { ["type"] = "integer" },
+            ["limit"] = new JObject { ["type"] = "integer" },
+            ["truncated"] = new JObject { ["type"] = "boolean" },
+        }, "sprites", "total", "offset", "limit", "truncated");
         public ToolResult Execute(JObject args)
         {
-            var folder = (string)args["folder"] ?? "Assets";
-            var sprites = AssetDatabase.FindAssets("t:Sprite", new[] { folder }).SelectMany(guid =>
-                AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GUIDToAssetPath(guid)).OfType<Sprite>())
-                .Distinct().Take((int?)args["limit"] ?? 500).ToArray();
-            return ToolResult.Ok($"{sprites.Length} sprite(s)", new JObject
-            {
-                ["sprites"] = new JArray(sprites.Select(sprite => new JObject
+            var folder = ((string)args["folder"] ?? "Assets").Replace('\\', '/').Trim().TrimEnd('/');
+            if (string.IsNullOrEmpty(folder)) folder = "Assets";
+            if (!(string.Equals(folder, "Assets", StringComparison.OrdinalIgnoreCase)
+                || folder.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                || !AssetDatabase.IsValidFolder(folder))
+                return ToolResult.Error("FOLDER_NOT_FOUND", folder);
+
+            var offset = (int?)args["offset"] ?? 0;
+            var limit = (int?)args["limit"] ?? 500;
+            if (offset < 0 || limit < 1 || limit > 5000)
+                return ToolResult.Error("BAD_PAGINATION", "offset must be non-negative and limit must be between 1 and 5000");
+            var sprites = AssetDatabase.FindAssets("t:Sprite", new[] { folder })
+                .Select(AssetDatabase.GUIDToAssetPath)
+                .Distinct(StringComparer.Ordinal)
+                .SelectMany(path => AssetDatabase.LoadAllAssetsAtPath(path).OfType<Sprite>().Select(sprite =>
                 {
-                    ["sprite"] = SystemToolSupport.ObjectJson(sprite), ["rect"] = new JObject
-                    { ["x"] = sprite.rect.x, ["y"] = sprite.rect.y, ["width"] = sprite.rect.width, ["height"] = sprite.rect.height },
-                    ["pivot"] = SystemToolSupport.Vec2(sprite.pivot), ["pixelsPerUnit"] = sprite.pixelsPerUnit,
-                    ["border"] = new JArray(sprite.border.x, sprite.border.y, sprite.border.z, sprite.border.w),
+                    AssetDatabase.TryGetGUIDAndLocalFileIdentifier(sprite, out _, out long localFileId);
+                    return new { Sprite = sprite, Path = path, LocalFileId = localFileId };
+                }))
+                .OrderBy(entry => entry.Path, StringComparer.Ordinal)
+                .ThenBy(entry => entry.LocalFileId)
+                .ToArray();
+            var page = sprites.Skip(offset).Take(limit).ToArray();
+            return ToolResult.Ok($"{page.Length} of {sprites.Length} sprite(s)", new JObject
+            {
+                ["sprites"] = new JArray(page.Select(entry => new JObject
+                {
+                    ["sprite"] = SystemToolSupport.ObjectJson(entry.Sprite),
+                    ["sourceTexturePath"] = entry.Path,
+                    ["localFileId"] = entry.LocalFileId,
+                    ["rect"] = new JObject
+                    { ["x"] = entry.Sprite.rect.x, ["y"] = entry.Sprite.rect.y, ["width"] = entry.Sprite.rect.width, ["height"] = entry.Sprite.rect.height },
+                    ["pivot"] = SystemToolSupport.Vec2(entry.Sprite.pivot), ["pixelsPerUnit"] = entry.Sprite.pixelsPerUnit,
+                    ["border"] = new JArray(entry.Sprite.border.x, entry.Sprite.border.y, entry.Sprite.border.z, entry.Sprite.border.w),
                 })),
+                ["total"] = sprites.Length,
+                ["offset"] = offset,
+                ["limit"] = limit,
+                ["truncated"] = offset + page.Length < sprites.Length,
             });
         }
     }
@@ -1090,28 +1192,51 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             }, ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["grid"] = new JObject { ["type"] = "object" },
+            ["tilemap"] = new JObject { ["type"] = "object" },
+        }, "grid", "tilemap");
         public ToolResult Execute(JObject args)
         {
-            var parent = args["parentInstanceId"] != null ? EditorUtility.InstanceIDToObject((int)args["parentInstanceId"]) as GameObject : null;
-            var gridObject = new GameObject(((string)args["name"] ?? "Tilemap") + " Grid", typeof(Grid));
-            var tilemapObject = new GameObject((string)args["name"] ?? "Tilemap", typeof(Tilemap), typeof(TilemapRenderer));
-            using (var mutation = new MutationScope("Create Tilemap"))
+            GameObject parent = null;
+            if (args["parentInstanceId"] != null)
             {
-                mutation.RegisterCreated(gridObject);
-                mutation.RegisterCreated(tilemapObject);
-                mutation.SetParent(tilemapObject.transform, gridObject.transform);
-                if (parent != null)
-                {
-                    SceneManager.MoveGameObjectToScene(gridObject, parent.scene);
-                    mutation.SetParent(gridObject.transform, parent.transform);
-                }
-                mutation.Complete();
+                parent = EditorUtility.EntityIdToObject((EntityId)(int)args["parentInstanceId"]) as GameObject;
+                if (parent == null) return ToolResult.Error("PARENT_NOT_FOUND", "parentInstanceId must reference a GameObject");
             }
-            return ToolResult.Ok("created Tilemap", new JObject
+
+            GameObject gridObject = null;
+            GameObject tilemapObject = null;
+            try
             {
-                ["grid"] = ToolTargetRef.Capture(gridObject)?.ToJson(),
-                ["tilemap"] = ToolTargetRef.Capture(tilemapObject.GetComponent<Tilemap>())?.ToJson(),
-            });
+                using (var mutation = new MutationScope("Create Tilemap"))
+                {
+                    var name = (string)args["name"] ?? "Tilemap";
+                    gridObject = new GameObject(name + " Grid", typeof(Grid));
+                    mutation.RegisterCreated(gridObject);
+                    tilemapObject = new GameObject(name, typeof(Tilemap), typeof(TilemapRenderer));
+                    mutation.RegisterCreated(tilemapObject);
+                    mutation.SetParent(tilemapObject.transform, gridObject.transform);
+                    if (parent != null)
+                    {
+                        SceneManager.MoveGameObjectToScene(gridObject, parent.scene);
+                        mutation.SetParent(gridObject.transform, parent.transform);
+                    }
+                    mutation.Complete();
+                }
+                return ToolResult.Ok("created Tilemap", new JObject
+                {
+                    ["grid"] = ToolTargetRef.Capture(gridObject)?.ToJson(),
+                    ["tilemap"] = ToolTargetRef.Capture(tilemapObject.GetComponent<Tilemap>())?.ToJson(),
+                });
+            }
+            catch (Exception exception)
+            {
+                if (tilemapObject != null) UnityEngine.Object.DestroyImmediate(tilemapObject);
+                if (gridObject != null) UnityEngine.Object.DestroyImmediate(gridObject);
+                return ToolResult.Error("CREATE_TILEMAP_FAILED", exception.Message);
+            }
         }
     }
 
@@ -1135,6 +1260,11 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             },
         }, "cells");
         public bool IsWrite => true;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["target"] = new JObject { ["type"] = "object" },
+            ["updatedCells"] = new JObject { ["type"] = "integer" },
+        }, "target", "updatedCells");
         public ToolResult Execute(JObject args)
         {
             var gameObject = SystemToolSupport.GameObject(args, out var error);
@@ -1155,13 +1285,24 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
                 positions.Add(new Vector3Int((int)cell["x"], (int)cell["y"], (int?)cell["z"] ?? 0));
                 tiles.Add(tile);
             }
-            using (var mutation = new MutationScope("Set Tilemap Cells"))
+            try
             {
-                mutation.Record(tilemap);
-                for (int index = 0; index < positions.Count; index++) tilemap.SetTile(positions[index], tiles[index]);
-                mutation.Complete();
+                using (var mutation = new MutationScope("Set Tilemap Cells"))
+                {
+                    mutation.Record(tilemap);
+                    tilemap.SetTiles(positions.ToArray(), tiles.ToArray());
+                    mutation.Complete();
+                }
+                return ToolResult.Ok($"updated {positions.Count} cell(s)", new JObject
+                {
+                    ["target"] = ToolTargetRef.Capture(tilemap)?.ToJson(),
+                    ["updatedCells"] = positions.Count,
+                });
             }
-            return ToolResult.Ok($"updated {positions.Count} cell(s)", new JObject { ["target"] = ToolTargetRef.Capture(tilemap)?.ToJson() });
+            catch (Exception exception)
+            {
+                return ToolResult.Error("SET_TILEMAP_CELLS_FAILED", exception.Message);
+            }
         }
     }
 
@@ -1171,6 +1312,19 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         public string Description => "Reads Terrain and TerrainData dimensions, resolution, layers, trees and detail metadata.";
         public JObject InputSchema => SystemToolSupport.TargetSchema();
         public bool IsWrite => false;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["target"] = new JObject { ["type"] = "object" },
+            ["terrainData"] = new JObject { ["type"] = "object" },
+            ["size"] = new JObject { ["type"] = "object" },
+            ["heightmapResolution"] = new JObject { ["type"] = "integer" },
+            ["alphamapResolution"] = new JObject { ["type"] = "integer" },
+            ["detailResolution"] = new JObject { ["type"] = "integer" },
+            ["terrainLayers"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            ["treePrototypeCount"] = new JObject { ["type"] = "integer" },
+            ["treeInstanceCount"] = new JObject { ["type"] = "integer" },
+            ["detailPrototypeCount"] = new JObject { ["type"] = "integer" },
+        }, "target", "terrainData", "size", "heightmapResolution", "alphamapResolution", "detailResolution", "terrainLayers", "treePrototypeCount", "treeInstanceCount", "detailPrototypeCount");
         public ToolResult Execute(JObject args)
         {
             var gameObject = SystemToolSupport.GameObject(args, out var error);
@@ -1200,33 +1354,51 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             {
                 ["name"] = new JObject { ["type"] = "string", ["default"] = "Terrain" },
                 ["terrainDataPath"] = new JObject { ["type"] = "string" },
-                ["size"] = SchemaHelpers.Vec3Schema,
+                ["size"] = SchemaHelpers.StrictVec3Schema,
                 ["heightmapResolution"] = new JObject { ["type"] = "integer", ["minimum"] = 33, ["maximum"] = 4097, ["default"] = 513 },
             }, ["required"] = new JArray { "terrainDataPath" }, ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["target"] = new JObject { ["type"] = "object" },
+            ["terrainData"] = new JObject { ["type"] = "object" },
+            ["savedAssets"] = new JObject { ["type"] = "boolean" },
+        }, "target", "terrainData", "savedAssets");
         public ToolResult Execute(JObject args)
         {
             if (!SystemToolSupport.TryAssetPath((string)args["terrainDataPath"], ".asset", out var path, out var error)) return ToolResult.Error("BAD_ARGS", error);
-            if (AssetDatabase.LoadMainAssetAtPath(path) != null) return ToolResult.Error("ASSET_EXISTS", path);
+            if (AssetDatabase.AssetPathExists(path)) return ToolResult.Error("ASSET_EXISTS", path);
             var resolution = (int?)args["heightmapResolution"] ?? 513;
-            if ((resolution - 1 & resolution - 2) != 0) return ToolResult.Error("BAD_RESOLUTION", "heightmapResolution must be 2^n + 1");
-            var data = new TerrainData
-            {
-                name = Path.GetFileNameWithoutExtension(path),
-                heightmapResolution = resolution,
-                size = JsonHelpers.ParseVector3(args["size"], new Vector3(1000f, 600f, 1000f)),
-            };
+            var resolutionBase = resolution - 1;
+            if (resolution < 33 || resolution > 4097 || (resolutionBase & (resolutionBase - 1)) != 0)
+                return ToolResult.Error("BAD_RESOLUTION", "heightmapResolution must be 2^n + 1 between 33 and 4097");
+            var size = new Vector3(1000f, 600f, 1000f);
+            if (args["size"] != null
+                && (!SystemToolSupport.TryFiniteVector3(args["size"], out size) || size.x <= 0 || size.y <= 0 || size.z <= 0))
+                return ToolResult.Error("BAD_SIZE", "size must contain three finite positive values");
+
+            var createdFolders = new List<string>();
+            TerrainData data = null;
+            GameObject gameObject = null;
             try
             {
-                SystemToolSupport.EnsureFolder(path);
+                SystemToolSupport.EnsureFolder(path, createdFolders);
+                data = new TerrainData
+                {
+                    name = Path.GetFileNameWithoutExtension(path),
+                    heightmapResolution = resolution,
+                    size = size,
+                };
                 AssetDatabase.CreateAsset(data, path);
-                Undo.RegisterCreatedObjectUndo(data, "Create TerrainData");
-                var gameObject = Terrain.CreateTerrainGameObject(data);
-                gameObject.name = (string)args["name"] ?? "Terrain";
-                Undo.RegisterCreatedObjectUndo(gameObject, "Create Terrain");
-                EditorUtility.SetDirty(data);
-                EditorSceneManager.MarkSceneDirty(gameObject.scene);
+                using (var mutation = new MutationScope("Create Terrain"))
+                {
+                    gameObject = Terrain.CreateTerrainGameObject(data);
+                    gameObject.name = (string)args["name"] ?? "Terrain";
+                    mutation.RegisterCreated(gameObject, "Create Terrain");
+                    mutation.Touch(data);
+                    mutation.Complete();
+                }
                 return ToolResult.Ok("created Terrain", new JObject
                 {
                     ["target"] = ToolTargetRef.Capture(gameObject)?.ToJson(), ["terrainData"] = SystemToolSupport.ObjectJson(data), ["savedAssets"] = false,
@@ -1234,7 +1406,10 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             }
             catch (Exception exception)
             {
-                if (AssetDatabase.LoadMainAssetAtPath(path) != null) AssetDatabase.DeleteAsset(path);
+                if (gameObject != null) UnityEngine.Object.DestroyImmediate(gameObject);
+                if (AssetDatabase.AssetPathExists(path)) AssetDatabase.DeleteAsset(path);
+                else if (data != null) UnityEngine.Object.DestroyImmediate(data);
+                SystemToolSupport.CleanupEmptyFolders(createdFolders);
                 return ToolResult.Error("CREATE_TERRAIN_FAILED", exception.Message);
             }
         }
@@ -1255,25 +1430,63 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             },
         }, "heights");
         public bool IsWrite => true;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["terrainData"] = new JObject { ["type"] = "object" },
+            ["xBase"] = new JObject { ["type"] = "integer" },
+            ["yBase"] = new JObject { ["type"] = "integer" },
+            ["width"] = new JObject { ["type"] = "integer" },
+            ["height"] = new JObject { ["type"] = "integer" },
+            ["savedAssets"] = new JObject { ["type"] = "boolean" },
+        }, "terrainData", "xBase", "yBase", "width", "height", "savedAssets");
         public ToolResult Execute(JObject args)
         {
             var gameObject = SystemToolSupport.GameObject(args, out var error);
             if (gameObject == null) return error;
             var terrain = gameObject.GetComponent<Terrain>();
             if (terrain == null || terrain.terrainData == null) return ToolResult.Error("TERRAIN_NOT_FOUND", gameObject.name);
-            var rows = (JArray)args["heights"];
+            if (!(args["heights"] is JArray rows) || rows.Count == 0 || !(rows[0] is JArray firstRow) || firstRow.Count == 0)
+                return ToolResult.Error("BAD_HEIGHTS", "heights must be a non-empty rectangular array");
             int height = rows.Count;
-            int width = ((JArray)rows[0]).Count;
-            if (rows.Any(row => !(row is JArray array) || array.Count != width)) return ToolResult.Error("BAD_HEIGHTS", "all rows must have equal width");
-            int xBase = (int?)args["xBase"] ?? 0, yBase = (int?)args["yBase"] ?? 0;
-            if (xBase + width > terrain.terrainData.heightmapResolution || yBase + height > terrain.terrainData.heightmapResolution)
-                return ToolResult.Error("HEIGHT_PATCH_OUT_OF_RANGE", "height patch exceeds heightmapResolution");
+            int width = firstRow.Count;
+            if (height > 512 || width > 512 || rows.Any(row => !(row is JArray array) || array.Count != width))
+                return ToolResult.Error("BAD_HEIGHTS", "heights must be rectangular and at most 512x512");
             var values = new float[height, width];
-            for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) values[y, x] = (float)rows[y][x];
-            Undo.RecordObject(terrain.terrainData, "Set Terrain Heights");
-            terrain.terrainData.SetHeights(xBase, yBase, values);
-            EditorUtility.SetDirty(terrain.terrainData);
-            return ToolResult.Ok($"updated {width}x{height} heights", new JObject { ["terrainData"] = SystemToolSupport.ObjectJson(terrain.terrainData), ["savedAssets"] = false });
+            for (int y = 0; y < height; y++)
+            {
+                var row = (JArray)rows[y];
+                for (int x = 0; x < width; x++)
+                {
+                    if (!SystemToolSupport.TryFiniteNumber(row[x], out var value) || value < 0 || value > 1)
+                        return ToolResult.Error("BAD_HEIGHTS", $"height[{y},{x}] must be finite and between 0 and 1");
+                    values[y, x] = value;
+                }
+            }
+            int xBase = (int?)args["xBase"] ?? 0, yBase = (int?)args["yBase"] ?? 0;
+            var resolution = terrain.terrainData.heightmapResolution;
+            if (xBase < 0 || yBase < 0 || width > resolution || height > resolution
+                || xBase > resolution - width || yBase > resolution - height)
+                return ToolResult.Error("HEIGHT_PATCH_OUT_OF_RANGE", "height patch exceeds heightmapResolution");
+            try
+            {
+                using (var mutation = new MutationScope("Set Terrain Heights"))
+                {
+                    Undo.RegisterCompleteObjectUndo(terrain.terrainData, "Set Terrain Heights");
+                    terrain.terrainData.SetHeights(xBase, yBase, values);
+                    mutation.Touch(terrain.terrainData);
+                    mutation.Complete();
+                }
+                return ToolResult.Ok($"updated {width}x{height} heights", new JObject
+                {
+                    ["terrainData"] = SystemToolSupport.ObjectJson(terrain.terrainData),
+                    ["xBase"] = xBase, ["yBase"] = yBase, ["width"] = width, ["height"] = height,
+                    ["savedAssets"] = false,
+                });
+            }
+            catch (Exception exception)
+            {
+                return ToolResult.Error("SET_TERRAIN_HEIGHTS_FAILED", exception.Message);
+            }
         }
     }
 
@@ -1283,6 +1496,10 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         public string Description => "Lists loaded UI Toolkit UIDocument components and their VisualTreeAsset/PanelSettings bindings.";
         public JObject InputSchema => SystemToolSupport.EmptySchema();
         public bool IsWrite => false;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["documents"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+        }, "documents");
         public ToolResult Execute(JObject args)
         {
             var documents = UnityEngine.Object.FindObjectsByType<UIDocument>(FindObjectsInactive.Include, FindObjectsSortMode.None);
@@ -1313,20 +1530,49 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             }, ["required"] = new JArray { "assetPath" }, ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["panelSettings"] = new JObject { ["type"] = "object" },
+            ["savedAssets"] = new JObject { ["type"] = "boolean" },
+        }, "panelSettings", "savedAssets");
         public ToolResult Execute(JObject args)
         {
-            if (!SystemToolSupport.TryAssetPath((string)args["assetPath"], ".asset", out var path, out var error)) return ToolResult.Error("BAD_ARGS", error);
-            if (AssetDatabase.LoadMainAssetAtPath(path) != null) return ToolResult.Error("ASSET_EXISTS", path);
-            SystemToolSupport.EnsureFolder(path);
-            var settings = ScriptableObject.CreateInstance<PanelSettings>();
-            settings.name = Path.GetFileNameWithoutExtension(path);
-            settings.scaleMode = (PanelScaleMode)Enum.Parse(typeof(PanelScaleMode), (string)args["scaleMode"] ?? "ScaleWithScreenSize", true);
-            settings.referenceResolution = new Vector2Int(Mathf.RoundToInt((float?)args["referenceWidth"] ?? 1920), Mathf.RoundToInt((float?)args["referenceHeight"] ?? 1080));
-            settings.match = (float?)args["match"] ?? 0.5f;
-            AssetDatabase.CreateAsset(settings, path);
-            Undo.RegisterCreatedObjectUndo(settings, "Create PanelSettings");
-            EditorUtility.SetDirty(settings);
-            return ToolResult.Ok($"created PanelSettings '{path}'", new JObject { ["panelSettings"] = SystemToolSupport.ObjectJson(settings), ["savedAssets"] = false });
+            if (!SystemToolSupport.TryAssetPath((string)args["assetPath"], ".asset", out var path, out var error))
+                return ToolResult.Error("BAD_ARGS", error);
+            if (AssetDatabase.AssetPathExists(path)) return ToolResult.Error("ASSET_EXISTS", path);
+            if (!Enum.TryParse((string)args["scaleMode"] ?? "ScaleWithScreenSize", true, out PanelScaleMode scaleMode))
+                return ToolResult.Error("BAD_SCALE_MODE", (string)args["scaleMode"]);
+            if (!SystemToolSupport.TryFiniteNumber(args["referenceWidth"] ?? 1920, out var width) || width < 1
+                || !SystemToolSupport.TryFiniteNumber(args["referenceHeight"] ?? 1080, out var height) || height < 1
+                || !SystemToolSupport.TryFiniteNumber(args["match"] ?? 0.5f, out var match) || match < 0 || match > 1)
+                return ToolResult.Error("BAD_ARGS", "reference dimensions and match must be finite and within the advertised ranges");
+
+            var createdFolders = new List<string>();
+            PanelSettings settings = null;
+            try
+            {
+                SystemToolSupport.EnsureFolder(path, createdFolders);
+                settings = ScriptableObject.CreateInstance<PanelSettings>();
+                settings.name = Path.GetFileNameWithoutExtension(path);
+                settings.scaleMode = scaleMode;
+                settings.referenceResolution = new Vector2Int(Mathf.RoundToInt(width), Mathf.RoundToInt(height));
+                settings.match = match;
+                AssetDatabase.CreateAsset(settings, path);
+                Undo.RegisterCreatedObjectUndo(settings, "Create PanelSettings");
+                EditorUtility.SetDirty(settings);
+                return ToolResult.Ok($"created PanelSettings '{path}'", new JObject
+                {
+                    ["panelSettings"] = SystemToolSupport.ObjectJson(settings),
+                    ["savedAssets"] = false,
+                });
+            }
+            catch (Exception exception)
+            {
+                if (AssetDatabase.AssetPathExists(path)) AssetDatabase.DeleteAsset(path);
+                else if (settings != null) UnityEngine.Object.DestroyImmediate(settings);
+                SystemToolSupport.CleanupEmptyFolders(createdFolders);
+                return ToolResult.Error("CREATE_PANEL_SETTINGS_FAILED", exception.Message);
+            }
         }
     }
 
@@ -1346,24 +1592,58 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             }, ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["target"] = new JObject { ["type"] = "object" },
+        }, "target");
         public ToolResult Execute(JObject args)
         {
-            var parent = args["parentInstanceId"] != null ? EditorUtility.InstanceIDToObject((int)args["parentInstanceId"]) as GameObject : null;
-            var gameObject = new GameObject((string)args["name"] ?? "UI Document");
-            var document = gameObject.AddComponent<UIDocument>();
-            document.visualTreeAsset = args["uxmlPath"] != null ? AssetDatabase.LoadAssetAtPath<VisualTreeAsset>((string)args["uxmlPath"]) : null;
-            document.panelSettings = args["panelSettingsPath"] != null ? AssetDatabase.LoadAssetAtPath<PanelSettings>((string)args["panelSettingsPath"]) : null;
-            document.sortingOrder = (float?)args["sortingOrder"] ?? 0f;
-            if (args["uxmlPath"] != null && document.visualTreeAsset == null) { UnityEngine.Object.DestroyImmediate(gameObject); return ToolResult.Error("UXML_NOT_FOUND", (string)args["uxmlPath"]); }
-            if (args["panelSettingsPath"] != null && document.panelSettings == null) { UnityEngine.Object.DestroyImmediate(gameObject); return ToolResult.Error("PANEL_SETTINGS_NOT_FOUND", (string)args["panelSettingsPath"]); }
-            using (var mutation = new MutationScope("Create UIDocument"))
+            GameObject parent = null;
+            if (args["parentInstanceId"] != null)
             {
-                mutation.RegisterCreated(gameObject);
-                if (parent != null) { SceneManager.MoveGameObjectToScene(gameObject, parent.scene); mutation.SetParent(gameObject.transform, parent.transform); }
-                mutation.Touch(document);
-                mutation.Complete();
+                parent = EditorUtility.EntityIdToObject((EntityId)(int)args["parentInstanceId"]) as GameObject;
+                if (parent == null) return ToolResult.Error("PARENT_NOT_FOUND", "parentInstanceId must reference a GameObject");
             }
-            return ToolResult.Ok("created UIDocument", new JObject { ["target"] = ToolTargetRef.Capture(document)?.ToJson() });
+            var visualTree = args["uxmlPath"] != null
+                ? AssetDatabase.LoadAssetAtPath<VisualTreeAsset>((string)args["uxmlPath"])
+                : null;
+            if (args["uxmlPath"] != null && visualTree == null)
+                return ToolResult.Error("UXML_NOT_FOUND", (string)args["uxmlPath"]);
+            var panelSettings = args["panelSettingsPath"] != null
+                ? AssetDatabase.LoadAssetAtPath<PanelSettings>((string)args["panelSettingsPath"])
+                : null;
+            if (args["panelSettingsPath"] != null && panelSettings == null)
+                return ToolResult.Error("PANEL_SETTINGS_NOT_FOUND", (string)args["panelSettingsPath"]);
+            if (!SystemToolSupport.TryFiniteNumber(args["sortingOrder"] ?? 0f, out var sortingOrder))
+                return ToolResult.Error("BAD_SORTING_ORDER", "sortingOrder must be finite");
+
+            GameObject gameObject = null;
+            try
+            {
+                gameObject = new GameObject((string)args["name"] ?? "UI Document");
+                UIDocument document;
+                using (var mutation = new MutationScope("Create UIDocument"))
+                {
+                    mutation.RegisterCreated(gameObject);
+                    document = mutation.AddComponent<UIDocument>(gameObject);
+                    document.visualTreeAsset = visualTree;
+                    document.panelSettings = panelSettings;
+                    document.sortingOrder = sortingOrder;
+                    if (parent != null)
+                    {
+                        SceneManager.MoveGameObjectToScene(gameObject, parent.scene);
+                        mutation.SetParent(gameObject.transform, parent.transform);
+                    }
+                    mutation.Touch(document);
+                    mutation.Complete();
+                }
+                return ToolResult.Ok("created UIDocument", new JObject { ["target"] = ToolTargetRef.Capture(document)?.ToJson() });
+            }
+            catch (Exception exception)
+            {
+                if (gameObject != null) UnityEngine.Object.DestroyImmediate(gameObject);
+                return ToolResult.Error("CREATE_UI_DOCUMENT_FAILED", exception.Message);
+            }
         }
     }
 
@@ -1380,21 +1660,34 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             }, ["required"] = new JArray { "assetPath" }, ["additionalProperties"] = false,
         };
         public bool IsWrite => false;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["assetPath"] = new JObject { ["type"] = "string" },
+            ["content"] = new JObject { ["type"] = "string" },
+            ["totalCharacters"] = new JObject { ["type"] = "integer" },
+            ["truncated"] = new JObject { ["type"] = "boolean" },
+        }, "assetPath", "content", "totalCharacters", "truncated");
         public ToolResult Execute(JObject args)
         {
-            var path = (string)args["assetPath"];
-            if (!SystemToolSupport.TryAssetPath(path, null, out path, out var error)
-                || (!path.EndsWith(".uxml", StringComparison.OrdinalIgnoreCase) && !path.EndsWith(".uss", StringComparison.OrdinalIgnoreCase)))
-                return ToolResult.Error("BAD_ARGS", error ?? "assetPath must be .uxml or .uss");
-            var absolute = Path.GetFullPath(Path.Combine(Bootstrap.UnityProjectRoot, path));
+            if (!SystemToolSupport.TryUiSourcePath((string)args["assetPath"], out var path, out var absolute, out var error))
+                return ToolResult.Error("BAD_ARGS", error);
             if (!File.Exists(absolute)) return ToolResult.Error("UI_ASSET_NOT_FOUND", path);
-            var text = File.ReadAllText(absolute);
-            int max = (int?)args["maxCharacters"] ?? 100000;
-            return ToolResult.Ok($"read '{path}'", new JObject
+            try
             {
-                ["assetPath"] = path, ["content"] = text.Length > max ? text.Substring(0, max) : text,
-                ["totalCharacters"] = text.Length, ["truncated"] = text.Length > max,
-            });
+                var text = File.ReadAllText(absolute);
+                int max = (int?)args["maxCharacters"] ?? 100000;
+                return ToolResult.Ok($"read '{path}'", new JObject
+                {
+                    ["assetPath"] = path,
+                    ["content"] = text.Length > max ? text.Substring(0, max) : text,
+                    ["totalCharacters"] = text.Length,
+                    ["truncated"] = text.Length > max,
+                });
+            }
+            catch (Exception exception)
+            {
+                return ToolResult.Error("UI_ASSET_READ_FAILED", exception.Message);
+            }
         }
     }
 
@@ -1411,22 +1704,75 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             }, ["required"] = new JArray { "assetPath", "content" }, ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["assetPath"] = new JObject { ["type"] = "string" },
+            ["guid"] = new JObject { ["type"] = "string" },
+            ["asset"] = new JObject { ["type"] = "object" },
+            ["importedWithWarnings"] = new JObject { ["type"] = "boolean" },
+        }, "assetPath", "guid", "asset", "importedWithWarnings");
         public ToolResult Execute(JObject args)
         {
-            var path = (string)args["assetPath"];
-            if (!SystemToolSupport.TryAssetPath(path, null, out path, out var error)
-                || (!path.EndsWith(".uxml", StringComparison.OrdinalIgnoreCase) && !path.EndsWith(".uss", StringComparison.OrdinalIgnoreCase)))
-                return ToolResult.Error("BAD_ARGS", error ?? "assetPath must be .uxml or .uss");
-            var absolute = Path.GetFullPath(Path.Combine(Bootstrap.UnityProjectRoot, path));
-            if (File.Exists(absolute) && !((bool?)args["overwrite"] ?? false)) return ToolResult.Error("ASSET_EXISTS", path);
-            Directory.CreateDirectory(Path.GetDirectoryName(absolute));
-            File.WriteAllText(absolute, (string)args["content"] ?? string.Empty, new System.Text.UTF8Encoding(false));
-            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
-            return ToolResult.Ok($"wrote '{path}'", new JObject
+            if (!SystemToolSupport.TryUiSourcePath((string)args["assetPath"], out var path, out var absolute, out var error))
+                return ToolResult.Error("BAD_ARGS", error);
+            var existed = File.Exists(absolute);
+            if (existed && !((bool?)args["overwrite"] ?? false)) return ToolResult.Error("ASSET_EXISTS", path);
+            byte[] previous = null;
+            var createdFolders = new List<string>();
+            try
             {
-                ["assetPath"] = path, ["guid"] = AssetDatabase.AssetPathToGUID(path),
-                ["asset"] = SystemToolSupport.ObjectJson(AssetDatabase.LoadMainAssetAtPath(path)),
-            });
+                if (existed) previous = File.ReadAllBytes(absolute);
+                SystemToolSupport.EnsureFolder(path, createdFolders);
+                File.WriteAllText(absolute, (string)args["content"] ?? string.Empty, new System.Text.UTF8Encoding(false));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+
+                UnityEngine.Object asset;
+                var importedWithWarnings = false;
+                if (path.EndsWith(".uxml", StringComparison.OrdinalIgnoreCase))
+                {
+                    var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(path);
+                    if (visualTree == null || visualTree.importedWithErrors)
+                        throw new InvalidOperationException("UXML import failed or completed with errors");
+                    importedWithWarnings = visualTree.importedWithWarnings;
+                    asset = visualTree;
+                }
+                else
+                {
+                    asset = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
+                    if (asset == null) throw new InvalidOperationException("USS import failed");
+                }
+
+                return ToolResult.Ok($"wrote '{path}'", new JObject
+                {
+                    ["assetPath"] = path,
+                    ["guid"] = AssetDatabase.AssetPathToGUID(path),
+                    ["asset"] = SystemToolSupport.ObjectJson(asset),
+                    ["importedWithWarnings"] = importedWithWarnings,
+                });
+            }
+            catch (Exception exception)
+            {
+                string rollbackError = null;
+                try
+                {
+                    if (existed)
+                    {
+                        File.WriteAllBytes(absolute, previous);
+                        AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+                    }
+                    else if (!AssetDatabase.DeleteAsset(path))
+                    {
+                        if (File.Exists(absolute)) File.Delete(absolute);
+                        if (File.Exists(absolute + ".meta")) File.Delete(absolute + ".meta");
+                    }
+                }
+                catch (Exception rollbackException) { rollbackError = rollbackException.Message; }
+                SystemToolSupport.CleanupEmptyFolders(createdFolders);
+                var message = rollbackError == null
+                    ? exception.Message
+                    : $"{exception.Message}; rollback failed: {rollbackError}";
+                return ToolResult.Error("UI_ASSET_WRITE_FAILED", message);
+            }
         }
     }
 

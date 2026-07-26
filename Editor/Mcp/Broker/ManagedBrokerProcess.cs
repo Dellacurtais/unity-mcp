@@ -1,0 +1,687 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using PackageInfo = UnityEditor.PackageManager.PackageInfo;
+
+namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
+{
+    public enum ManagedBrokerState
+    {
+        NotInstalled,
+        LocatingPython,
+        Installing,
+        Installed,
+        Starting,
+        Running,
+        Failed,
+    }
+
+    public sealed class ManagedBrokerSnapshot
+    {
+        public ManagedBrokerState State { get; set; }
+        public string Message { get; set; }
+        public string Error { get; set; }
+        public string InstalledVersion { get; set; }
+        public string InstallPath { get; set; }
+        public string PythonPath { get; set; }
+        public string LogPath { get; set; }
+        public int ProcessId { get; set; }
+        public bool IsInstalled { get; set; }
+        public bool IsCurrentVersion { get; set; }
+        public bool IsProcessRunning { get; set; }
+        public bool IsProcessActive { get; set; }
+        public bool IsInstallInProgress { get; set; }
+    }
+
+    public static class ManagedBrokerProcess
+    {
+        internal sealed class PythonCommand
+        {
+            public string FileName;
+            public string PrefixArguments;
+        }
+
+        internal sealed class ProcessProbe
+        {
+            public bool Running;
+            public string Error;
+        }
+
+        private static readonly object OperationLock = new object();
+        private static Task _installLaunchTask;
+        private const int ProbeTimeoutMilliseconds = 5000;
+        private const string ProcessMutexName = "UnityMcp.ManagedBroker.Process.v1";
+
+        public static string RootPath => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "UnityMcp",
+            "Broker");
+
+        public static string InstallLogPath => Path.Combine(RootPath, "logs", "install.log");
+        public static string BrokerLogPath => Path.Combine(RootPath, "logs", "broker.log");
+        public static string DataPath => Path.Combine(RootPath, "data", "broker.sqlite3");
+        internal static string CurrentManifestPath => Path.Combine(RootPath, "current.json");
+        internal static string InstallStatusPath => Path.Combine(RootPath, "runtime", "install-status.json");
+        internal static string ProcessStatePath => Path.Combine(RootPath, "runtime", "broker-process.json");
+
+        public static ManagedBrokerSnapshot Inspect()
+        {
+            return InspectPersistedState(RootPath, SceneAnalyzerVersion.Current, state =>
+            {
+                var running = TryGetOwnedProcess(state, out var process, out var error);
+                process?.Dispose();
+                return new ProcessProbe { Running = running, Error = error };
+            });
+        }
+
+        internal static ManagedBrokerSnapshot InspectPersistedState(
+            string rootPath,
+            string currentVersion,
+            Func<JObject, ProcessProbe> probeProcess)
+        {
+            if (string.IsNullOrWhiteSpace(rootPath)) throw new ArgumentException("Root path is required.", nameof(rootPath));
+            if (probeProcess == null) throw new ArgumentNullException(nameof(probeProcess));
+            var manifest = ReadObject(Path.Combine(rootPath, "current.json"));
+            var installStatus = ReadObject(Path.Combine(rootPath, "runtime", "install-status.json"));
+            var processState = ReadObject(Path.Combine(rootPath, "runtime", "broker-process.json"));
+            var installed = ValidateManifest(manifest, out var manifestError);
+            var probe = probeProcess(processState) ?? new ProcessProbe();
+            var processRunning = probe.Running;
+            var ownershipError = probe.Error;
+
+            var installState = (string)installStatus?["state"];
+            var installing = IsInstallOperationActive(installStatus);
+            var staleInstall = (string.Equals(installState, "locating_python", StringComparison.Ordinal)
+                    || string.Equals(installState, "installing", StringComparison.Ordinal))
+                && !installing;
+            var installFailed = string.Equals(installState, "failed", StringComparison.Ordinal) || staleInstall;
+            var processStatus = (string)processState?["state"];
+            var processReady = processRunning && string.Equals(processStatus, "running", StringComparison.Ordinal);
+            var recentProcessLaunch = string.Equals(processStatus, "starting", StringComparison.Ordinal)
+                && IsRecentState(processState, TimeSpan.FromSeconds(15));
+            var processStarting = string.Equals(processStatus, "starting", StringComparison.Ordinal)
+                && (processRunning || recentProcessLaunch);
+            var processFailed = string.Equals(processStatus, "failed", StringComparison.Ordinal)
+                || string.Equals(processStatus, "starting", StringComparison.Ordinal) && !processStarting;
+
+            var state = ManagedBrokerState.NotInstalled;
+            if (installing) state = string.Equals(installState, "locating_python", StringComparison.Ordinal)
+                ? ManagedBrokerState.LocatingPython
+                : ManagedBrokerState.Installing;
+            else if (processReady) state = ManagedBrokerState.Running;
+            else if (processRunning || processStarting) state = ManagedBrokerState.Starting;
+            else if (processFailed || !string.IsNullOrEmpty(ownershipError) || installFailed && !installed)
+                state = ManagedBrokerState.Failed;
+            else if (installed) state = ManagedBrokerState.Installed;
+
+            var message = (string)installStatus?["message"];
+            if (processReady) message = "Managed broker health endpoint is ready";
+            else if (processRunning) message = "Managed broker process is starting";
+            else if (processFailed) message = "Managed broker process failed";
+            else if (staleInstall) message = "Managed broker installer stopped before completion";
+            else if (installed && !installing) message = "Managed broker is installed";
+            else if (string.IsNullOrEmpty(message)) message = "Managed broker is not installed";
+
+            var error = (string)processState?["error"]
+                ?? ownershipError
+                ?? (string)installStatus?["error"]
+                ?? (staleInstall ? "The installer process is no longer running. Open the install log and retry." : null)
+                ?? manifestError;
+
+            return new ManagedBrokerSnapshot
+            {
+                State = state,
+                Message = message,
+                Error = error,
+                InstalledVersion = (string)manifest?["version"],
+                InstallPath = (string)manifest?["installPath"],
+                PythonPath = (string)manifest?["pythonPath"],
+                LogPath = processRunning ? (string)processState?["logPath"] : (string)installStatus?["logPath"],
+                ProcessId = processRunning ? (int?)processState?["pid"] ?? 0 : 0,
+                IsInstalled = installed,
+                IsCurrentVersion = installed && string.Equals(
+                    (string)manifest["version"], currentVersion, StringComparison.Ordinal),
+                IsProcessRunning = processRunning,
+                IsProcessActive = processRunning || processStarting,
+                IsInstallInProgress = installing,
+            };
+        }
+
+        public static void BeginInstall(bool repair)
+        {
+            string sourcePath = ResolveBrokerSourcePath();
+            string version = SceneAnalyzerVersion.Current;
+            string configuredPython = Settings.BrokerPythonPath;
+            Directory.CreateDirectory(Path.Combine(RootPath, "runtime"));
+            Directory.CreateDirectory(Path.Combine(RootPath, "logs"));
+
+            lock (OperationLock)
+            {
+                if (_installLaunchTask != null && !_installLaunchTask.IsCompleted)
+                    throw new InvalidOperationException("A managed broker installation is already being launched.");
+                WithProcessLock(() =>
+                {
+                    var snapshot = Inspect();
+                    if (snapshot.IsInstallInProgress)
+                        throw new InvalidOperationException("A managed broker installation is already running.");
+                    if (snapshot.IsProcessActive)
+                        throw new InvalidOperationException("Stop the managed broker before installing or repairing it.");
+
+                    WriteInstallLaunchStatus("locating_python", "Locating a compatible Python 3 installation", null);
+                    _installLaunchTask = Task.Run(() =>
+                    {
+                        try
+                        {
+                            var command = DiscoverPython(configuredPython);
+                            LaunchInstaller(command, sourcePath, version, repair);
+                        }
+                        catch (Exception exception)
+                        {
+                            WriteInstallLaunchStatus("failed", "Could not launch the managed broker installer", exception.Message);
+                        }
+                    });
+                });
+            }
+        }
+
+        public static void Start() => WithProcessLock(StartCore);
+
+        private static void StartCore()
+        {
+            if (Inspect().IsInstallInProgress)
+                throw new InvalidOperationException("Wait for the managed broker installation to finish before starting it.");
+            var manifest = ReadObject(CurrentManifestPath);
+            if (!ValidateManifest(manifest, out var error))
+                throw new InvalidOperationException(error ?? "Managed broker is not installed.");
+            if (!string.Equals(
+                (string)manifest["version"],
+                SceneAnalyzerVersion.Current,
+                StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "Managed broker installation does not match this package version. Install or repair it before starting.");
+
+            var existingState = ReadObject(ProcessStatePath);
+            if (TryGetOwnedProcess(existingState, out var existing, out var ownershipError))
+            {
+                existing.Dispose();
+                return;
+            }
+            if (!string.IsNullOrEmpty(ownershipError))
+                throw new InvalidOperationException(ownershipError);
+
+            if (string.IsNullOrEmpty(Settings.Token)) Settings.Token = Settings.GenerateToken();
+            if (!TryParseManagedEndpoint(Settings.BrokerUrl, out var host, out var port, out error))
+                throw new InvalidOperationException(error);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(BrokerLogPath));
+            Directory.CreateDirectory(Path.GetDirectoryName(DataPath));
+            Directory.CreateDirectory(Path.GetDirectoryName(ProcessStatePath));
+
+            var instanceId = Guid.NewGuid().ToString("N");
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = (string)manifest["pythonPath"],
+                Arguments = QuoteArgument((string)manifest["mainPath"]),
+                WorkingDirectory = Path.GetDirectoryName((string)manifest["mainPath"]),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_HOST"] = host;
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_PORT"] = port.ToString();
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_TOKEN"] = Settings.Token;
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_DB"] = DataPath;
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_TIMEOUT"] = Settings.ToolTimeoutSeconds.ToString();
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_RECONNECT_GRACE"] = "45";
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_MAX_REQUEST_BYTES"] = Settings.MaxRequestBodyBytes.ToString();
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_INSTANCE_ID"] = instanceId;
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_STATE"] = ProcessStatePath;
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_LOG"] = BrokerLogPath;
+
+            var initialState = new JObject
+            {
+                ["schemaVersion"] = 1,
+                ["state"] = "starting",
+                ["instanceId"] = instanceId,
+                ["host"] = host,
+                ["port"] = port,
+                ["installPath"] = (string)manifest["installPath"],
+                ["logPath"] = BrokerLogPath,
+                ["startedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
+                ["updatedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
+            };
+            AtomicWriteObject(ProcessStatePath, initialState);
+
+            Process process = null;
+            try
+            {
+                process = Process.Start(startInfo)
+                    ?? throw new InvalidOperationException("Python did not start the managed broker process.");
+                var persisted = ReadObject(ProcessStatePath) ?? initialState;
+                if (!string.Equals((string)persisted["instanceId"], instanceId, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Managed broker process state was replaced during startup.");
+                persisted["pid"] = process.Id;
+                persisted["processStartUtc"] = process.StartTime.ToUniversalTime().ToString("O");
+                persisted["updatedUtc"] = DateTimeOffset.UtcNow.ToString("O");
+                AtomicWriteObject(ProcessStatePath, persisted);
+            }
+            catch (Exception exception)
+            {
+                try
+                {
+                    if (process != null && !process.HasExited) process.Kill();
+                }
+                catch { }
+                var failed = ReadObject(ProcessStatePath) ?? initialState;
+                if (string.Equals((string)failed["instanceId"], instanceId, StringComparison.Ordinal))
+                {
+                    failed["state"] = "failed";
+                    failed["error"] = exception.Message;
+                    failed["updatedUtc"] = DateTimeOffset.UtcNow.ToString("O");
+                    AtomicWriteObject(ProcessStatePath, failed);
+                }
+                throw;
+            }
+            finally
+            {
+                process?.Dispose();
+            }
+        }
+
+        public static void Stop() => WithProcessLock(StopCore);
+
+        private static void StopCore()
+        {
+            var state = ReadObject(ProcessStatePath);
+            if (!TryGetOwnedProcess(state, out var process, out var ownershipError))
+            {
+                if (!string.IsNullOrEmpty(ownershipError))
+                    throw new InvalidOperationException(ownershipError);
+                TryDelete(ProcessStatePath);
+                return;
+            }
+
+            using (process)
+            {
+                try
+                {
+                    process.Kill();
+                    if (!process.WaitForExit(5000))
+                        throw new TimeoutException("Managed broker did not exit within five seconds; its ownership metadata was preserved.");
+                }
+                catch (InvalidOperationException) { }
+            }
+            TryDelete(ProcessStatePath);
+        }
+
+        public static string PreferredLogPath()
+        {
+            var snapshot = Inspect();
+            if (!string.IsNullOrEmpty(snapshot.LogPath) && File.Exists(snapshot.LogPath)) return snapshot.LogPath;
+            if (File.Exists(BrokerLogPath)) return BrokerLogPath;
+            if (File.Exists(InstallLogPath)) return InstallLogPath;
+            return RootPath;
+        }
+
+        internal static bool TryParseManagedEndpoint(string brokerUrl, out string host, out int port, out string error)
+        {
+            host = null;
+            port = 0;
+            error = null;
+            if (!Uri.TryCreate(brokerUrl, UriKind.Absolute, out var uri) || uri.Scheme != "ws")
+            {
+                error = "Managed broker URL must be an absolute ws:// loopback URL.";
+                return false;
+            }
+            if (!uri.IsLoopback)
+            {
+                error = "Managed broker must bind to a loopback host.";
+                return false;
+            }
+            var normalizedHost = uri.Host.Trim('[', ']');
+            if (string.Equals(normalizedHost, "localhost", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedHost, "127.0.0.1", StringComparison.Ordinal))
+                host = "127.0.0.1";
+            else if (string.Equals(normalizedHost, "::1", StringComparison.Ordinal))
+                host = "::1";
+            else
+            {
+                error = "Managed broker URL must use localhost, 127.0.0.1, or ::1.";
+                return false;
+            }
+            if (!string.Equals(uri.AbsolutePath.TrimEnd('/'), "/bridge", StringComparison.Ordinal))
+            {
+                error = "Managed broker URL path must be /bridge.";
+                return false;
+            }
+            if (!string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || !string.IsNullOrEmpty(uri.UserInfo))
+            {
+                error = "Managed broker URL cannot contain credentials, query parameters, or a fragment.";
+                return false;
+            }
+            port = uri.Port;
+            if (port < 1 || port > 65535)
+            {
+                error = "Managed broker port must be between 1 and 65535.";
+                return false;
+            }
+            return true;
+        }
+
+        internal static string QuoteArgument(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "\"\"";
+            if (value.All(character => !char.IsWhiteSpace(character) && character != '"')) return value;
+
+            var builder = new System.Text.StringBuilder(value.Length + 2);
+            builder.Append('\"');
+            var backslashes = 0;
+            foreach (var character in value)
+            {
+                if (character == '\\')
+                {
+                    backslashes++;
+                    continue;
+                }
+                if (character == '\"')
+                {
+                    builder.Append('\\', backslashes * 2 + 1);
+                    builder.Append(character);
+                    backslashes = 0;
+                    continue;
+                }
+                builder.Append('\\', backslashes);
+                backslashes = 0;
+                builder.Append(character);
+            }
+            builder.Append('\\', backslashes * 2);
+            builder.Append('\"');
+            return builder.ToString();
+        }
+
+        private static string ResolveBrokerSourcePath()
+        {
+            var package = PackageInfo.FindForAssembly(typeof(ManagedBrokerProcess).Assembly);
+            var root = package?.resolvedPath;
+            if (string.IsNullOrWhiteSpace(root))
+                throw new InvalidOperationException("Could not resolve the Unity MCP package path.");
+            var source = Path.Combine(root, "Broker~");
+            if (!File.Exists(Path.Combine(source, "installer.py")))
+                throw new InvalidOperationException("Broker installer.py is missing from the package.");
+            return source;
+        }
+
+        private static PythonCommand DiscoverPython(string configuredPython)
+        {
+            var candidates = BuildPythonCandidates(
+                configuredPython,
+                Environment.GetEnvironmentVariable("UNITY_MCP_PYTHON"),
+                Environment.OSVersion.Platform == PlatformID.Win32NT);
+            var failures = new List<string>();
+            foreach (var candidate in candidates)
+            {
+                if (TryProbePython(candidate, out var detail)) return candidate;
+                failures.Add(candidate.FileName + ": " + detail);
+            }
+            throw new InvalidOperationException(
+                "Python 3.10 or newer was not found. Configure a Python executable in the transport window. " +
+                string.Join("; ", failures));
+        }
+
+        internal static IReadOnlyList<PythonCommand> BuildPythonCandidates(
+            string configuredPython,
+            string environmentPython,
+            bool windows)
+        {
+            var candidates = new List<PythonCommand>();
+            AddCandidate(candidates, configuredPython, null);
+            AddCandidate(candidates, environmentPython, null);
+            if (windows) AddCandidate(candidates, "py.exe", "-3");
+            AddCandidate(candidates, "python3", null);
+            AddCandidate(candidates, "python", null);
+            return candidates;
+        }
+
+        private static void AddCandidate(ICollection<PythonCommand> candidates, string fileName, string prefixArguments)
+        {
+            if (string.IsNullOrWhiteSpace(fileName)) return;
+            var normalized = fileName.Trim().Trim('"');
+            if (string.IsNullOrWhiteSpace(normalized)) return;
+            if (candidates.Any(item => string.Equals(item.FileName, normalized, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(item.PrefixArguments, prefixArguments, StringComparison.Ordinal))) return;
+            candidates.Add(new PythonCommand { FileName = normalized, PrefixArguments = prefixArguments });
+        }
+
+        private static bool TryProbePython(PythonCommand command, out string detail)
+        {
+            detail = null;
+            try
+            {
+                var arguments = string.IsNullOrEmpty(command.PrefixArguments)
+                    ? "--version"
+                    : command.PrefixArguments + " --version";
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = command.FileName,
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+                using (var process = Process.Start(startInfo))
+                {
+                    if (process == null) { detail = "process did not start"; return false; }
+                    if (!process.WaitForExit(ProbeTimeoutMilliseconds))
+                    {
+                        try { process.Kill(); } catch { }
+                        detail = "version probe timed out";
+                        return false;
+                    }
+                    var output = (process.StandardOutput.ReadToEnd() + " " + process.StandardError.ReadToEnd()).Trim();
+                    if (process.ExitCode != 0) { detail = output; return false; }
+                    if (!TryParsePythonVersion(output, out var version)
+                        || version.CompareTo(new Version(3, 10)) < 0)
+                    {
+                        detail = string.IsNullOrEmpty(output) ? "unrecognized Python version" : output;
+                        return false;
+                    }
+                    detail = output;
+                    return true;
+                }
+            }
+            catch (Exception exception)
+            {
+                detail = exception.Message;
+                return false;
+            }
+        }
+
+        internal static bool TryParsePythonVersion(string output, out Version version)
+        {
+            version = null;
+            if (string.IsNullOrWhiteSpace(output)) return false;
+            var token = output.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault(item => item.Length > 0 && char.IsDigit(item[0]));
+            if (token == null) return false;
+            var numeric = new string(token.TakeWhile(character => char.IsDigit(character) || character == '.').ToArray());
+            return Version.TryParse(numeric, out version);
+        }
+
+        private static void LaunchInstaller(PythonCommand command, string sourcePath, string version, bool repair)
+        {
+            var installerPath = Path.Combine(sourcePath, "installer.py");
+            var arguments = new List<string>();
+            if (!string.IsNullOrEmpty(command.PrefixArguments)) arguments.Add(command.PrefixArguments);
+            arguments.Add(QuoteArgument(installerPath));
+            arguments.Add("--source");
+            arguments.Add(QuoteArgument(sourcePath));
+            arguments.Add("--root");
+            arguments.Add(QuoteArgument(RootPath));
+            arguments.Add("--version");
+            arguments.Add(QuoteArgument(version));
+            if (repair) arguments.Add("--repair");
+
+            var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = command.FileName,
+                Arguments = string.Join(" ", arguments),
+                WorkingDirectory = sourcePath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            }) ?? throw new InvalidOperationException("Python did not start the broker installer.");
+            process.Dispose();
+        }
+
+        private static void WithProcessLock(Action action)
+        {
+            using (var mutex = new Mutex(false, ProcessMutexName))
+            {
+                var acquired = false;
+                try
+                {
+                    try { acquired = mutex.WaitOne(TimeSpan.FromSeconds(10)); }
+                    catch (AbandonedMutexException) { acquired = true; }
+                    if (!acquired)
+                        throw new TimeoutException("Timed out waiting for another Unity Editor to finish a broker process operation.");
+                    action();
+                }
+                finally
+                {
+                    if (acquired) mutex.ReleaseMutex();
+                }
+            }
+        }
+
+        private static bool IsRecentState(JObject value, TimeSpan maximumAge)
+        {
+            return DateTimeOffset.TryParse((string)value?["updatedUtc"], out var updatedUtc)
+                && DateTimeOffset.UtcNow - updatedUtc <= maximumAge;
+        }
+
+        private static bool IsInstallOperationActive(JObject status)
+        {
+            var state = (string)status?["state"];
+            if (!string.Equals(state, "locating_python", StringComparison.Ordinal)
+                && !string.Equals(state, "installing", StringComparison.Ordinal)) return false;
+            var processId = (int?)status?["pid"] ?? 0;
+            if (processId <= 0) return false;
+            if (!DateTimeOffset.TryParse((string)status["updatedUtc"], out var updatedUtc)) return false;
+            var maximumAge = string.Equals(state, "locating_python", StringComparison.Ordinal)
+                ? TimeSpan.FromMinutes(2)
+                : TimeSpan.FromHours(2);
+            if (DateTimeOffset.UtcNow - updatedUtc > maximumAge) return false;
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                    return !process.HasExited;
+            }
+            catch (ArgumentException) { return false; }
+            catch (InvalidOperationException) { return false; }
+        }
+
+        private static bool ValidateManifest(JObject manifest, out string error)
+        {
+            error = null;
+            if (manifest == null) return false;
+            var pythonPath = (string)manifest["pythonPath"];
+            var mainPath = (string)manifest["mainPath"];
+            if (string.IsNullOrEmpty(pythonPath) || !File.Exists(pythonPath))
+            {
+                error = "Managed broker Python environment is missing. Repair the installation.";
+                return false;
+            }
+            if (string.IsNullOrEmpty(mainPath) || !File.Exists(mainPath))
+            {
+                error = "Managed broker source is missing. Repair the installation.";
+                return false;
+            }
+            return true;
+        }
+
+        private static bool TryGetOwnedProcess(JObject state, out Process process, out string error)
+        {
+            process = null;
+            error = null;
+            var processId = (int?)state?["pid"] ?? 0;
+            if (processId <= 0) return false;
+            if (!DateTimeOffset.TryParse((string)state["processStartUtc"], out var expectedStart))
+            {
+                error = "Managed broker process metadata is invalid; refusing to stop an unverified process.";
+                return false;
+            }
+            try
+            {
+                process = Process.GetProcessById(processId);
+                if (process.HasExited)
+                {
+                    process.Dispose();
+                    process = null;
+                    return false;
+                }
+                var actualStart = process.StartTime.ToUniversalTime();
+                if (Math.Abs((actualStart - expectedStart.UtcDateTime).TotalSeconds) > 2)
+                {
+                    process.Dispose();
+                    process = null;
+                    error = "Managed broker PID was reused; refusing to control the unrelated process.";
+                    return false;
+                }
+                return true;
+            }
+            catch (ArgumentException) { return false; }
+            catch (InvalidOperationException) { return false; }
+        }
+
+        private static JObject ReadObject(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return null;
+                return JObject.Parse(File.ReadAllText(path));
+            }
+            catch { return null; }
+        }
+
+        private static void AtomicWriteObject(string path, JObject value)
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            File.WriteAllText(temporary, value.ToString(Formatting.Indented));
+            if (File.Exists(path)) File.Delete(path);
+            File.Move(temporary, path);
+        }
+
+        private static void WriteInstallLaunchStatus(string state, string message, string error)
+        {
+            try
+            {
+                var payload = new JObject
+                {
+                    ["schemaVersion"] = 1,
+                    ["state"] = state,
+                    ["mode"] = "install",
+                    ["pid"] = Process.GetCurrentProcess().Id,
+                    ["updatedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
+                    ["message"] = message,
+                    ["logPath"] = InstallLogPath,
+                };
+                if (!string.IsNullOrEmpty(error)) payload["error"] = error;
+                AtomicWriteObject(InstallStatusPath, payload);
+            }
+            catch { }
+        }
+
+        private static void TryDelete(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); }
+            catch { }
+        }
+    }
+}

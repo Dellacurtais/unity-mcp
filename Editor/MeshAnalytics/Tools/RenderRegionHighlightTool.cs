@@ -31,6 +31,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ["additionalProperties"] = false,
         };
 
+        public JObject OutputSchema => MeshToolSchemas.RenderHighlightOutput;
+
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
@@ -39,15 +41,14 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             if (string.IsNullOrEmpty(regionId))
                 return ToolResult.Error("BAD_ARGS", "regionId is required");
 
-            var region = MeshAnalysisCache.FindRegion(regionId, out _);
+            var region = MeshAnalysisCache.FindRegion(regionId, out var owner);
             if (region == null)
                 return ToolResult.Error("NOT_FOUND",
                     $"regionId '{regionId}' not in cache. Re-run the producing detector first.");
 
-            var go = MeshResolver.ResolveGameObject(region.OwnerInstanceId);
+            var go = MeshAnalysisCache.ResolveOwner(owner, out var ownerError);
             if (go == null)
-                return ToolResult.Error("NOT_FOUND",
-                    $"GameObject for region (instanceId={region.OwnerInstanceId}) is no longer in scene");
+                return ToolResult.Error("NOT_FOUND", ownerError);
 
             int width = Mathf.Clamp((int?)args["width"] ?? 1024, 64, 2048);
             int height = Mathf.Clamp((int?)args["height"] ?? 768, 64, 2048);
@@ -72,10 +73,21 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 
             var r = renders[0];
             var summary = DescribeRegion(region);
-            return ToolResult.Image(
+            var result = ToolResult.Image(
                 Convert.ToBase64String(r.Png),
                 "image/png",
                 $"{summary} on '{go.name}' — view {r.PresetName} ({width}×{height})");
+            result.Json = new JObject
+            {
+                ["target"] = MeshResolver.TargetData(go),
+                ["regionId"] = regionId,
+                ["regionKind"] = region.Kind.ToString(),
+                ["view"] = r.PresetName,
+                ["width"] = width,
+                ["height"] = height,
+                ["bytes"] = r.Png.Length,
+            };
+            return result;
         }
 
         private static OffscreenRenderer.ViewPreset ParsePreset(string s)

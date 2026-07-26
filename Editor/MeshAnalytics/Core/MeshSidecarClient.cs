@@ -194,7 +194,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
 
             var invariant = CultureInfo.InvariantCulture;
             var builder = new StringBuilder(Math.Min(MaxRequestBytes, vertices.Length * 40 + triangles.Length * 8));
-            builder.Append("# scene-analyzer mesh sidecar payload\n");
+            builder.Append("# unity-mcp mesh sidecar payload\n");
             for (int i = 0; i < vertices.Length; i++)
             {
                 var vertex = localToWorld.MultiplyPoint3x4(vertices[i]);

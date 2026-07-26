@@ -19,6 +19,7 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
         };
 
         public bool IsWrite => false;
+        public JObject OutputSchema => PlayToolSchemas.Anchor;
 
         public ToolResult Execute(JObject args)
         {

@@ -31,6 +31,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ["type"] = "object",
             ["properties"] = new JObject
             {
+                ["target"] = MeshToolSchemas.Target,
                 ["instanceId"] = new JObject { ["type"] = "integer" },
                 ["uv"] = new JObject
                 {
@@ -58,22 +59,27 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 },
                 ["maxDistance"] = new JObject { ["type"] = "number", ["default"] = 0.0, ["description"] = "Metres. 0 or omitted = unbounded." },
             },
-            ["required"] = new JArray { "instanceId", "uv", "cameraToWorld", "projection" },
+            ["required"] = new JArray { "uv", "cameraToWorld", "projection" },
+            ["oneOf"] = MeshToolSchemas.TargetOrInstance,
             ["additionalProperties"] = false,
         };
+
+        public JObject OutputSchema => MeshToolSchemas.PickOutput;
 
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
         {
-            int instanceId = (int?)args["instanceId"] ?? 0;
-            var go = MeshResolver.ResolveGameObject(instanceId);
-            if (go == null) return ToolResult.Error("NOT_FOUND", $"no GameObject with instanceId {instanceId}");
+            var go = MeshResolver.ResolveGameObject(args, out var targetError);
+            if (go == null) return ToolResult.Error("NOT_FOUND", targetError);
+            int instanceId = go.GetInstanceID();
 
             var mesh = MeshResolver.ResolveMesh(go);
             if (mesh == null) return ToolResult.Error("NOT_FOUND", $"GameObject {instanceId} has no mesh");
             if (!MeshResolver.IsReadable(mesh, out var notReadable))
                 return ToolResult.Error("MESH_NOT_READABLE", notReadable);
+            if (!MeshResolver.HasTriangleTopology(mesh, out var topologyError))
+                return ToolResult.Error("UNSUPPORTED_TOPOLOGY", topologyError);
 
             if (!TryParseUv(args["uv"], out float u, out float v))
                 return ToolResult.Error("BAD_ARGS", "uv must be [u,v] in [0,1]");
@@ -89,6 +95,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 
             var payload = new JObject
             {
+                ["target"] = MeshResolver.TargetData(go),
                 ["instanceId"] = instanceId,
                 ["worldPoint"] = new JArray { pick.WorldPoint.x, pick.WorldPoint.y, pick.WorldPoint.z },
                 ["worldNormal"] = new JArray { pick.WorldNormal.x, pick.WorldNormal.y, pick.WorldNormal.z },

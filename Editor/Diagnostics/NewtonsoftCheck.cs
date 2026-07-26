@@ -11,7 +11,7 @@ namespace Maicon.SceneAnalyzer.Editor.Diagnostics
     [InitializeOnLoad]
     internal static class NewtonsoftCheck
     {
-        private const string Header = "[scene-analyzer]";
+        private const string Header = "[unity-mcp]";
 
         static NewtonsoftCheck()
         {

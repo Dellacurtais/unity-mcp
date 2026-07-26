@@ -20,11 +20,13 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             ["properties"] = new JObject
             {
                 ["count"] = new JObject { ["type"] = "integer", ["default"] = 1, ["minimum"] = 1, ["maximum"] = 600 },
+                ["timeoutSeconds"] = new JObject { ["type"] = "number", ["default"] = 10, ["minimum"] = 1, ["maximum"] = 60 },
             },
             ["additionalProperties"] = false,
         };
 
-        public bool IsWrite => false;
+        public bool IsWrite => true;
+        public JObject OutputSchema => PlayToolSchemas.Step;
 
         public ToolResult Execute(JObject args)
         {
@@ -34,10 +36,16 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
 
         public async Task<ToolResult> ExecuteAsync(JObject args)
         {
-            int count = Mathf.Clamp((int?)args["count"] ?? 1, 1, 600);
+            int count = (int?)args["count"] ?? 1;
+            double timeoutSeconds = (double?)args["timeoutSeconds"] ?? 10.0;
+            if (count < 1 || count > 600) return ToolResult.Error("BAD_COUNT", "count must be between 1 and 600");
+            if (double.IsNaN(timeoutSeconds) || double.IsInfinity(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60)
+                return ToolResult.Error("BAD_TIMEOUT", "timeoutSeconds must be finite and between 1 and 60");
 
             var precheck = await MainThreadDispatcher.RunAsync<ToolResult>(() =>
             {
+                if (EditorApplication.isPlaying != EditorApplication.isPlayingOrWillChangePlaymode)
+                    return ToolResult.Error("TRANSITIONING", "wait for the play-mode transition to settle");
                 if (!EditorApplication.isPlaying)
                     return ToolResult.Error("NOT_PLAYING",
                         "step_frame only works during play mode — call enter_play_mode first.");
@@ -52,13 +60,13 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
                 return Time.frameCount;
             });
 
-            // Step + one editor pump between calls so the player loop ticks
-            // before the next Step. Calling Step() back-to-back in the same
-            // dispatch frame seems to only advance once.
             for (int i = 0; i < count; i++)
             {
+                var expectedFrame = startFrame + i + 1;
                 await MainThreadDispatcher.RunAsync(() => EditorApplication.Step());
-                await PlayModeWaiter.WaitOneUpdateTick();
+                if (!await PlayModeWaiter.WaitForFrameAtLeast(expectedFrame, timeoutSeconds))
+                    return ToolResult.Error("STEP_TIMEOUT",
+                        $"frameCount did not reach {expectedFrame} within {timeoutSeconds}s after EditorApplication.Step()");
             }
 
             int endFrame = await MainThreadDispatcher.RunAsync(() => Time.frameCount);

@@ -218,11 +218,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public static string BuildDefaultPreamble(string unityRoot)
         {
             return
-                "[unity-context — auto-injected by the Unity Scene Analyzer plugin on the first message of this session]\n\n" +
+                "[unity-context — auto-injected by the Unity MCP plugin on the first message of this session]\n\n" +
                 $"You're connected to the Unity Editor running at `{unityRoot ?? "<unknown>"}` via the Model Context Protocol. " +
-                "The plugin `com.maicon.scene-analyzer` exposes scene tools through the registered MCP server `unity`, prefixed `ext_unity__`:\n" +
+                "The Unity MCP plugin exposes scene tools through the registered MCP server `unity`, prefixed `ext_unity__`:\n" +
                 "- **Read / inspect**: `read_hierarchy`, `read_scene`, `read_component`, `get_project_meta`, `screenshot_scene_view`.\n" +
-                "- **Analyze**: `analyze_performance`, `validate_scene`.\n" +
                 "- **Discover assets & types**: `list_assets`, `search_assets`, `read_asset_metadata`, `find_references_to_asset`, " +
                 "`list_component_types` (every Component subclass loaded — built-in + user MonoBehaviours), " +
                 "`describe_component_type` (schema of a type without an instance: serialized fields, attributes like Range/Tooltip, RequireComponent list — works for ANY type including ScriptableObject subclasses), " +
@@ -542,7 +541,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 {
                     ["root_path"] = unityRoot,
                     ["name"] = SafeName(unityRoot),
-                    ["description"] = "Auto-created by Unity Scene Analyzer plugin",
+                    ["description"] = "Auto-created by Unity MCP plugin",
                 };
                 using (var creq = new HttpRequestMessage(HttpMethod.Post, createUrl)
                 {

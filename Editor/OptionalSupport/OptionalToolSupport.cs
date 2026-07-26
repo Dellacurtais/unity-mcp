@@ -23,6 +23,14 @@ namespace Maicon.SceneAnalyzer.Editor.Optional
             ["additionalProperties"] = false,
         };
 
+        public static JObject OutputSchema(JObject properties, params string[] required) => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = properties ?? new JObject(),
+            ["required"] = new JArray(required ?? Array.Empty<string>()),
+            ["additionalProperties"] = true,
+        };
+
         public static JObject TargetSchema(JObject extra = null, params string[] requiredExtra)
         {
             var properties = new JObject
@@ -521,6 +529,11 @@ namespace Maicon.SceneAnalyzer.Editor.Optional
         public string Description => _description;
         public JObject InputSchema => OptionalToolSupport.EmptySchema();
         public bool IsWrite => false;
+        public JObject OutputSchema => OptionalToolSupport.OutputSchema(new JObject
+        {
+            ["package"] = new JObject { ["type"] = "object" },
+            ["types"] = new JObject { ["type"] = "object" },
+        }, "package", "types");
         public ToolResult Execute(JObject arguments) => ToolResult.Ok(_description, OptionalToolSupport.TypeContext(_packageId, _typeGroups));
     }
 
@@ -543,6 +556,12 @@ namespace Maicon.SceneAnalyzer.Editor.Optional
         public string Description => _description;
         public JObject InputSchema => OptionalToolSupport.EmptySchema();
         public bool IsWrite => false;
+        public JObject OutputSchema => OptionalToolSupport.OutputSchema(new JObject
+        {
+            ["package"] = new JObject { ["type"] = "object" },
+            ["components"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            ["unavailableTypes"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "array" } },
+        }, "package", "components", "unavailableTypes");
         public ToolResult Execute(JObject arguments) => OptionalToolSupport.ListComponents(_packageId, _typeGroups);
     }
 
@@ -616,6 +635,12 @@ namespace Maicon.SceneAnalyzer.Editor.Optional
             ["properties"] = OptionalToolSupport.PropertiesSchema(_allowlist),
         }, "properties");
         public bool IsWrite => true;
+        public JObject OutputSchema => OptionalToolSupport.OutputSchema(new JObject
+        {
+            ["target"] = new JObject { ["type"] = new JArray { "object", "null" } },
+            ["changed"] = new JObject { ["type"] = "object" },
+            ["component"] = new JObject { ["type"] = "object" },
+        }, "target", "changed", "component");
         public ToolResult Execute(JObject arguments) => OptionalToolSupport.ConfigureComponent(arguments, _description, _component, _allowlist);
     }
 

@@ -1035,7 +1035,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         {
             if (string.Equals(_lastWarning, message, StringComparison.Ordinal)) return;
             _lastWarning = message;
-            Debug.LogWarning($"[scene-analyzer] MCP instance coordination failed: {message}");
+            Debug.LogWarning($"[unity-mcp] MCP instance coordination failed: {message}");
         }
 
         private void ThrowIfDisposed()

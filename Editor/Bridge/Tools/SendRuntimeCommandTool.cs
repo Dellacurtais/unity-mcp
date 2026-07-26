@@ -28,7 +28,8 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
             ["additionalProperties"] = false,
         };
 
-        public bool IsWrite => false;
+        public bool IsWrite => true;
+        public JObject OutputSchema => BridgeToolSchemas.Command;
 
         public ToolResult Execute(JObject args)
         {
@@ -38,15 +39,18 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
 
         public async Task<ToolResult> ExecuteAsync(JObject args)
         {
-            string name = (string)args["name"];
+            string name = ((string)args["name"])?.Trim();
             if (string.IsNullOrEmpty(name))
                 return ToolResult.Error("BAD_REQUEST", "'name' is required.");
 
-            var (ok, err) = BridgeChannel.Precheck(requirePlayMode: true);
+            var (ok, err) = await BridgeChannel.PrecheckAsync(requirePlayMode: true);
             if (!ok) return ToolResult.Error(err.Split(':')[0], err);
 
             string payloadJson = SerializePayload(args["payload"]);
+            bool waitForDispatch = (bool?)args["waitForDispatch"] ?? true;
             double timeoutSeconds = (double?)args["timeoutSeconds"] ?? 5.0;
+            if (double.IsNaN(timeoutSeconds) || double.IsInfinity(timeoutSeconds) || timeoutSeconds < 0.1 || timeoutSeconds > 60)
+                return ToolResult.Error("BAD_TIMEOUT", "timeoutSeconds must be finite and between 0.1 and 60");
 
             var script = new BridgeScript
             {
@@ -61,8 +65,16 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
             try
             {
                 var context = ToolExecutionContext.Current;
-                await BridgeChannel.SubmitAndAwait(
-                    script, timeoutSeconds, context != null ? context.CancellationToken : default);
+                var cancellationToken = context != null ? context.CancellationToken : default;
+                if (!waitForDispatch)
+                {
+                    await BridgeChannel.Submit(script, cancellationToken);
+                    return ToolResult.Ok($"runtime command '{name}' accepted as bridge script #{script.Id}", new JObject
+                    {
+                        ["accepted"] = true, ["completed"] = false, ["script"] = BridgeState(script),
+                    });
+                }
+                await BridgeChannel.SubmitAndAwait(script, timeoutSeconds, cancellationToken);
             }
             catch (System.OperationCanceledException)
             {
@@ -89,6 +101,8 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                 $"'{name}' ok in {r.DurationMs:F1}ms (frames {r.FrameAtStart}->{r.FrameAtEnd})",
                 new JObject
                 {
+                    ["accepted"] = true,
+                    ["completed"] = true,
                     ["ok"] = true,
                     ["durationMs"] = r.DurationMs,
                     ["frameAtStart"] = r.FrameAtStart,

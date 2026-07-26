@@ -39,6 +39,7 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                             ["timeoutSeconds"] = new JObject { ["type"] = "number", ["minimum"] = 0.1, ["maximum"] = 300 },
                         },
                         ["required"] = new JArray { "name" },
+                        ["additionalProperties"] = false,
                     },
                     ["minItems"] = 1,
                     ["maxItems"] = 200,
@@ -51,7 +52,8 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
             ["additionalProperties"] = false,
         };
 
-        public bool IsWrite => false;
+        public bool IsWrite => true;
+        public JObject OutputSchema => BridgeToolSchemas.Commands;
 
         public ToolResult Execute(JObject args)
         {
@@ -64,13 +66,17 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
             var commandsToken = args["commands"] as JArray;
             if (commandsToken == null || commandsToken.Count == 0)
                 return ToolResult.Error("BAD_REQUEST", "'commands' must be a non-empty array.");
+            if (commandsToken.Count > 200)
+                return ToolResult.Error("BAD_REQUEST", "commands supports at most 200 steps.");
 
-            var (ok, err) = BridgeChannel.Precheck(requirePlayMode: true);
+            var (ok, err) = await BridgeChannel.PrecheckAsync(requirePlayMode: true);
             if (!ok) return ToolResult.Error(err.Split(':')[0], err);
 
             bool stopOnError = (bool?)args["stopOnError"] ?? true;
             bool returnPerStepResults = (bool?)args["returnPerStepResults"] ?? true;
             double timeoutSeconds = (double?)args["timeoutSeconds"] ?? 30.0;
+            if (double.IsNaN(timeoutSeconds) || double.IsInfinity(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 300)
+                return ToolResult.Error("BAD_TIMEOUT", "timeoutSeconds must be finite and between 1 and 300");
 
             // Anchor the script's log delta start so post-step deltas can be
             // attributed even for steps without markLogAnchorBefore (we always
@@ -82,18 +88,28 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
             {
                 if (!(c is JObject cmdObj))
                     return ToolResult.Error("BAD_REQUEST", "each command must be an object.");
-                string name = (string)cmdObj["name"];
+                string name = ((string)cmdObj["name"])?.Trim();
                 if (string.IsNullOrEmpty(name))
                     return ToolResult.Error("BAD_REQUEST", "each command needs a 'name'.");
+                var delayFrames = (int?)cmdObj["delayFrames"] ?? 0;
+                var timeoutFrames = (int?)cmdObj["timeoutFrames"] ?? 0;
+                var stepTimeoutSeconds = (double?)cmdObj["timeoutSeconds"] ?? 0.0;
+                if (delayFrames < 0 || delayFrames > 6000)
+                    return ToolResult.Error("BAD_DELAY", "delayFrames must be between 0 and 6000");
+                if (timeoutFrames < 0 || timeoutFrames > 36000)
+                    return ToolResult.Error("BAD_STEP_TIMEOUT", "timeoutFrames must be between 1 and 36000 when provided");
+                if (double.IsNaN(stepTimeoutSeconds) || double.IsInfinity(stepTimeoutSeconds)
+                    || stepTimeoutSeconds < 0 || stepTimeoutSeconds > 300)
+                    return ToolResult.Error("BAD_STEP_TIMEOUT", "timeoutSeconds must be finite and between 0.1 and 300 when provided");
                 steps.Add(new BridgeStep
                 {
                     Name = name,
                     PayloadJson = SerializePayload(cmdObj["payload"]),
-                    DelayFrames = Mathf.Clamp((int?)cmdObj["delayFrames"] ?? 0, 0, 6000),
+                    DelayFrames = delayFrames,
                     CaptureScreenshotAfter = (bool?)cmdObj["captureScreenshotAfter"] ?? false,
                     MarkLogAnchorBefore = (bool?)cmdObj["markLogAnchorBefore"] ?? false,
-                    TimeoutFrames = Mathf.Clamp((int?)cmdObj["timeoutFrames"] ?? 0, 0, 36000),
-                    TimeoutSeconds = Mathf.Clamp((float?)cmdObj["timeoutSeconds"] ?? 0f, 0f, 300f),
+                    TimeoutFrames = timeoutFrames,
+                    TimeoutSeconds = (float)stepTimeoutSeconds,
                 });
             }
 
@@ -211,7 +227,7 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
 
             return new ToolResult
             {
-                IsError = okCount == 0 && total > 0, // mark error if EVERY step failed
+                IsError = okCount < total || total < steps.Count,
                 Text = textHeader,
                 Json = summary,
                 ContentBlocks = finalBlocks,

@@ -1,14 +1,13 @@
 # McpCommandBridge — quick start
 
-The Scene Analyzer MCP extension lets an AI agent run scripted gameplay in
+The Unity MCP extension lets an AI agent run scripted gameplay in
 play mode by sending **named commands** to a `MonoBehaviour` you place in
 your scene. This is the runtime-side component of that channel.
 
 ## TL;DR
 
-1. In your scene, ask the AI to call `bridge_install` (or add the
-   `McpCommandBridge` component manually — it's under
-   `Component → Scene Analyzer → MCP Command Bridge` once compiled).
+1. In your scene, ask the AI to call `bridge_install`, or add the
+   **McpCommandBridge** component manually once compiled.
 2. In your own MonoBehaviours, **register handlers** for the commands you
    want the AI to be able to invoke.
 3. The AI calls `send_runtime_commands` with a list of `{ name, payload }`
@@ -78,8 +77,8 @@ delegate void CommandHandler(string payloadJson, Action<bool, string> complete);
   but may be empty.
 - `complete(ok, error)` — **you must call this exactly once**, either
   synchronously (most cases) or after an async operation finishes. If you
-  never call it, the runtime gives up after ~600 frames and reports
-  `HANDLER_TIMEOUT_NO_COMPLETE_CALLBACK`.
+  never call it, the runtime gives up after the first configured limit
+  (by default 600 frames or 10 realtime seconds) and reports `HANDLER_TIMEOUT`.
 - Exceptions thrown out of your handler are caught and reported as failures.
 
 ## Async handlers
@@ -97,9 +96,9 @@ Or `async void` — just be sure to call `complete` in the final continuation.
 
 ## Lifecycle gotchas
 
-- The bridge stores handlers in a static dictionary keyed by name. A
-  domain reload (script recompile) clears it; your `Start()` re-runs and
-  re-registers. No bookkeeping needed on your side.
+- The active bridge instance stores handlers in a dictionary keyed by name.
+  A domain reload or play-mode restart recreates the instance; your `Start()`
+  re-runs and re-registers. No bookkeeping is needed on your side.
 - The bridge GameObject persists in the scene by default. If you want it
   to survive scene loads, the editor-side `bridge_install` tool sets
   `DontDestroyOnLoad` for you.

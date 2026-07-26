@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core;
 using Newtonsoft.Json.Linq;
@@ -22,6 +24,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ["type"] = "object",
             ["properties"] = new JObject
             {
+                ["target"] = MeshToolSchemas.Target,
                 ["instanceId"] = new JObject { ["type"] = "integer", ["description"] = "If provided, run sharp-edge detection on this GameObject first. Mutually exclusive with chainRegionIds." },
                 ["chainRegionIds"] = new JObject
                 {
@@ -36,63 +39,59 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 ["minMembers"] = new JObject { ["type"] = "integer", ["default"] = 2, ["minimum"] = 2 },
                 ["maxGroups"] = new JObject { ["type"] = "integer", ["default"] = 16, ["minimum"] = 1, ["maximum"] = 128 },
             },
+            ["oneOf"] = MeshToolSchemas.TargetInstanceOrRegionIds,
             ["additionalProperties"] = false,
         };
+
+        public JObject OutputSchema => MeshToolSchemas.ParallelGroupsOutput;
 
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
         {
-            // Resolve the source chain set + owner mesh (for meshKey/paramsHash).
-            int instanceId = (int?)args["instanceId"] ?? 0;
             JArray idsArr = args["chainRegionIds"] as JArray;
+            bool hasExplicitIds = idsArr != null && idsArr.Count > 0;
+            bool hasTarget = args["target"] != null || (int?)args["instanceId"] != null;
+            if (hasExplicitIds == hasTarget)
+                return ToolResult.Error("BAD_ARGS", "provide exactly one of target/instanceId or chainRegionIds");
 
             List<EdgeChainRegion> chains;
-            int ownerInstance;
+            GameObject ownerGo;
             Mesh ownerMesh;
             Matrix4x4 ownerLtw;
             string sourceTag;
-            if (idsArr != null && idsArr.Count > 0)
+            if (hasExplicitIds)
             {
-                chains = ResolveChainsFromIds(idsArr, out ownerInstance, out ownerMesh, out var err);
+                chains = ResolveChainsFromIds(idsArr, out ownerGo, out ownerMesh, out var err);
                 if (chains == null) return ToolResult.Error("BAD_ARGS", err);
-                var ownerGo = MeshResolver.ResolveGameObject(ownerInstance);
-                ownerLtw = ownerGo != null ? ownerGo.transform.localToWorldMatrix : Matrix4x4.identity;
-                sourceTag = $"explicit:{idsArr.Count}";
-            }
-            else if (instanceId != 0)
-            {
-                if (!MeshResolver.TryGetMeshAndTransforms(instanceId, out _, out ownerMesh, out var ltw))
-                    return ToolResult.Error("NOT_FOUND",
-                        $"no MeshFilter/SkinnedMeshRenderer mesh on GameObject {instanceId}");
-                if (!MeshResolver.IsReadable(ownerMesh, out var notReadable))
-                    return ToolResult.Error("MESH_NOT_READABLE", notReadable);
-
-                // Run sharp-edge detection on the fly with sensible defaults.
-                float dihedral = (float?)args["dihedralAngleMin"] ?? 30f;
-                var sep = new SharpEdgeDetector.Params { DihedralAngleMinDeg = dihedral };
-                string meshKeyEdges = MeshResolver.MakeMeshKey(ownerMesh);
-                string edgesHash = $"edge:{sep.DihedralAngleMinDeg:F2}:{sep.MinChainLength:F3}:{sep.MaxChains}";
-                if (!MeshAnalysisCache.TryGetWithFallback(meshKeyEdges, edgesHash, ltw, out var edgesBundle))
-                {
-                    edgesBundle = new AnalysisResult
-                    {
-                        MeshGuid = meshKeyEdges,
-                        OwnerInstanceId = instanceId,
-                        OwnerLocalToWorld = ltw,
-                    };
-                    edgesBundle.EdgeChains.AddRange(SharpEdgeDetector.Detect(ownerMesh, ltw, meshKeyEdges, edgesHash, instanceId, sep));
-                    MeshAnalysisCache.StoreAndPersist(meshKeyEdges, edgesHash, edgesBundle);
-                }
-                chains = edgesBundle.EdgeChains;
-                ownerInstance = instanceId;
-                ownerLtw = ltw;
-                sourceTag = $"auto:{chains.Count}";
+                ownerLtw = ownerGo.transform.localToWorldMatrix;
+                sourceTag = "explicit:" + HashRegionIds(idsArr);
             }
             else
             {
-                return ToolResult.Error("BAD_ARGS", "provide either instanceId or chainRegionIds");
+                if (!MeshResolver.TryGetMeshAndTransforms(args, out ownerGo, out ownerMesh, out ownerLtw, out var targetError))
+                    return ToolResult.Error("NOT_FOUND", targetError);
+                if (!MeshResolver.IsReadable(ownerMesh, out var notReadable))
+                    return ToolResult.Error("MESH_NOT_READABLE", notReadable);
+                if (!MeshResolver.HasTriangleTopology(ownerMesh, out var topologyError))
+                    return ToolResult.Error("UNSUPPORTED_TOPOLOGY", topologyError);
+
+                float dihedral = (float?)args["dihedralAngleMin"] ?? 30f;
+                var sep = new SharpEdgeDetector.Params { DihedralAngleMinDeg = dihedral };
+                string meshKeyEdges = MeshResolver.MakeMeshKey(ownerMesh);
+                string analysisKeyEdges = MeshResolver.MakeAnalysisKey(ownerMesh, ownerGo);
+                string edgesHash = $"edge:{sep.DihedralAngleMinDeg:F2}:{sep.MinChainLength:F3}:{sep.MaxChains}";
+                if (!MeshAnalysisCache.TryGetWithFallback(analysisKeyEdges, edgesHash, ownerGo, ownerLtw, out var edgesBundle))
+                {
+                    edgesBundle = MeshAnalysisCache.CreateResult(meshKeyEdges, analysisKeyEdges, ownerGo, ownerLtw);
+                    edgesBundle.EdgeChains.AddRange(SharpEdgeDetector.Detect(ownerMesh, ownerLtw,
+                        analysisKeyEdges, edgesHash, ownerGo.GetInstanceID(), sep));
+                    MeshAnalysisCache.StoreAndPersist(analysisKeyEdges, edgesHash, edgesBundle);
+                }
+                chains = edgesBundle.EdgeChains;
+                sourceTag = $"auto:{chains.Count}";
             }
+            int ownerInstance = ownerGo.GetInstanceID();
 
             var p = new ParallelChainDetector.Params
             {
@@ -104,18 +103,14 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             };
 
             string meshKey = MeshResolver.MakeMeshKey(ownerMesh);
+            string analysisKey = MeshResolver.MakeAnalysisKey(ownerMesh, ownerGo);
             string paramsHash = $"parallel:{sourceTag}:{p.DirectionAngleToleranceDeg:F2}:{p.SpacingTolerance:F3}:{p.MinSpacing:F3}:{p.MinMembers}:{p.MaxGroups}";
 
-            if (!MeshAnalysisCache.TryGetWithFallback(meshKey, paramsHash, ownerLtw, out var bundle))
+            if (!MeshAnalysisCache.TryGetWithFallback(analysisKey, paramsHash, ownerGo, ownerLtw, out var bundle))
             {
-                bundle = new AnalysisResult
-                {
-                    MeshGuid = meshKey,
-                    OwnerInstanceId = ownerInstance,
-                    OwnerLocalToWorld = ownerLtw,
-                };
-                bundle.ParallelGroups.AddRange(ParallelChainDetector.Detect(chains, meshKey, paramsHash, ownerInstance, p));
-                MeshAnalysisCache.StoreAndPersist(meshKey, paramsHash, bundle);
+                bundle = MeshAnalysisCache.CreateResult(meshKey, analysisKey, ownerGo, ownerLtw);
+                bundle.ParallelGroups.AddRange(ParallelChainDetector.Detect(chains, analysisKey, paramsHash, ownerInstance, p));
+                MeshAnalysisCache.StoreAndPersist(analysisKey, paramsHash, bundle);
             }
 
             var arr = new JArray();
@@ -144,33 +139,57 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
         }
 
         private static List<EdgeChainRegion> ResolveChainsFromIds(JArray idsArr,
-            out int ownerInstance, out Mesh ownerMesh, out string err)
+            out GameObject ownerGo, out Mesh ownerMesh, out string err)
         {
-            ownerInstance = 0; ownerMesh = null; err = null;
+            ownerGo = null; ownerMesh = null; err = null;
+            AnalysisResult commonOwner = null;
             var chains = new List<EdgeChainRegion>();
-            foreach (var t in idsArr)
+            foreach (var token in idsArr)
             {
-                var id = (string)t;
+                var id = (string)token;
                 if (string.IsNullOrEmpty(id)) continue;
-                var region = MeshAnalysisCache.FindRegion(id, out _);
+                var region = MeshAnalysisCache.FindRegion(id, out var owner);
                 if (region == null)
                 {
                     err = $"chainRegionId '{id}' not in cache — run mesh_detect_sharp_edges first";
                     return null;
                 }
-                if (!(region is EdgeChainRegion ec))
+                if (!(region is EdgeChainRegion edgeChain))
                 {
                     err = $"regionId '{id}' is not an edge_chain (kind={region.Kind})";
                     return null;
                 }
-                chains.Add(ec);
-                ownerInstance = ec.OwnerInstanceId;
+                if (commonOwner != null && !string.Equals(commonOwner.AnalysisKey, owner.AnalysisKey, System.StringComparison.Ordinal))
+                {
+                    err = "all chainRegionIds must belong to the same mesh instance";
+                    return null;
+                }
+                commonOwner = owner;
+                chains.Add(edgeChain);
             }
             if (chains.Count == 0) { err = "chainRegionIds was empty after filtering"; return null; }
 
-            ownerMesh = MeshResolver.ResolveMesh(ownerInstance);
-            if (ownerMesh == null) { err = "owner GameObject is no longer in scene"; return null; }
+            ownerGo = MeshAnalysisCache.ResolveOwner(commonOwner, out err);
+            if (ownerGo == null) return null;
+            ownerMesh = MeshResolver.ResolveMesh(ownerGo);
+            if (ownerMesh == null) { err = "analysis owner no longer has a mesh"; return null; }
             return chains;
+        }
+
+        private static string HashRegionIds(JArray ids)
+        {
+            var values = new List<string>();
+            foreach (var token in ids)
+            {
+                var value = (string)token;
+                if (!string.IsNullOrEmpty(value)) values.Add(value);
+            }
+            values.Sort(System.StringComparer.Ordinal);
+            using var sha = SHA256.Create();
+            var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(string.Join("\n", values)));
+            var builder = new StringBuilder(16);
+            for (int i = 0; i < 8; i++) builder.Append(bytes[i].ToString("x2"));
+            return builder.ToString();
         }
 
         private static JObject BoundsJson(Bounds b) => new JObject

@@ -20,14 +20,14 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public MutationScope(string name)
         {
             Undo.IncrementCurrentGroup();
-            Undo.SetCurrentGroupName(string.IsNullOrEmpty(name) ? "Scene Analyzer mutation" : name);
+            Undo.SetCurrentGroupName(string.IsNullOrEmpty(name) ? "Unity MCP mutation" : name);
             _undoGroup = Undo.GetCurrentGroup();
         }
 
         public void Record(UnityEngine.Object target, string undoName = null)
         {
             if (target == null) return;
-            Undo.RecordObject(target, undoName ?? "Scene Analyzer mutation");
+            Undo.RecordObject(target, undoName ?? "Unity MCP mutation");
             Touch(target);
         }
 

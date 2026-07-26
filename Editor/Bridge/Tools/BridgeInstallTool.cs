@@ -2,9 +2,8 @@ using Maicon.SceneAnalyzer.Bridge;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
-using UnityEditor.SceneManagement;
+using Maicon.SceneAnalyzer.Editor.Authoring;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
 {
@@ -28,42 +27,57 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
         };
 
         public bool IsWrite => true;
+        public JObject OutputSchema => BridgeToolSchemas.Install;
 
         public ToolResult Execute(JObject args)
         {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+                return ToolResult.Error("EDIT_MODE_REQUIRED", "install the bridge in Edit Mode so it exists before runtime Awake/Start handlers register");
             bool ddol = (bool?)args["markDontDestroyOnLoad"] ?? true;
-
-            // Idempotent check first.
-            if (McpCommandBridge.Exists)
+            var existingBridges = Object.FindObjectsByType<McpCommandBridge>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (existingBridges.Length > 1)
+                return ToolResult.Error("BRIDGE_DUPLICATES", $"found {existingBridges.Length} McpCommandBridge components; keep exactly one");
+            if (existingBridges.Length == 1)
             {
-                var existing = McpCommandBridge.Instance.gameObject;
+                var existing = existingBridges[0];
                 return ToolResult.Ok(
-                    $"bridge already installed on '{existing.name}' (instanceId {existing.GetInstanceID()})",
+                    $"bridge already installed on '{existing.name}' (instanceId {existing.gameObject.GetInstanceID()})",
                     new JObject
                     {
                         ["installed"] = true,
                         ["alreadyExisted"] = true,
-                        ["sceneObjectInstanceId"] = existing.GetInstanceID(),
+                        ["sceneObjectInstanceId"] = existing.gameObject.GetInstanceID(),
+                        ["dontDestroyOnLoad"] = existing.dontDestroyOnLoad,
                     });
             }
 
-            var go = new GameObject("__McpCommandBridge");
-            // Visible in the hierarchy by default so devs can see the bridge
-            // exists. They can set HideFlags manually if they want it hidden.
-            var bridge = go.AddComponent<McpCommandBridge>();
-            bridge.dontDestroyOnLoad = ddol;
-
-            Undo.RegisterCreatedObjectUndo(go, "Install McpCommandBridge");
-
-            return ToolResult.Ok(
-                $"bridge installed on '{go.name}' (instanceId {go.GetInstanceID()})",
-                new JObject
+            GameObject go = null;
+            try
+            {
+                using (var mutation = new MutationScope("Install McpCommandBridge"))
                 {
-                    ["installed"] = true,
-                    ["alreadyExisted"] = false,
-                    ["sceneObjectInstanceId"] = go.GetInstanceID(),
-                    ["dontDestroyOnLoad"] = ddol,
-                });
+                    go = new GameObject("__McpCommandBridge");
+                    mutation.RegisterCreated(go);
+                    var bridge = mutation.AddComponent<McpCommandBridge>(go);
+                    bridge.dontDestroyOnLoad = ddol;
+                    mutation.Touch(bridge);
+                    mutation.Complete();
+                }
+                return ToolResult.Ok(
+                    $"bridge installed on '{go.name}' (instanceId {go.GetInstanceID()})",
+                    new JObject
+                    {
+                        ["installed"] = true,
+                        ["alreadyExisted"] = false,
+                        ["sceneObjectInstanceId"] = go.GetInstanceID(),
+                        ["dontDestroyOnLoad"] = ddol,
+                    });
+            }
+            catch (System.Exception exception)
+            {
+                if (go != null) Object.DestroyImmediate(go);
+                return ToolResult.Error("BRIDGE_INSTALL_FAILED", exception.Message);
+            }
         }
     }
 }

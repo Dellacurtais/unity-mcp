@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
+using UnityEditor;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
 {
@@ -14,6 +16,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
         Failed,
         CancelRequested,
         Cancelled,
+    }
+
+    public sealed class ToolJobFailureException : Exception
+    {
+        public ToolJobFailureException(string message, JToken result = null) : base(message)
+        {
+            Result = result;
+        }
+
+        public JToken Result { get; }
     }
 
     public sealed class ToolJobRecord
@@ -63,10 +75,36 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
     public static class ToolJobManager
     {
         private const int MaxRetainedJobs = 200;
+        private const int MaxPersistedJobs = 50;
+        private const string PersistedJobsKey = "Maicon.SceneAnalyzer.ToolJobs.BuildPackages";
         private static readonly ConcurrentDictionary<string, ToolJobRecord> Jobs =
             new ConcurrentDictionary<string, ToolJobRecord>(StringComparer.Ordinal);
+        private static readonly object CreateSync = new object();
+
+        static ToolJobManager()
+        {
+            RestorePersistedJobs();
+            AssemblyReloadEvents.beforeAssemblyReload -= PersistTrackedJobs;
+            AssemblyReloadEvents.beforeAssemblyReload += PersistTrackedJobs;
+        }
 
         public static ToolJobRecord Create(string kind, JObject input = null, bool canCancel = true)
+        {
+            lock (CreateSync) return CreateCore(kind, input, canCancel);
+        }
+
+        public static bool TryCreateExclusive(
+            string kind, JObject input, bool canCancel, out ToolJobRecord record)
+        {
+            lock (CreateSync)
+            {
+                if (HasActive(kind)) { record = null; return false; }
+                record = CreateCore(kind, input, canCancel);
+                return true;
+            }
+        }
+
+        private static ToolJobRecord CreateCore(string kind, JObject input, bool canCancel)
         {
             Prune();
             var record = new ToolJobRecord
@@ -80,6 +118,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                 CanCancel = canCancel,
             };
             Jobs[record.Id] = record;
+            PersistTrackedJobs();
             return record;
         }
 
@@ -95,6 +134,21 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
         public static bool TryGet(string jobId, out ToolJobRecord record) =>
             Jobs.TryGetValue(jobId ?? string.Empty, out record);
 
+        public static bool HasActive(string kind) => HasActivePrefix(kind, exact: true);
+
+        public static bool HasActivePrefix(string kindPrefix, bool exact = false)
+        {
+            foreach (var record in Jobs.Values)
+            {
+                var matches = exact
+                    ? string.Equals(record.Kind, kindPrefix, StringComparison.Ordinal)
+                    : record.Kind.StartsWith(kindPrefix ?? string.Empty, StringComparison.Ordinal);
+                if (!matches) continue;
+                lock (record.Sync) if (!IsTerminal(record.Status)) return true;
+            }
+            return false;
+        }
+
         public static bool Cancel(string jobId, out ToolJobRecord record)
         {
             if (!TryGet(jobId, out record)) return false;
@@ -104,8 +158,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                 record.Status = ToolJobStatus.CancelRequested;
                 record.Message = "cancellation requested";
                 record.Cancellation.Cancel();
-                return true;
             }
+            PersistTrackedJobs();
+            return true;
         }
 
         public static JArray List(string kind = null, int limit = 50)
@@ -164,6 +219,18 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                     record.CompletedUtc = DateTimeOffset.UtcNow;
                 }
             }
+            catch (ToolJobFailureException exception)
+            {
+                lock (record.Sync)
+                {
+                    record.Status = ToolJobStatus.Failed;
+                    record.Error = exception.Message;
+                    record.Result = exception.Result?.DeepClone();
+                    record.Progress = 1d;
+                    record.Message = "failed";
+                    record.CompletedUtc = DateTimeOffset.UtcNow;
+                }
+            }
             catch (OperationCanceledException)
             {
                 lock (record.Sync)
@@ -183,6 +250,66 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                     record.CompletedUtc = DateTimeOffset.UtcNow;
                 }
             }
+        }
+
+        private static bool ShouldPersist(ToolJobRecord record) => record != null
+            && (string.Equals(record.Kind, "build", StringComparison.Ordinal)
+                || record.Kind.StartsWith("package_", StringComparison.Ordinal));
+
+        private static void PersistTrackedJobs()
+        {
+            try
+            {
+                var records = new System.Collections.Generic.List<ToolJobRecord>();
+                foreach (var record in Jobs.Values) if (ShouldPersist(record)) records.Add(record);
+                records.Sort((left, right) => right.CreatedUtc.CompareTo(left.CreatedUtc));
+                var json = new JArray();
+                foreach (var record in records)
+                {
+                    if (json.Count >= MaxPersistedJobs) break;
+                    json.Add(record.ToJson());
+                }
+                SessionState.SetString(PersistedJobsKey, json.ToString(Newtonsoft.Json.Formatting.None));
+            }
+            catch { }
+        }
+
+        private static void RestorePersistedJobs()
+        {
+            var serialized = SessionState.GetString(PersistedJobsKey, string.Empty);
+            if (string.IsNullOrEmpty(serialized)) return;
+            try
+            {
+                var now = DateTimeOffset.UtcNow;
+                foreach (var item in JArray.Parse(serialized).OfType<JObject>())
+                {
+                    var id = (string)item["jobId"];
+                    var kind = (string)item["kind"];
+                    if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(kind)) continue;
+                    if (!Enum.TryParse((string)item["status"], out ToolJobStatus status)) status = ToolJobStatus.Failed;
+                    var interrupted = !IsTerminal(status);
+                    var record = new ToolJobRecord
+                    {
+                        Id = id,
+                        Kind = kind,
+                        Status = interrupted ? ToolJobStatus.Failed : status,
+                        Progress = (double?)item["progress"] ?? 0d,
+                        Message = interrupted ? "interrupted by assembly reload" : (string)item["message"],
+                        Error = interrupted
+                            ? "DOMAIN_RELOAD_INTERRUPTED: reconcile the operation with list_packages/read_build_report"
+                            : (string)item["error"],
+                        Result = item["result"]?.DeepClone(),
+                        Input = item["input"] as JObject != null ? (JObject)item["input"].DeepClone() : new JObject(),
+                        CreatedUtc = DateTimeOffset.TryParse((string)item["createdUtc"], out var created) ? created : now,
+                        StartedUtc = DateTimeOffset.TryParse((string)item["startedUtc"], out var started) ? started : (DateTimeOffset?)null,
+                        CompletedUtc = interrupted ? now
+                            : DateTimeOffset.TryParse((string)item["completedUtc"], out var completed) ? completed : (DateTimeOffset?)null,
+                        CanCancel = false,
+                    };
+                    Jobs[id] = record;
+                }
+            }
+            catch { SessionState.EraseString(PersistedJobsKey); }
         }
 
         private static bool IsTerminal(ToolJobStatus status) =>

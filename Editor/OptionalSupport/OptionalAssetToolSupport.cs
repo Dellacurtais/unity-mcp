@@ -253,6 +253,11 @@ namespace Maicon.SceneAnalyzer.Editor.Optional
         public string Description => _description;
         public JObject InputSchema => OptionalToolSupport.EmptySchema();
         public bool IsWrite => false;
+        public JObject OutputSchema => OptionalToolSupport.OutputSchema(new JObject
+        {
+            ["package"] = new JObject { ["type"] = "object" },
+            ["assets"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+        }, "package", "assets");
         public ToolResult Execute(JObject arguments) => OptionalAssetToolSupport.ListAssets(_packageId, _typeGroups);
     }
 

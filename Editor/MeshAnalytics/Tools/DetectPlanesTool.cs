@@ -25,6 +25,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ["type"] = "object",
             ["properties"] = new JObject
             {
+                ["target"] = MeshToolSchemas.Target,
                 ["instanceId"] = new JObject { ["type"] = "integer" },
                 ["minFacesPerPlane"] = new JObject { ["type"] = "integer", ["default"] = 50, ["minimum"] = 4 },
                 ["angleTolerance"] = new JObject { ["type"] = "number", ["default"] = 5.0, ["minimum"] = 0.1, ["maximum"] = 45.0, ["description"] = "Degrees. Inliers must have face normals within this of the plane normal." },
@@ -32,20 +33,23 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 ["maxPlanes"] = new JObject { ["type"] = "integer", ["default"] = 16, ["minimum"] = 1, ["maximum"] = 64 },
                 ["maxFaceIndicesInResponse"] = new JObject { ["type"] = "integer", ["default"] = 0, ["minimum"] = 0, ["maximum"] = 50000, ["description"] = "Cap on faceIndices echoed back per plane. 0 = omit (full set is kept in cache for sampling/highlighting)." },
             },
-            ["required"] = new JArray { "instanceId" },
+            ["oneOf"] = MeshToolSchemas.TargetOrInstance,
             ["additionalProperties"] = false,
         };
+
+        public JObject OutputSchema => MeshToolSchemas.PlanesOutput;
 
         public bool IsWrite => false;
 
         public ToolResult Execute(JObject args)
         {
-            int instanceId = (int?)args["instanceId"] ?? 0;
-            if (!MeshResolver.TryGetMeshAndTransforms(instanceId, out var go, out var mesh, out var ltw))
-                return ToolResult.Error("NOT_FOUND",
-                    $"no MeshFilter/SkinnedMeshRenderer mesh on GameObject {instanceId}");
+            if (!MeshResolver.TryGetMeshAndTransforms(args, out var go, out var mesh, out var ltw, out var targetError))
+                return ToolResult.Error("NOT_FOUND", targetError);
+            int instanceId = go.GetInstanceID();
             if (!MeshResolver.IsReadable(mesh, out var notReadable))
                 return ToolResult.Error("MESH_NOT_READABLE", notReadable);
+            if (!MeshResolver.HasTriangleTopology(mesh, out var topologyError))
+                return ToolResult.Error("UNSUPPORTED_TOPOLOGY", topologyError);
 
             var p = new PlaneDetector.Params
             {
@@ -57,18 +61,14 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             int faceCap = (int?)args["maxFaceIndicesInResponse"] ?? 0;
 
             string meshKey = MeshResolver.MakeMeshKey(mesh);
+            string analysisKey = MeshResolver.MakeAnalysisKey(mesh, go);
             string paramsHash = $"plane:{p.MinFacesPerPlane}:{p.AngleToleranceDeg:F2}:{p.DistanceTolerance:F4}:{p.MaxPlanes}";
 
-            if (!MeshAnalysisCache.TryGetWithFallback(meshKey, paramsHash, ltw, out var bundle))
+            if (!MeshAnalysisCache.TryGetWithFallback(analysisKey, paramsHash, go, ltw, out var bundle))
             {
-                bundle = new AnalysisResult
-                {
-                    MeshGuid = meshKey,
-                    OwnerInstanceId = instanceId,
-                    OwnerLocalToWorld = ltw,
-                };
-                bundle.Planes.AddRange(PlaneDetector.Detect(mesh, ltw, meshKey, paramsHash, instanceId, p));
-                MeshAnalysisCache.StoreAndPersist(meshKey, paramsHash, bundle);
+                bundle = MeshAnalysisCache.CreateResult(meshKey, analysisKey, go, ltw);
+                bundle.Planes.AddRange(PlaneDetector.Detect(mesh, ltw, analysisKey, paramsHash, instanceId, p));
+                MeshAnalysisCache.StoreAndPersist(analysisKey, paramsHash, bundle);
             }
 
             var arr = new JArray();

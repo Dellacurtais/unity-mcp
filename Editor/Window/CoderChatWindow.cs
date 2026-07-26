@@ -57,7 +57,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private int _pendingAttachSessionId;
         private int _attachedSessionId;
 
-        [MenuItem("Window/Coder Chat (Scene Analyzer)")]
+        [MenuItem("Window/Coder Chat (Unity MCP)")]
         public static void Open()
         {
             var window = GetWindow<CoderChatWindow>(WindowTitle);

@@ -22,7 +22,8 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             ["additionalProperties"] = false,
         };
 
-        public bool IsWrite => false;
+        public bool IsWrite => true;
+        public JObject OutputSchema => PlayToolSchemas.Exit;
 
         public ToolResult Execute(JObject args)
         {
@@ -33,15 +34,22 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
         public async Task<ToolResult> ExecuteAsync(JObject args)
         {
             double timeoutSeconds = (double?)args["timeoutSeconds"] ?? 10.0;
+            if (double.IsNaN(timeoutSeconds) || double.IsInfinity(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60)
+                return ToolResult.Error("BAD_TIMEOUT", "timeoutSeconds must be finite and between 1 and 60");
 
-            bool alreadyEdit = await MainThreadDispatcher.RunAsync(() =>
-                !EditorApplication.isPlaying && !EditorApplication.isPlayingOrWillChangePlaymode);
+            var state = await MainThreadDispatcher.RunAsync(() => new
+            {
+                EditorApplication.isPlaying,
+                EditorApplication.isPlayingOrWillChangePlaymode,
+            });
+            bool alreadyEdit = !state.isPlaying && !state.isPlayingOrWillChangePlaymode;
+            if (state.isPlaying != state.isPlayingOrWillChangePlaymode)
+                return ToolResult.Error("TRANSITIONING", "a play-mode transition is already in flight; wait for it to settle before exiting");
             if (alreadyEdit)
             {
                 return ToolResult.Ok("already in edit mode (no-op)",
-                    new JObject { ["alreadyEditMode"] = true });
+                    new JObject { ["entered"] = false, ["alreadyEditMode"] = true });
             }
-
             await MainThreadDispatcher.RunAsync(() => EditorApplication.ExitPlaymode());
 
             bool entered = await PlayModeWaiter.WaitFor(PlayModeStateChange.EnteredEditMode, timeoutSeconds);

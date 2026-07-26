@@ -3,6 +3,12 @@ using UnityEditor;
 
 namespace Maicon.SceneAnalyzer.Editor
 {
+    public enum McpTransportMode
+    {
+        Embedded = 0,
+        Broker = 1,
+    }
+
     /// EditorPrefs-backed settings shared by every Unity Editor process for this user.
     /// The MCP port, token, and sticky flag are intentionally global so a coordinated
     /// handover keeps the client endpoint stable; per-project ownership lives in the
@@ -27,6 +33,10 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KAllowProjectSettingsTools = "Maicon.SceneAnalyzer.AllowProjectSettingsTools";
         private const string KAllowPlayControlTools = "Maicon.SceneAnalyzer.AllowPlayControlTools";
         private const string KAllowRuntimeCommandTools = "Maicon.SceneAnalyzer.AllowRuntimeCommandTools";
+        private const string KTransportMode = "Maicon.SceneAnalyzer.TransportMode";
+        private const string KBrokerUrl = "Maicon.SceneAnalyzer.BrokerUrl";
+        private const string KBrokerAutoConnect = "Maicon.SceneAnalyzer.BrokerAutoConnect";
+        private const string KBrokerPythonPath = "Maicon.SceneAnalyzer.BrokerPythonPath";
 
         // Coder client (Model B — chat panel inside Unity that talks to D:\MCP).
         private const string KCoderUrl = "Maicon.SceneAnalyzer.Coder.Url";
@@ -59,6 +69,30 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             get => EditorPrefs.GetBool(KStickyRunning, false);
             set => EditorPrefs.SetBool(KStickyRunning, value);
+        }
+
+        public static McpTransportMode TransportMode
+        {
+            get => (McpTransportMode)EditorPrefs.GetInt(KTransportMode, (int)McpTransportMode.Embedded);
+            set => EditorPrefs.SetInt(KTransportMode, (int)value);
+        }
+
+        public static string BrokerUrl
+        {
+            get => EditorPrefs.GetString(KBrokerUrl, "ws://127.0.0.1:8765/bridge");
+            set => EditorPrefs.SetString(KBrokerUrl, value ?? string.Empty);
+        }
+
+        public static bool BrokerAutoConnect
+        {
+            get => EditorPrefs.GetBool(KBrokerAutoConnect, true);
+            set => EditorPrefs.SetBool(KBrokerAutoConnect, value);
+        }
+
+        public static string BrokerPythonPath
+        {
+            get => EditorPrefs.GetString(KBrokerPythonPath, string.Empty);
+            set => EditorPrefs.SetString(KBrokerPythonPath, value ?? string.Empty);
         }
 
         public static bool AllowWrites

@@ -1,11 +1,10 @@
 using System;
 using System.Collections.Generic;
-using Maicon.SceneAnalyzer.Editor.Analyzers;
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Maicon.SceneAnalyzer.Editor.Chat;
 using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Mcp;
-using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Analyze;
+using Maicon.SceneAnalyzer.Editor.Mcp.Broker;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect;
@@ -31,10 +30,13 @@ namespace Maicon.SceneAnalyzer.Editor
     {
         public static SceneSnapshot Snapshot { get; private set; }
         public static AssetCatalog AssetCatalog { get; private set; }
-        public static AnalysisRunner Runner { get; private set; }
-        public static ChangeWatcher Watcher { get; private set; }
         public static McpToolRegistry ToolRegistry { get; private set; }
         public static HttpMcpServer Server { get; private set; }
+        public static BrokerBridgeClient BrokerBridge { get; private set; }
+        public static BrokerBridgeSnapshot BrokerBridgeState
+            => BrokerBridge?.Snapshot ?? BrokerBridgeSnapshot.Stopped;
+        private static McpRequestProcessor BrokerProcessor { get; set; }
+        private static BrokerLifecycleMonitor BrokerLifecycle { get; set; }
         internal static McpServerInstanceCoordinator ServerCoordinator { get; private set; }
         internal static McpServerInstanceSnapshot ServerInstanceState
             => ServerCoordinator?.Snapshot ?? McpServerInstanceSnapshot.Empty;
@@ -88,26 +90,16 @@ namespace Maicon.SceneAnalyzer.Editor
             NotifyCoderSessionsChanged();
         }
 
-        public static event Action OnIssuesChanged;
         public static event Action OnServerCoordinationChanged;
         public static event Action<string> OnServerLog;
 
-        /// Called by HttpMcpServer after a write tool succeeds, and by the
-        /// ChangesetExecutor.OnApplied subscriber below. Idempotent — MarkStale
-        /// is a flag flip and InvalidateCache is a bool clear, so duplicate
-        /// firing on apply_changeset is harmless.
         public static void NotifyWriteCompleted()
         {
-            try
-            {
-                Snapshot?.MarkStale();
-                Runner?.InvalidateCache();
-                OnIssuesChanged?.Invoke();
-            }
+            try { Snapshot?.MarkStale(); }
             catch (Exception e) { Debug.LogException(e); }
         }
 
-        // Capped log of recent ops surfaced in the SceneAnalyzerWindow.
+        // Capped log of recent operations surfaced in McpTransportWindow.
         private const int MaxRecentEntries = 50;
         public static readonly List<string> RecentEntries = new();
 
@@ -132,34 +124,7 @@ namespace Maicon.SceneAnalyzer.Editor
 
                 Snapshot = new SceneSnapshot();
                 AssetCatalog = new AssetCatalog();
-                Runner = new AnalysisRunner(Snapshot);
-                // performance — order matters for the maxIssues cap
-                // (cheap + low-volume first so chatty analyzers can't starve them).
-                Runner.Register(new HierarchyDepthAnalyzer());
-                Runner.Register(new GeometryAnalyzer());
-                Runner.Register(new LightingAnalyzer());
-                Runner.Register(new DrawCallEstimatorAnalyzer());
-                Runner.Register(new ScriptCostAnalyzer());
-                // validation
-                Runner.Register(new MissingReferenceAnalyzer());
-                Runner.Register(new RequiredFieldAnalyzer());
-
-                Watcher = new ChangeWatcher(Snapshot, () =>
-                {
-                    Runner.InvalidateCache();
-                    try { OnIssuesChanged?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
-                });
-
-                ChangesetExecutor.OnApplied += () =>
-                {
-                    try
-                    {
-                        Snapshot?.MarkStale();
-                        Runner?.InvalidateCache();
-                        OnIssuesChanged?.Invoke();
-                    }
-                    catch (Exception e) { Debug.LogException(e); }
-                };
+                ChangesetExecutor.OnApplied += NotifyWriteCompleted;
 
                 ToolRegistry = new McpToolRegistry();
                 ToolRegistry.Register(new GetToolInventoryTool());
@@ -171,9 +136,6 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new ReadComponentTool());
                 ToolRegistry.Register(new GetProjectMetaTool());
                 ToolRegistry.Register(new ScreenshotSceneViewTool());
-                // Analyze
-                ToolRegistry.Register(new AnalyzePerformanceTool());
-                ToolRegistry.Register(new ValidateSceneTool());
                 // Discover
                 ToolRegistry.Register(new ListAssetsTool());
                 ToolRegistry.Register(new SearchAssetsTool());
@@ -388,19 +350,10 @@ namespace Maicon.SceneAnalyzer.Editor
                 // registered there via PostFxBootstrap when SRP Core is present.
 
                 Server = new HttpMcpServer(ToolRegistry);
-                Server.OnLog += msg => RecordEntry($"[server] {msg}");
-                try
-                {
-                    ServerCoordinator = McpServerInstanceCoordinator.CreateForCurrentProject(
-                        UnityProjectRoot, SceneAnalyzerVersion.Current);
-                    ServerCoordinator.StateChanged += OnServerCoordinatorStateChanged;
-                    ServerCoordinator.CommandRequested += OnServerCoordinatorCommand;
-                }
-                catch (Exception e)
-                {
-                    ServerCoordinationError = e.Message;
-                    Debug.LogWarning($"[scene-analyzer] MCP instance coordination unavailable: {e.Message}");
-                }
+                Server.OnLog += msg => _ = MainThreadDispatcher.RunAsync(
+                    () => RecordEntry($"[server] {msg}"));
+                if (Settings.TransportMode == McpTransportMode.Embedded)
+                    EnsureEmbeddedCoordinator();
 
                 ChatSession = new ChatSession();
                 ChatClient = new CoderApiClient(ChatSession);
@@ -409,29 +362,30 @@ namespace Maicon.SceneAnalyzer.Editor
                 AssemblyReloadEvents.afterAssemblyReload += OnAfterReload;
                 EditorApplication.quitting += OnQuitting;
 
-                // Sticky remains global so every project shares one client endpoint;
-                // the coordinator decides which Unity process may bind it.
-                bool wantAutoStart = Settings.AutoStartServer || Settings.ServerStickyRunning;
+                bool wantAutoStart = Settings.TransportMode == McpTransportMode.Broker
+                    ? Settings.BrokerAutoConnect
+                    : Settings.AutoStartServer || Settings.ServerStickyRunning;
                 if (wantAutoStart && !string.IsNullOrEmpty(Settings.Token))
                 {
                     try
                     {
-                        TryStartServer(
-                            Settings.Port,
-                            Settings.Token,
-                            null,
-                            false,
-                            $"online at port {Settings.Port}",
-                            false);
+                        if (Settings.TransportMode == McpTransportMode.Broker)
+                            StartBrokerBridge(false);
+                        else
+                            TryStartServer(
+                                Settings.Port,
+                                Settings.Token,
+                                null,
+                                false,
+                                $"online at port {Settings.Port}",
+                                false);
                     }
                     catch (Exception e)
                     {
-                        Debug.LogError($"[scene-analyzer] auto-start failed: {e.Message}");
+                        Debug.LogError($"[unity-mcp] auto-start failed: {e.Message}");
                     }
                 }
 
-                // Re-poll after handlers are subscribed so a handover that crossed an
-                // assembly reload is resumed immediately instead of waiting for a tick.
                 ServerCoordinator?.PollNow();
             }
             catch (Exception e)
@@ -456,6 +410,12 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             if (string.IsNullOrEmpty(Settings.Token))
                 Settings.Token = Settings.GenerateToken();
+            if (Settings.TransportMode == McpTransportMode.Broker)
+            {
+                StartBrokerBridge(true);
+                return;
+            }
+            EnsureEmbeddedCoordinator();
             TryStartServer(
                 Settings.Port,
                 Settings.Token,
@@ -467,9 +427,16 @@ namespace Maicon.SceneAnalyzer.Editor
 
         public static void StopServer()
         {
+            if (Settings.TransportMode == McpTransportMode.Broker)
+            {
+                StopBrokerBridge();
+                Settings.BrokerAutoConnect = false;
+                NotifyServerState("broker bridge stopped");
+                return;
+            }
             Server.Stop();
             try { ServerCoordinator?.ReleaseExplicit(); }
-            catch (Exception e) { Debug.LogWarning($"[scene-analyzer] failed to release MCP lease: {e.Message}"); }
+            catch (Exception e) { Debug.LogWarning($"[unity-mcp] failed to release MCP lease: {e.Message}"); }
             Settings.ServerStickyRunning = false;
             NotifyServerState("stopped (sticky cleared)");
         }
@@ -478,6 +445,12 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             if (string.IsNullOrEmpty(Settings.Token))
                 Settings.Token = Settings.GenerateToken();
+            if (Settings.TransportMode == McpTransportMode.Broker)
+            {
+                StopBrokerBridge();
+                StartBrokerBridge(true);
+                return;
+            }
             var port = Server != null && Server.IsRunning ? Server.Port : Settings.Port;
             Server?.Stop("MCP server settings changed — retry shortly");
             TryStartServer(
@@ -491,11 +464,86 @@ namespace Maicon.SceneAnalyzer.Editor
 
         public static void BringServerHere()
         {
+            if (Settings.TransportMode == McpTransportMode.Broker)
+                throw new InvalidOperationException("Activate this project with broker_activate_project from the MCP client.");
             if (ServerCoordinator == null)
                 throw new InvalidOperationException(ServerCoordinationError ?? "MCP instance coordination is unavailable.");
             var requestId = ServerCoordinator.RequestHandover();
             RecordEntry($"[server] transfer requested for this project ({requestId.Substring(0, 8)})");
             NotifyServerState("transfer requested for this project");
+        }
+
+        private static void StartBrokerBridge(bool markAutoConnect)
+        {
+            StopBrokerBridge();
+            DisposeEmbeddedCoordinator();
+            if (string.IsNullOrWhiteSpace(Settings.BrokerUrl))
+                throw new InvalidOperationException("Broker URL is required.");
+            BrokerProcessor = new McpRequestProcessor(
+                ToolRegistry,
+                Settings.MaxConcurrentRequests,
+                Settings.ToolTimeoutSeconds);
+            BrokerBridge = new BrokerBridgeClient(
+                BrokerProcessor,
+                ToolRegistry,
+                UnityProjectRoot,
+                Settings.BrokerUrl,
+                Settings.Token,
+                Settings.MaxRequestBodyBytes);
+            BrokerBridge.Log += message => _ = MainThreadDispatcher.RunAsync(
+                () => RecordEntry("[broker] " + message));
+            BrokerBridge.StateChanged += snapshot =>
+            {
+                _ = MainThreadDispatcher.RunAsync(() =>
+                {
+                    try { OnServerCoordinationChanged?.Invoke(); }
+                    catch (Exception e) { Debug.LogException(e); }
+                });
+            };
+            BrokerLifecycle = new BrokerLifecycleMonitor(BrokerBridge, ToolRegistry);
+            BrokerBridge.Start();
+            if (markAutoConnect) Settings.BrokerAutoConnect = true;
+            NotifyServerState("broker bridge connecting");
+        }
+
+        private static void StopBrokerBridge()
+        {
+            try { BrokerLifecycle?.Dispose(); }
+            catch (Exception e) { Debug.LogException(e); }
+            BrokerLifecycle = null;
+            try { BrokerBridge?.Dispose(); }
+            catch (Exception e) { Debug.LogException(e); }
+            BrokerBridge = null;
+            try { BrokerProcessor?.Dispose(); }
+            catch (Exception e) { Debug.LogException(e); }
+            BrokerProcessor = null;
+        }
+
+        private static void EnsureEmbeddedCoordinator()
+        {
+            if (ServerCoordinator != null) return;
+            try
+            {
+                ServerCoordinationError = null;
+                ServerCoordinator = McpServerInstanceCoordinator.CreateForCurrentProject(
+                    UnityProjectRoot, SceneAnalyzerVersion.Current);
+                ServerCoordinator.StateChanged += OnServerCoordinatorStateChanged;
+                ServerCoordinator.CommandRequested += OnServerCoordinatorCommand;
+            }
+            catch (Exception e)
+            {
+                ServerCoordinationError = e.Message;
+                Debug.LogWarning($"[unity-mcp] MCP instance coordination unavailable: {e.Message}");
+            }
+        }
+
+        private static void DisposeEmbeddedCoordinator()
+        {
+            var coordinator = ServerCoordinator;
+            ServerCoordinator = null;
+            if (coordinator == null) return;
+            try { coordinator.Dispose(); }
+            catch (Exception e) { Debug.LogWarning($"[unity-mcp] failed to dispose MCP coordinator: {e.Message}"); }
         }
 
         private static bool TryStartServer(
@@ -542,13 +590,13 @@ namespace Maicon.SceneAnalyzer.Editor
                 }
                 catch (Exception stopError)
                 {
-                    Debug.LogWarning($"[scene-analyzer] failed to stop partially started MCP server: {stopError.Message}");
+                    Debug.LogWarning($"[unity-mcp] failed to stop partially started MCP server: {stopError.Message}");
                 }
 
                 try { ServerCoordinator?.FailStart(reservation.LeaseId, e.Message, handoverRequestId); }
                 catch (Exception coordinationError)
                 {
-                    Debug.LogWarning($"[scene-analyzer] failed to roll back MCP lease: {coordinationError.Message}");
+                    Debug.LogWarning($"[unity-mcp] failed to roll back MCP lease: {coordinationError.Message}");
                 }
                 throw;
             }
@@ -598,7 +646,7 @@ namespace Maicon.SceneAnalyzer.Editor
                 try { ServerCoordinator?.FailHandover(command.RequestId, e.Message); }
                 catch (Exception coordinationError)
                 {
-                    Debug.LogWarning($"[scene-analyzer] failed to mark MCP transfer failure: {coordinationError.Message}");
+                    Debug.LogWarning($"[unity-mcp] failed to mark MCP transfer failure: {coordinationError.Message}");
                 }
 
                 if (command.Kind == McpServerCoordinationCommandKind.ReleaseForHandover
@@ -617,7 +665,7 @@ namespace Maicon.SceneAnalyzer.Editor
                     }
                     catch (Exception restoreError)
                     {
-                        Debug.LogError($"[scene-analyzer] failed to restore MCP server after transfer release failure: {restoreError.Message}");
+                        Debug.LogError($"[unity-mcp] failed to restore MCP server after transfer release failure: {restoreError.Message}");
                     }
                 }
 
@@ -628,9 +676,12 @@ namespace Maicon.SceneAnalyzer.Editor
 
         private static void OnAfterReload()
         {
-            // The static ctor already auto-started the server (if sticky).
-            // Notify the chat panel that we're back so the dev / agent knows
-            // an in-flight 503 will succeed on retry.
+            if (Settings.TransportMode == McpTransportMode.Broker)
+            {
+                if (BrokerBridge != null)
+                    NotifyServerState("broker bridge reconnecting after assembly reload");
+                return;
+            }
             if (Server != null && Server.IsRunning)
                 NotifyServerState($"back online at port {Settings.Port} after assembly reload");
         }
@@ -650,17 +701,21 @@ namespace Maicon.SceneAnalyzer.Editor
             try { ChatClient?.Dispose(); }
             catch (Exception e) { Debug.LogException(e); }
 
+            if (Settings.TransportMode == McpTransportMode.Broker)
+            {
+                try
+                {
+                    using (var timeout = new System.Threading.CancellationTokenSource(500))
+                        BrokerLifecycle?.BeforeReloadAsync(timeout.Token).GetAwaiter().GetResult();
+                }
+                catch (Exception e) { Debug.LogWarning("[unity-mcp] failed to notify broker before reload: " + e.Message); }
+                StopBrokerBridge();
+                return;
+            }
+
             try { ServerCoordinator?.PrepareForReload(); }
             catch (Exception e) { Debug.LogException(e); }
-
-            try
-            {
-                // Pass a reason so HttpMcpServer writes 503 to in-flight tool
-                // calls before the AppDomain is torn down. Without this, the
-                // MCP client hangs on the dead socket until its 60s request
-                // timeout fires (-32001).
-                Server?.Stop("Unity assembly reload — server restarting; retry in ~5s");
-            }
+            try { Server?.Stop("Unity assembly reload — server restarting; retry in ~5s"); }
             catch (Exception e) { Debug.LogException(e); }
             finally
             {
@@ -673,6 +728,7 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             try { ChatClient?.Dispose(); }
             catch (Exception e) { Debug.LogException(e); }
+            StopBrokerBridge();
 
             try { Server?.Stop("Unity Editor is quitting"); }
             catch (Exception e) { Debug.LogException(e); }

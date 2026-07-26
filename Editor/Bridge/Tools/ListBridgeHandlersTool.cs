@@ -1,6 +1,7 @@
 using Maicon.SceneAnalyzer.Bridge;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
+using UnityEditor;
 
 namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
 {
@@ -20,9 +21,12 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
         };
 
         public bool IsWrite => false;
+        public JObject OutputSchema => BridgeToolSchemas.Handlers;
 
         public ToolResult Execute(JObject args)
         {
+            if (!EditorApplication.isPlaying)
+                return ToolResult.Error("NOT_PLAYING", "bridge handlers only exist in Play Mode");
             var inst = McpCommandBridge.Instance;
             if (inst == null)
                 return ToolResult.Error("BRIDGE_NOT_INSTALLED",

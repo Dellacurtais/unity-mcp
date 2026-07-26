@@ -30,12 +30,17 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
         };
 
         public bool IsWrite => false;
+        public JObject OutputSchema => PlayToolSchemas.Logs;
 
         public ToolResult Execute(JObject args)
         {
             int? sinceSeq = (int?)args["sinceSeq"];
             string severity = ((string)args["severity"] ?? "all").ToLowerInvariant();
             int limit = (int?)args["limit"] ?? 100;
+            if (sinceSeq < 0) return ToolResult.Error("BAD_SEQUENCE", "sinceSeq must be non-negative");
+            if (limit < 1 || limit > 1000) return ToolResult.Error("BAD_LIMIT", "limit must be between 1 and 1000");
+            if (severity != "all" && severity != "warnings_and_errors" && severity != "errors_only")
+                return ToolResult.Error("BAD_SEVERITY", "severity must be all, warnings_and_errors, or errors_only");
 
             LogType? minSeverity = severity switch
             {

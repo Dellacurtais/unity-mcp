@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using UnityEngine;
@@ -102,26 +104,29 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         }
 
         private static string MeshDir(string meshKey)
-            => Path.Combine(CacheRoot, SafeForFs(meshKey));
+            => Path.Combine(CacheRoot, StableName(meshKey));
 
-        private static string PathFor(string meshKey, string paramsHash)
-            => Path.Combine(MeshDir(meshKey), SafeForFs(paramsHash) + ".json");
-
-        /// Sanitise a key for filesystem use. Replaces anything that isn't
-        /// alphanumeric / '-' / '_' / '.' with '_'. RegionId-style strings
-        /// with '@' and ':' get normalised.
-        private static string SafeForFs(string s)
+        private static string PathFor(string analysisKey, string paramsHash)
         {
-            if (string.IsNullOrEmpty(s)) return "_";
-            var chars = s.ToCharArray();
-            for (int i = 0; i < chars.Length; i++)
-            {
-                char c = chars[i];
-                bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-                       || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
-                if (!ok) chars[i] = '_';
-            }
-            return new string(chars);
+            string meshKey = MeshKeyFromAnalysisKey(analysisKey);
+            return Path.Combine(MeshDir(meshKey), StableName(analysisKey), StableName(paramsHash) + ".json");
+        }
+
+        private static string MeshKeyFromAnalysisKey(string analysisKey)
+        {
+            if (string.IsNullOrEmpty(analysisKey)) return "null";
+            int ownerSeparator = analysisKey.IndexOf('@');
+            return ownerSeparator >= 0 ? analysisKey.Substring(0, ownerSeparator) : analysisKey;
+        }
+
+        private static string StableName(string value)
+        {
+            value = value ?? string.Empty;
+            using var sha = SHA256.Create();
+            var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(value));
+            var builder = new StringBuilder(32);
+            for (int i = 0; i < 16; i++) builder.Append(hash[i].ToString("x2"));
+            return builder.ToString();
         }
 
         private static bool Approximately(Matrix4x4 a, Matrix4x4 b)

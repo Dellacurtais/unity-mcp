@@ -9,8 +9,8 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
     {
         public string Name => "enter_play_mode";
         public string Description =>
-            "Enters Unity play mode and (by default) waits for the first frame so downstream tools see Time.frameCount >= 1. " +
-            "Optionally enters paused on frame 0 — combine with step_frame for deterministic frame-by-frame inspection. " +
+            "Enters Unity play mode and, when running, optionally waits until Time.frameCount reaches at least 1. " +
+            "When paused is true, preserves frame 0 and does not wait for a frame; combine with step_frame for deterministic inspection. " +
             "Refuses if the editor is currently compiling (the imminent domain reload would kill the HTTP request). " +
             "Note: if 'Reload Domain on Play' is enabled in Project Settings, the underlying assembly reload returns HTTP 503 mid-call — retry once and the second call returns immediately.";
 
@@ -26,7 +26,8 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             ["additionalProperties"] = false,
         };
 
-        public bool IsWrite => false;
+        public bool IsWrite => true;
+        public JObject OutputSchema => PlayToolSchemas.Enter;
 
         public ToolResult Execute(JObject args)
         {
@@ -39,19 +40,26 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             bool paused = (bool?)args["paused"] ?? false;
             bool waitForFirstFrame = (bool?)args["waitForFirstFrame"] ?? true;
             double timeoutSeconds = (double?)args["timeoutSeconds"] ?? 10.0;
+            if (double.IsNaN(timeoutSeconds) || double.IsInfinity(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60)
+                return ToolResult.Error("BAD_TIMEOUT", "timeoutSeconds must be finite and between 1 and 60");
 
             // Preconditions on main thread.
             var precheck = await MainThreadDispatcher.RunAsync<ToolResult>(() =>
             {
+                if (EditorApplication.isPlaying != EditorApplication.isPlayingOrWillChangePlaymode)
+                    return ToolResult.Error("TRANSITIONING",
+                        "a play-mode transition is already in flight — call get_play_state, wait for it to settle, then retry.");
                 if (EditorApplication.isPlaying)
                     return ToolResult.Ok("already in play mode (no-op)",
-                        new JObject { ["alreadyPlaying"] = true });
+                        new JObject
+                        {
+                            ["entered"] = true, ["alreadyPlaying"] = true,
+                            ["paused"] = EditorApplication.isPaused, ["frameCount"] = UnityEngine.Time.frameCount,
+                            ["waitForFirstFrameRequested"] = waitForFirstFrame, ["waitedForFirstFrame"] = false,
+                        });
                 if (EditorApplication.isCompiling)
                     return ToolResult.Error("COMPILING",
                         "editor is compiling — wait for compile to finish before entering play mode (the upcoming domain reload would 503 this call).");
-                if (EditorApplication.isPlayingOrWillChangePlaymode)
-                    return ToolResult.Error("TRANSITIONING",
-                        "a play-mode transition is already in flight — call get_play_state, wait for it to settle, then retry.");
                 return null;
             });
             if (precheck != null) return precheck;
@@ -71,19 +79,18 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
                     $"editor did not enter play mode within {timeoutSeconds}s — possible domain reload in progress (retry) or scene errors blocked entry (check console).");
             }
 
-            if (waitForFirstFrame)
-            {
-                // EnteredPlayMode fires before the first Update tick. Wait one
-                // editor pump so Time.frameCount advances from 0 to 1.
-                await PlayModeWaiter.WaitOneUpdateTick();
-            }
+            var waitedForFirstFrame = waitForFirstFrame && !paused;
+            if (waitedForFirstFrame && !await PlayModeWaiter.WaitForFrameAtLeast(1, timeoutSeconds))
+                return ToolResult.Error("FRAME_TIMEOUT",
+                    $"play mode was entered but frameCount did not reach 1 within {timeoutSeconds}s");
 
             var summary = await MainThreadDispatcher.RunAsync(() =>
             {
                 var sb = new System.Text.StringBuilder();
                 sb.Append("entered play mode");
                 if (paused) sb.Append(" (paused)");
-                if (waitForFirstFrame) sb.Append($" — at frame {UnityEngine.Time.frameCount}");
+                if (waitedForFirstFrame) sb.Append($" — at frame {UnityEngine.Time.frameCount}");
+                else if (paused && waitForFirstFrame) sb.Append(" — first-frame wait skipped to preserve paused frame 0");
                 return sb.ToString();
             });
 
@@ -92,6 +99,8 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
                 ["entered"] = true,
                 ["paused"] = paused,
                 ["frameCount"] = await MainThreadDispatcher.RunAsync(() => UnityEngine.Time.frameCount),
+                ["waitForFirstFrameRequested"] = waitForFirstFrame,
+                ["waitedForFirstFrame"] = waitedForFirstFrame,
             });
         }
     }

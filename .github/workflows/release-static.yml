@@ -1,0 +1,63 @@
+name: Release static validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  broker:
+    name: Broker / ${{ matrix.os }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: Broker~/requirements-dev.txt
+      - name: Install broker test dependencies
+        run: python -m pip install --disable-pip-version-check --requirement Broker~/requirements-dev.txt
+      - name: Run unit and real-process integration tests
+        run: python -m pytest Broker~/tests -q
+      - name: Compile Python sources
+        run: python -m compileall -q Broker~
+      - name: Validate release identity and invariants
+        run: python Tools~/validate_release.py
+
+  csharp-syntax:
+    name: C# syntax without Unity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Parse all C# sources with Roslyn
+        run: dotnet run --project Tools~/CSharpSyntaxCheck/CSharpSyntaxCheck.csproj --configuration Release -- .
+      - name: Check changed-line whitespace
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git diff --check "$BASE_SHA" "$HEAD_SHA"
+          elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            git diff --check "$BEFORE_SHA" "$HEAD_SHA"
+          else
+            git show --check --format= "$HEAD_SHA"
+          fi

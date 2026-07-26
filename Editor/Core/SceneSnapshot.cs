@@ -8,9 +8,8 @@ using UnityEngine.SceneManagement;
 namespace Maicon.SceneAnalyzer.Editor.Core
 {
     /// In-memory mirror of all loaded scenes (active + additive) keyed by
-    /// InstanceID. Refreshed lazily by ChangeWatcher; tools and analyzers read
-    /// from it instead of walking the scene each call. Main-thread only — no
-    /// locking.
+    /// InstanceID. Explicit MCP tools refresh it lazily on the main thread; no
+    /// automatic hierarchy or Play Mode watcher traverses the scene.
     public sealed class SceneSnapshot
     {
         private readonly Dictionary<int, GameObjectInfo> _byId = new();
@@ -27,9 +26,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         public string ScenePath => _scenePath;
         public IReadOnlyList<LoadedScene> LoadedScenes => _loadedScenes;
 
-        /// Monotonic counter; bumped on every MarkStale and on every Refresh.
-        /// Consumers (AnalysisRunner) use it to detect mutations that didn't go
-        /// through their own InvalidateCache.
+        /// Monotonic counter bumped whenever the snapshot is invalidated or refreshed.
         public long Revision => _revision;
 
         public IEnumerable<GameObjectInfo> All() => _byId.Values;
