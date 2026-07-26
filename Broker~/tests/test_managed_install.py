@@ -64,6 +64,29 @@ def test_install_persists_versioned_runtime_and_excludes_development_files(tmp_p
     assert status["installPath"] == str(install_path)
 
 
+def test_install_rejects_overlapping_installer_before_writing_shared_state(tmp_path: Path) -> None:
+    source = make_source(tmp_path)
+    root = tmp_path / "managed"
+    install_lock = installer.acquire_install_lock(root)
+
+    try:
+        with pytest.raises(RuntimeError, match="already running"):
+            installer.perform_install(
+                source,
+                root,
+                "1.2.3",
+                base_python=Path(sys.executable),
+                installation_id="overlap",
+                create_venv_fn=fake_create_venv,
+                install_requirements_fn=fake_install_requirements,
+            )
+    finally:
+        installer.release_install_lock(install_lock)
+
+    assert not (root / "runtime" / "install-status.json").exists()
+    assert not (root / "current.json").exists()
+
+
 def test_failed_repair_keeps_previous_current_installation(tmp_path: Path) -> None:
     source = make_source(tmp_path)
     root = tmp_path / "managed"

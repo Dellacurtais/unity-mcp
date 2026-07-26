@@ -12,6 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 MINIMUM_PYTHON = (3, 10)
 RETAINED_INSTALLATIONS = 3
 MAX_INSTALL_LOG_BYTES = 5 * 1024 * 1024
@@ -65,6 +70,37 @@ def read_json(path: Path) -> dict[str, object] | None:
     except (OSError, ValueError, TypeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def acquire_install_lock(root: Path):
+    lock_path = root / "runtime" / "install.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = lock_path.open("a+b")
+    try:
+        lock.seek(0, os.SEEK_END)
+        if lock.tell() == 0:
+            lock.write(b"\0")
+            lock.flush()
+        lock.seek(0)
+        if os.name == "nt":
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock
+    except OSError as exception:
+        lock.close()
+        raise RuntimeError("Another managed broker installation is already running.") from exception
+
+
+def release_install_lock(lock) -> None:
+    try:
+        lock.seek(0)
+        if os.name == "nt":
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock.close()
 
 
 def rotate_log(path: Path, max_bytes: int = MAX_INSTALL_LOG_BYTES, backups: int = INSTALL_LOG_BACKUPS) -> None:
@@ -189,6 +225,7 @@ def perform_install(
     install_path = build_install_path(root, version, installation_id)
     source_copy = install_path / "source"
     venv_path = install_path / "venv"
+    install_lock = acquire_install_lock(root)
     previous_manifest = read_json(root / "current.json")
     current_activated = False
     started_utc = utc_now()
@@ -204,9 +241,9 @@ def perform_install(
         "message": "Preparing managed broker installation",
         "logPath": str(log_path),
     }
-    atomic_write_json(status_path, status)
 
     try:
+        atomic_write_json(status_path, status)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         rotate_log(log_path)
         with log_path.open("a", encoding="utf-8", buffering=1) as log:
@@ -319,6 +356,8 @@ def perform_install(
             if rollback_error is None:
                 shutil.rmtree(install_path, ignore_errors=True)
         raise
+    finally:
+        release_install_lock(install_lock)
 
 
 def parse_args() -> argparse.Namespace:
