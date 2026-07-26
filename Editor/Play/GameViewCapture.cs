@@ -4,12 +4,14 @@ using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Maicon.SceneAnalyzer.Editor.Play
 {
     /// Centralised game-view capture. Two paths:
-    ///   - Play mode: pick target Camera, render to a temporary RenderTexture
-    ///     after one WaitForEndOfFrame so URP/HDRP post-fx is included.
+    ///   - Play mode: pick a target Camera, optionally defer until the current
+    ///     frame ends, then render into a temporary RenderTexture. Supported
+    ///     SRPs use StandardRequest; Built-in/unsupported SRPs use Camera.Render.
     ///   - Edit mode: reflect over UnityEditor.GameView to grab its internal
     ///     m_TargetTexture. Post-fx may be absent (URP doesn't always render to
     ///     it outside play). If reflection fails, returns null and caller emits
@@ -23,6 +25,7 @@ namespace Maicon.SceneAnalyzer.Editor.Play
             public string SourceDescription;
             public int Width;
             public int Height;
+            public string RenderPath;
         }
 
         public static async Task<CaptureResult> CapturePlayModeAsync(
@@ -31,20 +34,24 @@ namespace Maicon.SceneAnalyzer.Editor.Play
         {
             if (camera == null) throw new ArgumentNullException(nameof(camera));
 
+            var cancellationToken = ToolExecutionContext.Current?.CancellationToken ?? default;
+            cancellationToken.ThrowIfCancellationRequested();
             if (waitForEndOfFrame && Application.isPlaying)
             {
-                await EndOfFrameAwaiter.WaitOneEndOfFrame();
+                await EndOfFrameAwaiter.WaitOneEndOfFrame(cancellationToken);
             }
+            cancellationToken.ThrowIfCancellationRequested();
 
             // Render + readback must happen on the main thread.
             return await MainThreadDispatcher.RunAsync(() =>
                 RenderCameraToBytes(camera, width, height, encoding, jpgQuality,
-                    sourceDescription: $"Game view camera '{camera.name}' (depth={camera.depth})"));
+                    sourceDescription: $"Game view camera '{camera.name}' (depth={camera.depth})"),
+                cancellationToken);
         }
 
         /// Synchronous (no WaitForEndOfFrame). Used by screenshot_from_pov in
         /// both edit and play modes — the temp camera is not part of the player
-        /// loop so we render it explicitly here.
+        /// loop, so it is rendered explicitly through the effective pipeline.
         public static CaptureResult CaptureSync(Camera camera, int width, int height,
             string encoding, int jpgQuality, string sourceDescription)
         {
@@ -98,11 +105,11 @@ namespace Maicon.SceneAnalyzer.Editor.Play
                 }
                 return null;
             }
-            if (!string.IsNullOrEmpty(tag))
+            if (!string.IsNullOrWhiteSpace(tag))
             {
                 foreach (var c in Camera.allCameras)
                 {
-                    if (c != null && c.CompareTag(tag)) return c;
+                    if (c != null && string.Equals(c.tag, tag, StringComparison.Ordinal)) return c;
                 }
                 return null;
             }
@@ -126,33 +133,28 @@ namespace Maicon.SceneAnalyzer.Editor.Play
         private static CaptureResult RenderCameraToBytes(Camera camera, int width, int height,
             string encoding, int jpgQuality, string sourceDescription)
         {
+            var previousTarget = camera.targetTexture;
+            var previousActive = RenderTexture.active;
             RenderTexture rt = null;
             Texture2D tex = null;
             try
             {
                 rt = RenderTexture.GetTemporary(width, height, 24, RenderTextureFormat.ARGB32);
-                var prevTarget = camera.targetTexture;
-                var prevActive = RenderTexture.active;
-                try
-                {
-                    camera.targetTexture = rt;
-                    camera.Render();
-                }
-                finally
-                {
-                    camera.targetTexture = prevTarget;
-                }
+                var renderPath = RenderCamera(camera, rt);
 
                 RenderTexture.active = rt;
                 tex = new Texture2D(width, height, TextureFormat.RGB24, false);
                 tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
                 tex.Apply();
-                RenderTexture.active = prevActive;
 
-                return Encode(tex, width, height, encoding, jpgQuality, sourceDescription);
+                var result = Encode(tex, width, height, encoding, jpgQuality, sourceDescription);
+                result.RenderPath = renderPath;
+                return result;
             }
             finally
             {
+                camera.targetTexture = previousTarget;
+                RenderTexture.active = previousActive;
                 if (tex != null) UnityEngine.Object.DestroyImmediate(tex);
                 if (rt != null) RenderTexture.ReleaseTemporary(rt);
             }
@@ -161,11 +163,11 @@ namespace Maicon.SceneAnalyzer.Editor.Play
         private static CaptureResult ReadRenderTexture(RenderTexture rt, int targetW, int targetH,
             string encoding, int jpgQuality, string sourceDescription)
         {
+            var previousActive = RenderTexture.active;
             Texture2D tex = null;
             RenderTexture downsized = null;
             try
             {
-                var prevActive = RenderTexture.active;
                 // Honor the requested dimensions even if the GameView texture
                 // is a different size — Blit through a temp RT at target size
                 // so the agent's `width/height` params remain authoritative.
@@ -181,15 +183,34 @@ namespace Maicon.SceneAnalyzer.Editor.Play
                 tex = new Texture2D(targetW, targetH, TextureFormat.RGB24, false);
                 tex.ReadPixels(new Rect(0, 0, targetW, targetH), 0, 0);
                 tex.Apply();
-                RenderTexture.active = prevActive;
 
-                return Encode(tex, targetW, targetH, encoding, jpgQuality, sourceDescription);
+                var result = Encode(tex, targetW, targetH, encoding, jpgQuality, sourceDescription);
+                result.RenderPath = "game-view-target-reflection";
+                return result;
             }
             finally
             {
+                RenderTexture.active = previousActive;
                 if (tex != null) UnityEngine.Object.DestroyImmediate(tex);
                 if (downsized != null) RenderTexture.ReleaseTemporary(downsized);
             }
+        }
+
+        private static string RenderCamera(Camera camera, RenderTexture destination)
+        {
+            var request = new RenderPipeline.StandardRequest { destination = destination };
+            if (GraphicsSettings.currentRenderPipeline != null
+                && RenderPipeline.SupportsRenderRequest(camera, request))
+            {
+                RenderPipeline.SubmitRenderRequest(camera, request);
+                return "srp-standard-request";
+            }
+
+            camera.targetTexture = destination;
+            camera.Render();
+            return GraphicsSettings.currentRenderPipeline == null
+                ? "built-in-camera-render"
+                : "srp-camera-render-fallback";
         }
 
         private static CaptureResult Encode(Texture2D tex, int width, int height,

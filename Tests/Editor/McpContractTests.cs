@@ -9,7 +9,9 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
+using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect;
+using Maicon.SceneAnalyzer.ReflectionTestSurface;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEngine.TestTools;
@@ -43,6 +45,16 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             public JObject InputSchema => _schema;
             public JObject OutputSchema => _outputSchema;
             public bool IsWrite => _write;
+            public ToolResult Execute(JObject arguments) => ToolResult.Ok("ok");
+        }
+
+        private sealed class DefaultOutputTool : IMcpTool
+        {
+            public DefaultOutputTool(string name) { Name = name; }
+            public string Name { get; }
+            public string Description => Name;
+            public JObject InputSchema => new JObject { ["type"] = "object" };
+            public bool IsWrite => false;
             public ToolResult Execute(JObject arguments) => ToolResult.Ok("ok");
         }
 
@@ -372,6 +384,77 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void EcosystemTools_HaveValidStructuredSchemas()
+        {
+            var names = new[]
+            {
+                "get_input_system_context", "read_input_action_asset", "create_input_action_asset",
+                "add_input_action_map", "add_input_action", "add_input_binding", "add_input_control_scheme",
+                "configure_player_input", "validate_input_setup",
+                "get_localization_context", "list_localization_tables", "create_localization_locale",
+                "set_localized_string", "validate_localization",
+                "get_addressables_context", "list_addressable_entries", "configure_addressable_entry",
+                "validate_addressables", "preview_addressables_build", "start_addressables_build",
+                "get_addressables_build_job", "add_xr_grab_interactable", "validate_xr_interaction_setup",
+                "create_probuilder_shape", "refresh_probuilder_mesh", "validate_probuilder_setup",
+                "get_shader_graph_context", "list_shader_graph_assets", "read_shader_graph_source",
+                "validate_shader_graph_assets", "write_shader_graph_source",
+            };
+
+            Assert.That(names.Length, Is.EqualTo(31));
+            foreach (var name in names)
+            {
+                IMcpTool tool = new DefaultOutputTool(name);
+                Assert.That(tool.OutputSchema, Is.Not.Null, name);
+                Assert.That(ToolSchemaValidator.ValidateSchema(tool.OutputSchema, out var error), Is.True,
+                    $"{name}: {error}");
+                Assert.That(tool.OutputSchema["properties"], Is.TypeOf<JObject>(), name);
+                Assert.That(((JObject)tool.OutputSchema["properties"]).Count, Is.GreaterThan(0), name);
+            }
+        }
+
+        [Test]
+        public void ScreenshotAndPerformanceContracts_AreStructuredAndReadOnly()
+        {
+            var names = new[]
+            {
+                "screenshot_scene_view",
+                "screenshot_game_view",
+                "screenshot_from_pov",
+                "get_performance_snapshot",
+            };
+
+            foreach (var name in names)
+            {
+                var descriptor = ToolDescriptor.Infer(new StubTool(name));
+                Assert.That(descriptor.Capabilities, Is.EqualTo(McpCapability.Read), name);
+                Assert.That(descriptor.Risk, Is.EqualTo(McpRiskLevel.Low), name);
+                Assert.That(descriptor.EditorMode, Is.EqualTo(McpEditorMode.Any), name);
+                Assert.That(descriptor.ConfirmationPolicy, Is.EqualTo(McpConfirmationPolicy.None), name);
+            }
+
+            Assert.That(Bootstrap.ToolRegistry.TryGet("screenshot_scene_view", out var sceneView), Is.True);
+            Assert.That(sceneView.OutputSchema, Is.Null, "image content blocks must not advertise structuredContent");
+            Assert.That(Bootstrap.ToolRegistry.TryGet("get_performance_snapshot", out var performance), Is.True);
+            Assert.That(performance.OutputSchema, Is.Not.Null);
+            Assert.That(ToolSchemaValidator.ValidateSchema(performance.OutputSchema, out var error), Is.True, error);
+            Assert.That(((JObject)performance.OutputSchema["properties"])["frameTimingFeatureEnabled"], Is.Not.Null);
+            Assert.That(((JObject)performance.OutputSchema["properties"])["capturedFrameTimingCount"], Is.Not.Null);
+            Assert.That(Bootstrap.ToolRegistry.TryGet("analyze_performance", out _), Is.False);
+            Assert.That(Bootstrap.ToolRegistry.TryGet("validate_scene", out _), Is.False);
+        }
+
+        [TestCase("start_addressables_build")]
+        [TestCase("write_shader_graph_source")]
+        public void CriticalEcosystemTools_RequireConfirmationWhenRegistered(string name)
+        {
+            if (!Bootstrap.ToolRegistry.TryGet(name, out _)) Assert.Ignore($"optional tool not installed: {name}");
+            var descriptor = Bootstrap.ToolRegistry.GetDescriptor(name);
+            Assert.That(descriptor.Risk, Is.EqualTo(McpRiskLevel.Critical), name);
+            Assert.That(descriptor.ConfirmationPolicy, Is.EqualTo(McpConfirmationPolicy.Required), name);
+        }
+
+        [Test]
         public void OptionalModuleInventory_ReferencesRegisteredToolsOnly()
         {
             var registry = Bootstrap.ToolRegistry;
@@ -388,6 +471,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             }
         }
 
+        [TestCase("execute_menu_item", McpCapability.Reflection, McpRiskLevel.Critical)]
         [TestCase("invoke_static_method", McpCapability.Reflection, McpRiskLevel.Critical)]
         [TestCase("confirm_add_package", McpCapability.PackageManager, McpRiskLevel.Critical)]
         [TestCase("start_build", McpCapability.Build, McpRiskLevel.Critical)]
@@ -412,6 +496,36 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(ReflectionPolicy.ValidateMenuPath("File/Build Profiles...", out var menuReason), Is.False);
             StringAssert.Contains("blocked", menuReason);
             Assert.That(ReflectionPolicy.ValidateMenuPath("GameObject/Create Empty", out _), Is.True);
+            Assert.That(ReflectionPolicy.ValidateMenuPath("Create Empty", out _), Is.False);
+            Assert.That(ReflectionPolicy.ValidateMenuPath("GameObject/", out _), Is.False);
+        }
+
+        [Test]
+        public void ReflectionPolicy_AllowsOnlySynchronousPublicMethodsWithoutSpecialTransport()
+        {
+            var probe = typeof(ReflectionPolicyProbe);
+            Assert.That(ReflectionPolicy.ValidateMethod(probe.GetMethod(nameof(ReflectionPolicyProbe.PublicMethod)), new JArray(), out _), Is.True);
+            Assert.That(ReflectionPolicy.ValidateMethod(probe.GetMethod("HiddenMethod", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic), new JArray(), out _), Is.False);
+            Assert.That(ReflectionPolicy.ValidateMethod(probe.GetProperty(nameof(ReflectionPolicyProbe.Value)).GetGetMethod(), new JArray(), out _), Is.False);
+            Assert.That(ReflectionPolicy.ValidateMethod(probe.GetMethod(nameof(ReflectionPolicyProbe.ParamsMethod)), new JArray(), out _), Is.False);
+            Assert.That(ReflectionPolicy.ValidateMethod(probe.GetMethod(nameof(ReflectionPolicyProbe.AsyncMethod)), new JArray(), out _), Is.False);
+        }
+
+        [Test]
+        public void ReflectionAndDiscoveryTools_HaveValidStructuredSchemas()
+        {
+            IMcpTool[] tools =
+            {
+                new ListMenuItemsTool(), new DescribeStaticMethodTool(),
+                new ExecuteMenuItemTool(), new InvokeStaticMethodTool(),
+                new ListComponentTypesTool(), new DescribeComponentTypeTool(),
+            };
+            foreach (var tool in tools)
+            {
+                Assert.That(ToolSchemaValidator.ValidateSchema(tool.InputSchema, out var inputError), Is.True, $"{tool.Name} input: {inputError}");
+                Assert.That(tool.OutputSchema, Is.Not.Null, tool.Name);
+                Assert.That(ToolSchemaValidator.ValidateSchema(tool.OutputSchema, out var outputError), Is.True, $"{tool.Name} output: {outputError}");
+            }
         }
 
         [Test]
@@ -469,6 +583,9 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 Assert.That(ToolSchemaValidator.ValidateSchema(tool.InputSchema, out var error), Is.True,
                     $"{tool.Name}: {error}");
+                if (tool.OutputSchema != null)
+                    Assert.That(ToolSchemaValidator.ValidateSchema(tool.OutputSchema, out var outputError), Is.True,
+                        $"{tool.Name} output: {outputError}");
                 var descriptor = Bootstrap.ToolRegistry.GetDescriptor(tool.Name);
                 Assert.That(descriptor, Is.Not.Null, tool.Name);
                 Assert.That(descriptor.Name, Is.EqualTo(tool.Name));
@@ -483,5 +600,17 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That((int)report["errors"], Is.Zero);
             Assert.That((int)report["checks"], Is.GreaterThan(Bootstrap.ToolRegistry.Count));
         }
+    }
+}
+
+namespace Maicon.SceneAnalyzer.ReflectionTestSurface
+{
+    public static class ReflectionPolicyProbe
+    {
+        public static int Value => 1;
+        public static int PublicMethod() => 1;
+        private static int HiddenMethod() => 1;
+        public static int ParamsMethod(params int[] values) => values?.Length ?? 0;
+        public static Task AsyncMethod() => Task.CompletedTask;
     }
 }

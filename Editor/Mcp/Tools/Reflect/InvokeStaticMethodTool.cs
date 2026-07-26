@@ -14,7 +14,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
         public string Name => "invoke_static_method";
 
         public string Description =>
-            "Invokes a public or non-public STATIC method by name. Use describe_static_method " +
+            "Invokes a public STATIC method by name inside the reflection sandbox. Use describe_static_method " +
             "first to learn parameter types. typeName accepts FullName, simple Name, or " +
             "assembly-qualified; pass assemblyName when ambiguous. Pass argTypes (parameter " +
             "FullNames or Names) to disambiguate overloads with the same arity. UnityEngine.Object " +
@@ -22,16 +22,17 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
             "accept arrays or {x,y,z,w}/{r,g,b,a} objects. Enums accept name strings or ints. " +
             "Returns the method's return value serialised to JSON (UnityEngine.Object → " +
             "{instanceId,name,type,assetPath?}). Errors propagate as INVOKE_THREW with stack trace. " +
-            "Generic and ref/out methods are UNSUPPORTED. Requires AllowWrites=true.";
+            "Generic, ref/out, params, accessors, delegates, enumerators and async methods are UNSUPPORTED. " +
+            "public methods only are eligible; use dedicated MCP tools for project/editor writes. Requires AllowWrites=true.";
 
         public JObject InputSchema => new JObject
         {
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["typeName"] = new JObject { ["type"] = "string" },
-                ["methodName"] = new JObject { ["type"] = "string" },
-                ["assemblyName"] = new JObject { ["type"] = "string" },
+                ["typeName"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 1024 },
+                ["methodName"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 512 },
+                ["assemblyName"] = new JObject { ["type"] = "string", ["maxLength"] = 512 },
                 ["argTypes"] = new JObject
                 {
                     ["type"] = "array",
@@ -55,6 +56,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                             new JObject { ["type"] = "integer" },
                             new JObject { ["type"] = "boolean" },
                             new JObject { ["type"] = "object" },
+                            new JObject { ["type"] = "array" },
                             new JObject { ["type"] = "null" },
                         },
                     },
@@ -65,18 +67,49 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
             ["additionalProperties"] = false,
         };
 
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["typeFullName"] = new JObject { ["type"] = "string" },
+                ["method"] = new JObject { ["type"] = "string" },
+                ["returnTypeFullName"] = new JObject { ["type"] = "string" },
+                ["returnValue"] = new JObject
+                {
+                    ["anyOf"] = new JArray
+                    {
+                        new JObject { ["type"] = "string" }, new JObject { ["type"] = "number" },
+                        new JObject { ["type"] = "integer" }, new JObject { ["type"] = "boolean" },
+                        new JObject { ["type"] = "object" }, new JObject { ["type"] = "array" },
+                        new JObject { ["type"] = "null" },
+                    },
+                },
+            },
+            ["required"] = new JArray { "typeFullName", "method", "returnTypeFullName", "returnValue" },
+            ["additionalProperties"] = false,
+        };
+
         public bool IsWrite => true;
 
         public ToolResult Execute(JObject args)
         {
-            var typeName = (string)args["typeName"];
-            var methodName = (string)args["methodName"];
-            var asmHint = (string)args["assemblyName"];
+            args = args ?? new JObject();
+            var typeName = ((string)args["typeName"] ?? string.Empty).Trim();
+            var methodName = ((string)args["methodName"] ?? string.Empty).Trim();
+            var asmHint = ((string)args["assemblyName"] ?? string.Empty).Trim();
+            if (args["argTypes"] != null && !(args["argTypes"] is JArray))
+                return ToolResult.Error("BAD_ARGS", "argTypes must be an array of strings");
+            if (args["args"] != null && !(args["args"] is JArray))
+                return ToolResult.Error("BAD_ARGS", "args must be an array");
             var argTypes = args["argTypes"] as JArray;
             var jsonArgs = args["args"] as JArray ?? new JArray();
 
-            if (string.IsNullOrEmpty(typeName) || string.IsNullOrEmpty(methodName))
-                return ToolResult.Error("BAD_ARGS", "typeName and methodName are required");
+            if (typeName.Length == 0 || methodName.Length == 0
+                || typeName.Length > 1024 || methodName.Length > 512 || asmHint.Length > 512)
+                return ToolResult.Error("BAD_ARGS", "typeName and methodName are required and names must fit supported limits");
+            if (argTypes != null && argTypes.Any(token => token.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)token)))
+                return ToolResult.Error("BAD_ARGS", "argTypes must contain only non-empty strings");
 
             var typeRes = ReflectionResolver.ResolveType(typeName, asmHint);
             if (typeRes.Ambiguous)

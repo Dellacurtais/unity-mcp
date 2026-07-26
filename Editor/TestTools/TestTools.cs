@@ -1,11 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Jobs;
 using Newtonsoft.Json.Linq;
+using UnityEditor;
 using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
 
@@ -13,6 +13,9 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
 {
     internal static class TestToolSupport
     {
+        public const int MaxFailures = 100;
+        public const int MaxTextLength = 32768;
+
         public static JObject ModeSchema(bool withFilter)
         {
             var properties = new JObject
@@ -26,30 +29,15 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
             };
             if (withFilter)
             {
-                properties["testNames"] = new JObject
+                foreach (var name in new[] { "testNames", "groupNames", "categoryNames", "assemblyNames" })
                 {
-                    ["type"] = "array",
-                    ["items"] = new JObject { ["type"] = "string" },
-                    ["maxItems"] = 1000,
-                };
-                properties["groupNames"] = new JObject
-                {
-                    ["type"] = "array",
-                    ["items"] = new JObject { ["type"] = "string" },
-                    ["maxItems"] = 1000,
-                };
-                properties["categoryNames"] = new JObject
-                {
-                    ["type"] = "array",
-                    ["items"] = new JObject { ["type"] = "string" },
-                    ["maxItems"] = 1000,
-                };
-                properties["assemblyNames"] = new JObject
-                {
-                    ["type"] = "array",
-                    ["items"] = new JObject { ["type"] = "string" },
-                    ["maxItems"] = 1000,
-                };
+                    properties[name] = new JObject
+                    {
+                        ["type"] = "array",
+                        ["items"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 1024 },
+                        ["maxItems"] = 1000,
+                    };
+                }
             }
             else
             {
@@ -64,22 +52,106 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
             };
         }
 
+        public static JObject TestSchema() => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["id"] = new JObject { ["type"] = "string" },
+                ["uniqueName"] = new JObject { ["type"] = "string" },
+                ["name"] = new JObject { ["type"] = "string" },
+                ["fullName"] = new JObject { ["type"] = "string" },
+                ["testMode"] = new JObject { ["type"] = "string" },
+                ["runState"] = new JObject { ["type"] = "string" },
+                ["categories"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" } },
+                ["skipReason"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["parentFullName"] = new JObject { ["type"] = new JArray { "string", "null" } },
+            },
+            ["additionalProperties"] = false,
+        };
+
+        public static JObject ListOutputSchema() => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["tests"] = new JObject { ["type"] = "array", ["items"] = TestSchema() },
+                ["offset"] = new JObject { ["type"] = "integer" },
+                ["count"] = new JObject { ["type"] = "integer" },
+                ["total"] = new JObject { ["type"] = "integer" },
+                ["truncated"] = new JObject { ["type"] = "boolean" },
+            },
+            ["required"] = new JArray { "tests", "offset", "count", "total", "truncated" },
+            ["additionalProperties"] = false,
+        };
+
+        public static JObject JobOutputSchema() => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["jobId"] = new JObject { ["type"] = "string" },
+                ["kind"] = new JObject { ["type"] = "string" },
+                ["status"] = new JObject { ["type"] = "string" },
+                ["progress"] = new JObject { ["type"] = "number" },
+                ["message"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["error"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["result"] = new JObject(),
+                ["input"] = new JObject { ["type"] = "object" },
+                ["createdUtc"] = new JObject { ["type"] = "string" },
+                ["startedUtc"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["completedUtc"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["canCancel"] = new JObject { ["type"] = "boolean" },
+            },
+            ["required"] = new JArray { "jobId", "kind", "status", "progress", "createdUtc", "canCancel" },
+            ["additionalProperties"] = false,
+        };
+
+        public static bool ValidateRunState(out string error)
+        {
+            if (EditorApplication.isCompiling) { error = "Unity is compiling scripts"; return false; }
+            if (EditorApplication.isUpdating) { error = "Unity is importing or updating assets"; return false; }
+            if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isPlaying)
+            {
+                error = "Unity must be in stable Edit Mode before a TestRunnerApi run";
+                return false;
+            }
+            error = null;
+            return true;
+        }
+
+        public static bool ValidateFilters(JObject args, out string error)
+        {
+            foreach (var name in new[] { "testNames", "groupNames", "categoryNames", "assemblyNames" })
+            {
+                if (!(args[name] is JArray array)) continue;
+                if (array.Count > 1000) { error = $"{name} exceeds 1000 entries"; return false; }
+                foreach (var value in array.Values<string>())
+                {
+                    if (string.IsNullOrWhiteSpace(value) || value.Length > 1024)
+                    {
+                        error = $"{name} entries must be non-empty and at most 1024 characters";
+                        return false;
+                    }
+                }
+            }
+            error = null;
+            return true;
+        }
+
         public static TestMode ParseMode(JObject args) =>
             string.Equals((string)args["testMode"], "PlayMode", StringComparison.OrdinalIgnoreCase)
                 ? TestMode.PlayMode
                 : TestMode.EditMode;
 
-        public static Filter Filter(JObject args)
+        public static Filter Filter(JObject args) => new Filter
         {
-            return new Filter
-            {
-                testMode = ParseMode(args),
-                testNames = Values(args["testNames"]),
-                groupNames = Values(args["groupNames"]),
-                categoryNames = Values(args["categoryNames"]),
-                assemblyNames = Values(args["assemblyNames"]),
-            };
-        }
+            testMode = ParseMode(args),
+            testNames = Values(args["testNames"]),
+            groupNames = Values(args["groupNames"]),
+            categoryNames = Values(args["categoryNames"]),
+            assemblyNames = Values(args["assemblyNames"]),
+        };
 
         private static string[] Values(JToken token) =>
             token is JArray array && array.Count > 0 ? array.Values<string>().ToArray() : null;
@@ -101,36 +173,39 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
             ["testMode"] = test.TestMode.ToString(),
             ["runState"] = test.RunState.ToString(),
             ["categories"] = new JArray(test.Categories ?? Array.Empty<string>()),
-            ["skipReason"] = test.SkipReason,
-            ["parentFullName"] = test.ParentFullName,
+            ["skipReason"] = Trim(test.SkipReason),
+            ["parentFullName"] = Trim(test.ParentFullName),
         };
 
-        public static JObject ResultJson(ITestResultAdaptor result, JArray failures)
+        public static JObject ResultJson(ITestResultAdaptor result, JArray failures, bool failuresTruncated) => new JObject
         {
-            return new JObject
-            {
-                ["fullName"] = result.FullName,
-                ["resultState"] = result.ResultState,
-                ["status"] = result.TestStatus.ToString(),
-                ["durationSeconds"] = result.Duration,
-                ["passed"] = result.PassCount,
-                ["failed"] = result.FailCount,
-                ["skipped"] = result.SkipCount,
-                ["inconclusive"] = result.InconclusiveCount,
-                ["asserts"] = result.AssertCount,
-                ["message"] = result.Message,
-                ["stackTrace"] = result.StackTrace,
-                ["output"] = result.Output,
-                ["failures"] = failures,
-            };
-        }
+            ["fullName"] = Trim(result.FullName),
+            ["resultState"] = Trim(result.ResultState),
+            ["status"] = result.TestStatus.ToString(),
+            ["durationSeconds"] = result.Duration,
+            ["passed"] = result.PassCount,
+            ["failed"] = result.FailCount,
+            ["skipped"] = result.SkipCount,
+            ["inconclusive"] = result.InconclusiveCount,
+            ["asserts"] = result.AssertCount,
+            ["message"] = Trim(result.Message),
+            ["stackTrace"] = Trim(result.StackTrace),
+            ["output"] = Trim(result.Output),
+            ["failures"] = failures,
+            ["failuresTruncated"] = failuresTruncated,
+        };
+
+        public static string Trim(string value) => string.IsNullOrEmpty(value)
+            ? value
+            : value.Length <= MaxTextLength ? value : value.Substring(0, MaxTextLength);
     }
 
-    internal sealed class TestRunCallbacks : ICallbacks
+    internal sealed class TestRunCallbacks : IErrorCallbacks
     {
         private readonly TaskCompletionSource<JToken> _completion =
             new TaskCompletionSource<JToken>(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly JArray _failures = new JArray();
+        private bool _failuresTruncated;
 
         public Task<JToken> Completion => _completion.Task;
         public void RunStarted(ITestAdaptor testsToRun) { }
@@ -138,21 +213,24 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
         public void TestFinished(ITestResultAdaptor result)
         {
             if (result == null || result.Test == null || result.Test.IsSuite || result.FailCount == 0) return;
+            if (_failures.Count >= TestToolSupport.MaxFailures) { _failuresTruncated = true; return; }
             _failures.Add(new JObject
             {
-                ["fullName"] = result.FullName,
-                ["resultState"] = result.ResultState,
-                ["message"] = result.Message,
-                ["stackTrace"] = result.StackTrace,
-                ["output"] = result.Output,
+                ["fullName"] = TestToolSupport.Trim(result.FullName),
+                ["resultState"] = TestToolSupport.Trim(result.ResultState),
+                ["message"] = TestToolSupport.Trim(result.Message),
+                ["stackTrace"] = TestToolSupport.Trim(result.StackTrace),
+                ["output"] = TestToolSupport.Trim(result.Output),
                 ["durationSeconds"] = result.Duration,
             });
         }
         public void RunFinished(ITestResultAdaptor result)
         {
-            if (result == null) _completion.TrySetException(new InvalidOperationException("Test Runner returned no result"));
-            else _completion.TrySetResult(TestToolSupport.ResultJson(result, _failures));
+            if (result == null) _completion.TrySetException(new ToolJobFailureException("Test Runner returned no result"));
+            else _completion.TrySetResult(TestToolSupport.ResultJson(result, _failures, _failuresTruncated));
         }
+        public void OnError(string message) =>
+            _completion.TrySetException(new ToolJobFailureException("TEST_RUN_FAILED: " + TestToolSupport.Trim(message)));
     }
 
     public sealed class ListTestsTool : IMcpTool
@@ -160,11 +238,19 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
         public string Name => "list_tests";
         public string Description => "Lists EditMode or PlayMode tests through TestRunnerApi with stable UniqueName values and pagination.";
         public JObject InputSchema => TestToolSupport.ModeSchema(false);
+        public JObject OutputSchema => TestToolSupport.ListOutputSchema();
         public bool IsWrite => false;
         public ToolResult Execute(JObject args) => ToolResult.Error("ASYNC_REQUIRED", "list_tests must run through ExecuteAsync");
 
         public async Task<ToolResult> ExecuteAsync(JObject args)
         {
+            var offsetArg = (int?)args["offset"] ?? 0;
+            var limit = (int?)args["limit"] ?? 500;
+            if (offsetArg < 0 || limit < 1 || limit > 5000)
+                return ToolResult.Error("BAD_ARGS", "offset must be non-negative and limit must be in 1..5000");
+            if (!TestToolSupport.ValidateRunState(out var stateError))
+                return ToolResult.Error("EDITOR_BUSY", stateError);
+
             var context = ToolExecutionContext.Current;
             var token = context != null ? context.CancellationToken : default;
             TestRunnerApi api = null;
@@ -172,16 +258,17 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
             {
                 api = await MainThreadDispatcher.RunAsync(ScriptableObject.CreateInstance<TestRunnerApi>, token);
                 var completion = new TaskCompletionSource<ITestAdaptor>(TaskCreationOptions.RunContinuationsAsynchronously);
+#pragma warning disable CS0618
                 await MainThreadDispatcher.RunAsync(() => api.RetrieveTestList(
                     TestToolSupport.ParseMode(args), root => completion.TrySetResult(root)), token);
+#pragma warning restore CS0618
                 using (token.Register(() => completion.TrySetCanceled(token)))
                 {
                     var root = await completion.Task;
                     var tests = new List<ITestAdaptor>();
                     TestToolSupport.FlattenTests(root, tests);
                     tests.Sort((left, right) => string.Compare(left.FullName, right.FullName, StringComparison.Ordinal));
-                    int offset = Math.Min((int?)args["offset"] ?? 0, tests.Count);
-                    int limit = (int?)args["limit"] ?? 500;
+                    var offset = Math.Min(offsetArg, tests.Count);
                     var page = new JArray(tests.Skip(offset).Take(limit).Select(TestToolSupport.TestJson));
                     return ToolResult.Ok($"{tests.Count} {TestToolSupport.ParseMode(args)} test(s)", new JObject
                     {
@@ -209,18 +296,20 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
     public sealed class RunTestsTool : IMcpTool
     {
         public string Name => "run_tests";
-        public string Description => "Starts a serialized Unity Test Framework job and returns immediately with a jobId.";
+        public string Description => "Starts one serialized Unity Test Framework job and returns immediately with a reload-sensitive jobId.";
         public JObject InputSchema => TestToolSupport.ModeSchema(true);
+        public JObject OutputSchema => TestToolSupport.JobOutputSchema();
         public bool IsWrite => true;
         public ToolResult Execute(JObject args)
         {
-            var active = ToolJobManager.List("test", 20)
-                .OfType<JObject>()
-                .Any(item => !new[] { "Completed", "Failed", "Cancelled" }.Contains((string)item["status"]));
-            if (active) return ToolResult.Error("TEST_RUN_ACTIVE", "another Unity test job is already active");
+            if (!TestToolSupport.ValidateRunState(out var stateError))
+                return ToolResult.Error("EDITOR_BUSY", stateError);
+            if (!TestToolSupport.ValidateFilters(args, out var filterError))
+                return ToolResult.Error("BAD_ARGS", filterError);
+            if (!ToolJobManager.TryCreateExclusive("test", args, canCancel: true, out var job))
+                return ToolResult.Error("TEST_RUN_ACTIVE", "another Unity test job is already active");
 
-            var job = ToolJobManager.Create("test", args, canCancel: true);
-            UnityEditor.EditorApplication.delayCall += () => ToolJobManager.Start(job, async (record, token) =>
+            EditorApplication.delayCall += () => ToolJobManager.Start(job, async (record, token) =>
             {
                 TestRunnerApi api = null;
                 var callbacks = new TestRunCallbacks();
@@ -266,10 +355,13 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
         public string Name => "get_test_job";
         public string Description => "Returns one Unity test job state and aggregated result.";
         public JObject InputSchema => JobSchema();
+        public JObject OutputSchema => TestToolSupport.JobOutputSchema();
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
-            if (!ToolJobManager.TryGet((string)args["jobId"], out var job) || job.Kind != "test")
+            var id = (string)args["jobId"];
+            if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("BAD_ARGS", "jobId is required");
+            if (!ToolJobManager.TryGet(id, out var job) || job.Kind != "test")
                 return ToolResult.Error("JOB_NOT_FOUND", "test job not found");
             return ToolResult.Ok($"test job {job.Status}", job.ToJson());
         }
@@ -277,7 +369,7 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
         internal static JObject JobSchema() => new JObject
         {
             ["type"] = "object",
-            ["properties"] = new JObject { ["jobId"] = new JObject { ["type"] = "string" } },
+            ["properties"] = new JObject { ["jobId"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 128 } },
             ["required"] = new JArray { "jobId" },
             ["additionalProperties"] = false,
         };
@@ -286,17 +378,19 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
     public sealed class CancelTestJobTool : IMcpTool
     {
         public string Name => "cancel_test_job";
-        public string Description => "Requests cancellation of a running Unity Test Framework job.";
+        public string Description => "Requests TestRunnerApi cancellation; cleanup can take multiple frames before the job becomes terminal.";
         public JObject InputSchema => GetTestJobTool.JobSchema();
+        public JObject OutputSchema => TestToolSupport.JobOutputSchema();
         public bool IsWrite => true;
         public ToolResult Execute(JObject args)
         {
             var id = (string)args["jobId"];
+            if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("BAD_ARGS", "jobId is required");
             if (!ToolJobManager.TryGet(id, out var job) || job.Kind != "test")
                 return ToolResult.Error("JOB_NOT_FOUND", "test job not found");
             if (!ToolJobManager.Cancel(id, out job))
                 return ToolResult.Error("TEST_NOT_CANCELLABLE", "test job is terminal or already cancelling", job.ToJson());
-            return ToolResult.Ok("test cancellation requested", job.ToJson());
+            return ToolResult.Ok("test cancellation requested; poll until terminal", job.ToJson());
         }
     }
 }

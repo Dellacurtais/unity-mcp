@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
@@ -17,9 +18,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
 
         private static readonly string[] BlockedTypePrefixes =
         {
+            "Maicon.SceneAnalyzer.Editor.",
             "UnityEditor.AssetDatabase",
             "UnityEditor.FileUtil",
             "UnityEditor.EditorApplication",
+            "UnityEditor.EditorPrefs",
+            "UnityEditor.SessionState",
+            "UnityEditor.EditorUtility",
+            "UnityEditor.SettingsService",
             "UnityEditor.PackageManager.",
             "UnityEditor.Build.",
             "UnityEditor.Compilation.",
@@ -33,6 +39,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
         private static readonly HashSet<string> BlockedMethods = new HashSet<string>(StringComparer.Ordinal)
         {
             "UnityEngine.Application.Quit",
+            "UnityEngine.Application.OpenURL",
+            "UnityEditor.Help.BrowseURL",
             "UnityEditor.EditorApplication.Exit",
             "UnityEditor.EditorApplication.ExitPlaymode",
             "UnityEditor.AssetDatabase.DeleteAsset",
@@ -53,6 +61,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
             "Package Manager",
             "Save As",
             "Open Project",
+            "Import Package",
+            "Export Package",
             "Quit",
             "Exit",
         };
@@ -61,6 +71,22 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
         {
             reason = null;
             if (method == null) { reason = "method is required"; return false; }
+            if (!method.IsStatic || !method.IsPublic)
+            {
+                reason = "only public static methods are allowed by the reflection sandbox";
+                return false;
+            }
+            if (method.IsSpecialName)
+            {
+                reason = "property/event accessors and operator methods are blocked; use a dedicated MCP tool";
+                return false;
+            }
+            if (method.ContainsGenericParameters)
+            {
+                reason = "generic methods are not supported";
+                return false;
+            }
+
             var declaringType = method.DeclaringType;
             var typeName = declaringType?.FullName ?? string.Empty;
             foreach (var prefix in BlockedTypePrefixes)
@@ -71,7 +97,6 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                     return false;
                 }
             }
-
             if (!AllowedTypePrefixes.Any(prefix => typeName.StartsWith(prefix, StringComparison.Ordinal)))
             {
                 reason = $"type '{typeName}' is outside the reflection allowlist";
@@ -84,10 +109,32 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                 reason = $"method '{methodKey}' is blocked by the reflection sandbox";
                 return false;
             }
-            if (typeof(Delegate).IsAssignableFrom(method.ReturnType)
-                || typeof(System.Collections.IEnumerator).IsAssignableFrom(method.ReturnType))
+
+            var parameters = method.GetParameters();
+            if (parameters.Any(parameter => parameter.ParameterType.IsByRef))
             {
-                reason = "methods returning delegates or enumerators are not supported";
+                reason = "ref/out parameters are not supported";
+                return false;
+            }
+            if (parameters.Any(parameter => parameter.IsDefined(typeof(ParamArrayAttribute), false)))
+            {
+                reason = "params methods are not supported by generic reflection invocation";
+                return false;
+            }
+            if (parameters.Any(parameter => IsUnsafeTransportType(parameter.ParameterType)))
+            {
+                reason = "delegate, reflection metadata, pointer and task parameters are blocked";
+                return false;
+            }
+
+            var returnType = method.ReturnType;
+            if (typeof(Delegate).IsAssignableFrom(returnType)
+                || typeof(System.Collections.IEnumerator).IsAssignableFrom(returnType)
+                || typeof(Task).IsAssignableFrom(returnType)
+                || returnType.FullName == "System.Threading.Tasks.ValueTask"
+                || (returnType.IsGenericType && returnType.GetGenericTypeDefinition().FullName == "System.Threading.Tasks.ValueTask`1"))
+            {
+                reason = "methods returning delegates, enumerators or System.Threading.Tasks.Task/ValueTask are not supported";
                 return false;
             }
             if (method.GetCustomAttribute<ObsoleteAttribute>() != null)
@@ -102,15 +149,37 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
         {
             reason = null;
             if (string.IsNullOrWhiteSpace(menuPath)) { reason = "menuPath is required"; return false; }
+            var normalized = menuPath.Trim();
+            if (normalized.Length > 1024) { reason = "menuPath exceeds 1024 characters"; return false; }
+            if (normalized.IndexOf('/') <= 0 || normalized.EndsWith("/", StringComparison.Ordinal))
+            {
+                reason = "menuPath must be an exact slash-delimited command path";
+                return false;
+            }
+            if (normalized.Any(char.IsControl))
+            {
+                reason = "menuPath contains control characters";
+                return false;
+            }
             foreach (var fragment in BlockedMenuFragments)
             {
-                if (menuPath.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0)
+                if (normalized.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     reason = $"menu path contains blocked modal/destructive fragment '{fragment}'";
                     return false;
                 }
             }
             return true;
+        }
+
+        private static bool IsUnsafeTransportType(Type type)
+        {
+            var underlying = Nullable.GetUnderlyingType(type) ?? type;
+            return underlying.IsPointer
+                || typeof(Delegate).IsAssignableFrom(underlying)
+                || typeof(MemberInfo).IsAssignableFrom(underlying)
+                || underlying == typeof(Type)
+                || typeof(Task).IsAssignableFrom(underlying);
         }
     }
 }

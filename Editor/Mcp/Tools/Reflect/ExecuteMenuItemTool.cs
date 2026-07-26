@@ -29,7 +29,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                 ["menuPath"] = new JObject
                 {
                     ["type"] = "string",
-                    ["description"] = "Top-level menu path, e.g. 'GameObject/Create Empty'.",
+                    ["minLength"] = 3,
+                    ["maxLength"] = 1024,
+                    ["description"] = "Exact slash-delimited menu command path, e.g. 'GameObject/Create Empty'.",
                 },
                 ["verifyEnabledFirst"] = new JObject
                 {
@@ -42,11 +44,30 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
             ["additionalProperties"] = false,
         };
 
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["menuPath"] = new JObject { ["type"] = "string" },
+                ["wasEnabled"] = new JObject { ["type"] = "boolean" },
+                ["executed"] = new JObject { ["type"] = "boolean" },
+            },
+            ["required"] = new JArray { "menuPath", "wasEnabled", "executed" },
+            ["additionalProperties"] = false,
+        };
+
         public bool IsWrite => true;
 
         public ToolResult Execute(JObject args)
         {
-            var menuPath = (string)args["menuPath"];
+            args = args ?? new JObject();
+            var menuPathToken = args["menuPath"];
+            if (menuPathToken == null || menuPathToken.Type != JTokenType.String)
+                return ToolResult.Error("BAD_ARGS", "menuPath must be an exact slash-delimited string");
+            var menuPath = ((string)menuPathToken).Trim();
+            if (args["verifyEnabledFirst"] != null && args["verifyEnabledFirst"].Type != JTokenType.Boolean)
+                return ToolResult.Error("BAD_ARGS", "verifyEnabledFirst must be boolean");
             if (!ReflectionPolicy.ValidateMenuPath(menuPath, out var policyError))
                 return ToolResult.Error("MENU_BLOCKED", policyError,
                     new JObject { ["menuPath"] = menuPath });

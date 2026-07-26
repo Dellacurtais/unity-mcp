@@ -81,7 +81,17 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         /// Read up to `maxItems` most-recent entries from Unity's Console.
         /// Filters: severity ("Error"/"Warning"/"Log") and substring match.
         /// Synchronous — must be called on the editor main thread.
-        public static List<Item> Read(string severityFilter, string contains, int maxItems)
+        public static List<Item> Read(string severityFilter, string contains, int maxItems) =>
+            ReadCore(severityFilter, contains, maxItems, predicate: null);
+
+        public static List<Item> ReadCompilerDiagnostics(string severityFilter, int maxItems) =>
+            ReadCore(severityFilter, contains: null, maxItems, IsCompilerDiagnostic);
+
+        private static List<Item> ReadCore(
+            string severityFilter,
+            string contains,
+            int maxItems,
+            Func<Item, bool> predicate)
         {
             var list = new List<Item>();
             Resolve();
@@ -101,8 +111,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                     int count = (int)_getCount.Invoke(null, null);
                     _startGetting?.Invoke(null, null);
 
-                    int from = Math.Max(0, count - Math.Max(maxItems * 2, maxItems));
-                    for (int i = from; i < count; i++)
+                    for (int i = count - 1; i >= 0; i--)
                     {
                         try { _getEntry.Invoke(null, new object[] { i, entryInstance }); }
                         catch { continue; }
@@ -120,13 +129,16 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                         if (!string.IsNullOrEmpty(contains)
                             && msg.IndexOf(contains, StringComparison.OrdinalIgnoreCase) < 0) continue;
 
-                        list.Add(new Item
+                        var item = new Item
                         {
                             Row = i, Message = msg, File = file, Line = line,
                             Mode = mode, Severity = sev,
-                        });
+                        };
+                        if (predicate != null && !predicate(item)) continue;
+                        list.Add(item);
                         if (list.Count >= maxItems) break;
                     }
+                    list.Reverse();
                 }
                 catch { /* swallow — internal API */ }
                 finally
@@ -149,6 +161,16 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                 else l++;
             }
             return (e, w, l);
+        }
+
+        public static bool IsCompilerDiagnostic(Item item)
+        {
+            if (item == null) return false;
+            const int compileMask = (1 << 4) | (1 << 5);
+            if ((item.Mode & compileMask) != 0) return true;
+            var message = item.Message ?? string.Empty;
+            return message.IndexOf("error CS", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("warning CS", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool MatchesSeverity(string sev, string filter)

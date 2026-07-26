@@ -87,7 +87,7 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
 
             string b64 = Convert.ToBase64String(result.Bytes);
             string summary = $"{result.SourceDescription} — {result.Width}×{result.Height}, " +
-                             $"{result.Bytes.Length:N0} bytes ({result.MimeType})";
+                             $"{result.Bytes.Length:N0} bytes ({result.MimeType}), renderPath={result.RenderPath}";
             return ToolResult.Image(b64, result.MimeType, summary);
         }
     }

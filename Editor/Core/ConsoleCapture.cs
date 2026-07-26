@@ -32,6 +32,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         private const int Capacity = 1000;
         private static readonly LinkedList<Entry> _entries = new();
         private static readonly object _lock = new();
+        private static readonly string _domainId = Guid.NewGuid().ToString("N");
         private static int _nextSeq = 1;
 
         /// Current sequence number. Use this as a "since" anchor before
@@ -40,6 +41,11 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         public static int CurrentSeq { get { lock (_lock) return _nextSeq; } }
 
         public static int BufferSize { get { lock (_lock) return _entries.Count; } }
+
+        public static string DomainId => _domainId;
+
+        public static bool IsCurrentDomain(string domainId) =>
+            string.IsNullOrEmpty(domainId) || string.Equals(domainId, _domainId, StringComparison.Ordinal);
 
         static ConsoleCapture()
         {
@@ -100,11 +106,23 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             }
         }
 
-        public static List<Entry> Snapshot(int? sinceSeq, LogType? minSeverity, string contains, int limit)
+        public static List<Entry> Snapshot(int? sinceSeq, LogType? minSeverity, string contains, int limit) =>
+            SnapshotCore(sinceSeq, minSeverity, contains, limit, compileOnly: false);
+
+        public static List<Entry> SnapshotCompilerDiagnostics(int? sinceSeq, LogType? minSeverity, int limit) =>
+            SnapshotCore(sinceSeq, minSeverity, contains: null, limit, compileOnly: true);
+
+        private static List<Entry> SnapshotCore(
+            int? sinceSeq,
+            LogType? minSeverity,
+            string contains,
+            int limit,
+            bool compileOnly)
         {
             lock (_lock)
             {
                 IEnumerable<Entry> q = _entries;
+                if (compileOnly) q = q.Where(e => e.IsCompile);
                 if (sinceSeq.HasValue) q = q.Where(e => e.Seq >= sinceSeq.Value);
                 if (minSeverity.HasValue) q = q.Where(e => Importance(e.Severity) >= Importance(minSeverity.Value));
                 if (!string.IsNullOrEmpty(contains))
@@ -116,24 +134,23 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             }
         }
 
-        public static int Clear(bool alsoUnityConsole)
+        public static int Clear(bool alsoUnityConsole, out bool unityConsoleCleared)
         {
             int removed;
             lock (_lock) { removed = _entries.Count; _entries.Clear(); }
-            if (alsoUnityConsole)
+            unityConsoleCleared = false;
+            if (!alsoUnityConsole) return removed;
+            try
             {
-                try
-                {
-                    // Internal API — exists across all modern Unity versions
-                    // but isn't part of the public surface. Tolerate failure.
-                    var asm = typeof(UnityEditor.Editor).Assembly;
-                    var type = asm.GetType("UnityEditor.LogEntries");
-                    var clear = type?.GetMethod("Clear",
-                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                    clear?.Invoke(null, null);
-                }
-                catch { /* internal API drift — tolerate */ }
+                var asm = typeof(UnityEditor.Editor).Assembly;
+                var type = asm.GetType("UnityEditor.LogEntries");
+                var clear = type?.GetMethod("Clear",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                if (clear == null) return removed;
+                clear.Invoke(null, null);
+                unityConsoleCleared = true;
             }
+            catch { }
             return removed;
         }
 
@@ -143,7 +160,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             {
                 case LogType.Exception: return 4;
                 case LogType.Error:     return 3;
-                case LogType.Assert:    return 2;
+                case LogType.Assert:    return 3;
                 case LogType.Warning:   return 1;
                 default:                return 0; // Log
             }

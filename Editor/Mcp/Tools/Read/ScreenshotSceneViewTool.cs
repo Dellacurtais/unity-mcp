@@ -35,22 +35,20 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                     "no active SceneView; open the Scene tab in the editor and try again");
 
             var camera = sceneView.camera;
+            var previousTarget = camera.targetTexture;
+            var previousActive = RenderTexture.active;
             RenderTexture rt = null;
             Texture2D tex = null;
             try
             {
                 rt = RenderTexture.GetTemporary(width, height, 24, RenderTextureFormat.ARGB32);
-                var prev = camera.targetTexture;
                 camera.targetTexture = rt;
                 camera.Render();
-                camera.targetTexture = prev;
 
-                var prevActive = RenderTexture.active;
                 RenderTexture.active = rt;
                 tex = new Texture2D(width, height, TextureFormat.RGB24, false);
                 tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
                 tex.Apply();
-                RenderTexture.active = prevActive;
 
                 var png = tex.EncodeToPNG();
                 var b64 = Convert.ToBase64String(png);
@@ -59,6 +57,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             }
             finally
             {
+                camera.targetTexture = previousTarget;
+                RenderTexture.active = previousActive;
                 if (tex != null) UnityEngine.Object.DestroyImmediate(tex);
                 if (rt != null) RenderTexture.ReleaseTemporary(rt);
             }

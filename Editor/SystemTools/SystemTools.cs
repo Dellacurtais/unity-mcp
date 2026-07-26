@@ -651,10 +651,22 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         public string Name => "list_lod_groups";
         public string Description => "Lists loaded LODGroups, thresholds and renderer target references.";
         public JObject InputSchema => SystemToolSupport.EmptySchema();
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["groups"] = new JObject
+            {
+                ["type"] = "array",
+                ["items"] = new JObject { ["type"] = "object" },
+            },
+        }, "groups");
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
-            var groups = UnityEngine.Object.FindObjectsByType<LODGroup>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var groups = UnityEngine.Object.FindObjectsByType<LODGroup>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+                .OrderBy(group => group.gameObject.scene.path, StringComparer.Ordinal)
+                .ThenBy(group => ToolTargetRef.BuildHierarchyPath(group.transform), StringComparer.Ordinal)
+                .ThenBy(group => group.GetInstanceID())
+                .ToArray();
             var result = new JArray(groups.Select(group => new JObject
             {
                 ["target"] = ToolTargetRef.Capture(group)?.ToJson(),
@@ -691,32 +703,63 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
                 },
             },
         }, "levels");
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["target"] = new JObject { ["type"] = "object" },
+            ["levelCount"] = new JObject { ["type"] = "integer" },
+        }, "target", "levelCount");
         public bool IsWrite => true;
         public ToolResult Execute(JObject args)
         {
+            if (args == null || !(args["levels"] is JArray levelTokens) || levelTokens.Count < 1 || levelTokens.Count > 16)
+                return ToolResult.Error("BAD_ARGS", "levels must contain 1..16 LOD level objects");
             var gameObject = SystemToolSupport.GameObject(args, out var error);
             if (gameObject == null) return error;
+            var loadedRenderers = UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+                .GroupBy(renderer => renderer.GetInstanceID())
+                .ToDictionary(group => group.Key, group => group.First());
+            var seenRendererIds = new HashSet<int>();
             var levels = new List<LOD>();
             float previousThreshold = 1.0001f;
-            foreach (var token in (JArray)args["levels"])
+            foreach (var token in levelTokens)
             {
-                var item = (JObject)token;
+                if (!(token is JObject item)) return ToolResult.Error("BAD_ARGS", "each LOD level must be an object");
+                var unknown = item.Properties().FirstOrDefault(property =>
+                    property.Name != "screenRelativeTransitionHeight"
+                    && property.Name != "fadeTransitionWidth"
+                    && property.Name != "rendererInstanceIds");
+                if (unknown != null) return ToolResult.Error("BAD_ARGS", $"unsupported LOD property '{unknown.Name}'");
+                if (item["screenRelativeTransitionHeight"] == null
+                    || (item["screenRelativeTransitionHeight"].Type != JTokenType.Integer && item["screenRelativeTransitionHeight"].Type != JTokenType.Float))
+                    return ToolResult.Error("BAD_ARGS", "screenRelativeTransitionHeight must be numeric");
+                if (item["fadeTransitionWidth"] != null
+                    && item["fadeTransitionWidth"].Type != JTokenType.Integer
+                    && item["fadeTransitionWidth"].Type != JTokenType.Float)
+                    return ToolResult.Error("BAD_ARGS", "fadeTransitionWidth must be numeric");
+                if (!(item["rendererInstanceIds"] is JArray rendererIdTokens))
+                    return ToolResult.Error("BAD_ARGS", "rendererInstanceIds must be an array");
+                if (rendererIdTokens.Any(rendererId => rendererId.Type != JTokenType.Integer))
+                    return ToolResult.Error("BAD_ARGS", "rendererInstanceIds must contain only integers");
                 var threshold = (float)item["screenRelativeTransitionHeight"];
+                var fadeWidth = (float?)item["fadeTransitionWidth"] ?? 0f;
+                if (float.IsNaN(threshold) || float.IsInfinity(threshold) || threshold < 0f || threshold > 1f)
+                    return ToolResult.Error("BAD_ARGS", "screenRelativeTransitionHeight must be finite and in 0..1");
+                if (float.IsNaN(fadeWidth) || float.IsInfinity(fadeWidth) || fadeWidth < 0f || fadeWidth > 1f)
+                    return ToolResult.Error("BAD_ARGS", "fadeTransitionWidth must be finite and in 0..1");
                 if (threshold >= previousThreshold)
                     return ToolResult.Error("BAD_LOD_ORDER", "LOD transition heights must be strictly descending");
                 previousThreshold = threshold;
-                var rendererIds = ((JArray)item["rendererInstanceIds"]).Values<int>().ToArray();
+                var rendererIds = rendererIdTokens.Values<int>().ToArray();
                 var renderers = new Renderer[rendererIds.Length];
                 for (int index = 0; index < rendererIds.Length; index++)
                 {
-                    renderers[index] = EditorUtility.InstanceIDToObject(rendererIds[index]) as Renderer;
-                    if (renderers[index] == null)
-                        return ToolResult.Error("RENDERER_NOT_FOUND", $"rendererInstanceIds[{index}]={rendererIds[index]}");
+                    var rendererId = rendererIds[index];
+                    if (!seenRendererIds.Add(rendererId))
+                        return ToolResult.Error("DUPLICATE_RENDERER_ID", $"renderer instance ID {rendererId} appears in more than one LOD slot");
+                    if (!loadedRenderers.TryGetValue(rendererId, out renderers[index]) || renderers[index] == null)
+                        return ToolResult.Error("RENDERER_NOT_FOUND", $"rendererInstanceIds[{index}]={rendererId}");
                 }
-                var lod = new LOD(threshold, renderers)
-                {
-                    fadeTransitionWidth = (float?)item["fadeTransitionWidth"] ?? 0f,
-                };
+                var lod = new LOD(threshold, renderers) { fadeTransitionWidth = fadeWidth };
                 levels.Add(lod);
             }
             LODGroup group;
@@ -729,7 +772,11 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
                 group.RecalculateBounds();
                 mutation.Complete();
             }
-            return ToolResult.Ok($"configured {levels.Count} LOD level(s)", new JObject { ["target"] = ToolTargetRef.Capture(group)?.ToJson() });
+            return ToolResult.Ok($"configured {levels.Count} LOD level(s)", new JObject
+            {
+                ["target"] = ToolTargetRef.Capture(group)?.ToJson(),
+                ["levelCount"] = levels.Count,
+            });
         }
     }
 
@@ -2000,11 +2047,28 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
     public sealed class GetPerformanceSnapshotTool : IMcpTool
     {
         public string Name => "get_performance_snapshot";
-        public string Description => "Returns current memory, frame timing, object counts and rendering capability counters without starting the Profiler.";
+        public string Description => "Returns current memory, frame timing capability/results, object counts and rendering counters without starting the Profiler. Frame timings can be empty when the feature or current Editor/platform path does not provide completed timings.";
         public JObject InputSchema => SystemToolSupport.EmptySchema();
+        public JObject OutputSchema => SystemToolSupport.OutputSchema(new JObject
+        {
+            ["memory"] = new JObject { ["type"] = "object" },
+            ["frameTimings"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            ["frameTimingFeatureEnabled"] = new JObject { ["type"] = "boolean" },
+            ["capturedFrameTimingCount"] = new JObject { ["type"] = "integer" },
+            ["isPlaying"] = new JObject { ["type"] = "boolean" },
+            ["isEditor"] = new JObject { ["type"] = "boolean" },
+            ["targetFrameRate"] = new JObject { ["type"] = "integer" },
+            ["vSyncCount"] = new JObject { ["type"] = "integer" },
+            ["gameObjects"] = new JObject { ["type"] = "integer" },
+            ["renderers"] = new JObject { ["type"] = "integer" },
+            ["rigidbodies3D"] = new JObject { ["type"] = "integer" },
+            ["rigidbodies2D"] = new JObject { ["type"] = "integer" },
+        }, "memory", "frameTimings", "frameTimingFeatureEnabled", "capturedFrameTimingCount", "isPlaying", "isEditor",
+            "targetFrameRate", "vSyncCount", "gameObjects", "renderers", "rigidbodies3D", "rigidbodies2D");
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
+            var frameTimingFeatureEnabled = FrameTimingManager.IsFeatureEnabled();
             FrameTimingManager.CaptureFrameTimings();
             var timings = new FrameTiming[4];
             var count = FrameTimingManager.GetLatestTimings((uint)timings.Length, timings);
@@ -2025,6 +2089,10 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
                     ["monoHeapBytes"] = Profiler.GetMonoHeapSizeLong(),
                 },
                 ["frameTimings"] = frames,
+                ["frameTimingFeatureEnabled"] = frameTimingFeatureEnabled,
+                ["capturedFrameTimingCount"] = (int)count,
+                ["isPlaying"] = Application.isPlaying,
+                ["isEditor"] = Application.isEditor,
                 ["targetFrameRate"] = Application.targetFrameRate, ["vSyncCount"] = QualitySettings.vSyncCount,
                 ["gameObjects"] = UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length,
                 ["renderers"] = UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length,

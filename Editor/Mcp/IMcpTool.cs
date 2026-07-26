@@ -11,7 +11,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         bool IsWrite { get; }
 
         ToolDescriptor Descriptor => ToolDescriptor.Infer(this);
-        JObject OutputSchema => null;
+        JObject OutputSchema => ToolOutputContracts.For(Name);
 
         ToolResult Execute(JObject arguments);
 

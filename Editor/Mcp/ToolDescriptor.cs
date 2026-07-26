@@ -138,7 +138,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             name.Contains("addressable") || name.Contains("localization") || name.Contains("localized_") || name.Contains("shader_graph") ||
             name == "set_so_property" || name == "modify_array_property" ||
             name == "create_folder" || name == "refresh_assets" ||
-            name == "request_script_compilation" || name == "mesh_enable_read_write";
+            name == "wait_for_compile_clean" || name == "request_script_compilation" ||
+            name == "mesh_enable_read_write";
 
         private static bool IsPlayControl(string name) =>
             name == "enter_play_mode" || name == "exit_play_mode" ||

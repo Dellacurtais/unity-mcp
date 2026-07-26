@@ -14,10 +14,30 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["componentType"] = new JObject { ["type"] = "string" },
+                ["componentType"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 1024 },
+                ["assemblyName"] = new JObject { ["type"] = "string", ["maxLength"] = 512 },
                 ["includeMethods"] = new JObject { ["type"] = "boolean", ["default"] = false },
             },
             ["required"] = new JArray { "componentType" },
+            ["additionalProperties"] = false,
+        };
+
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["name"] = new JObject { ["type"] = "string" },
+                ["fullName"] = new JObject { ["type"] = "string" },
+                ["namespace"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["assembly"] = new JObject { ["type"] = "string" },
+                ["isMonoBehaviour"] = new JObject { ["type"] = "boolean" },
+                ["isBuiltin"] = new JObject { ["type"] = "boolean" },
+                ["requires"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" } },
+                ["fields"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+                ["methods"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" } },
+            },
+            ["required"] = new JArray { "name", "fullName", "namespace", "assembly", "isMonoBehaviour", "isBuiltin", "requires", "fields", "methods" },
             ["additionalProperties"] = false,
         };
 
@@ -25,10 +45,20 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
 
         public ToolResult Execute(JObject args)
         {
-            var typeName = (string)args["componentType"];
+            args = args ?? new JObject();
+            var typeName = ((string)args["componentType"] ?? string.Empty).Trim();
+            var assemblyName = ((string)args["assemblyName"] ?? string.Empty).Trim();
             var withMethods = (bool?)args["includeMethods"] ?? false;
-            var d = ComponentTypeInspector.Describe(typeName, withMethods);
-            if (d == null) return ToolResult.Error("NOT_FOUND", $"component type '{typeName}' not found");
+            if (typeName.Length == 0 || typeName.Length > 1024 || assemblyName.Length > 512)
+                return ToolResult.Error("BAD_ARGS", "componentType is required and type/assembly names must fit supported limits");
+            var d = ComponentTypeInspector.Describe(typeName, assemblyName, withMethods, out var resolutionError);
+            if (d == null)
+            {
+                var code = resolutionError != null && resolutionError.StartsWith("AMBIGUOUS_COMPONENT_TYPE")
+                    ? "AMBIGUOUS_COMPONENT_TYPE"
+                    : "NOT_FOUND";
+                return ToolResult.Error(code, resolutionError ?? $"component type '{typeName}' not found");
+            }
 
             var fields = new JArray();
             if (d.Fields != null)

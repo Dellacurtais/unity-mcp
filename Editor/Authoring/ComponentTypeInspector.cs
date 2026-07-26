@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using UnityEditor;
 using UnityEngine;
 using Maicon.SceneAnalyzer;
 
@@ -42,46 +43,70 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         public static IEnumerable<TypeDescriptor> ListTypes(string nameContains, string category, int limit)
         {
-            var componentBase = typeof(Component);
-            int count = 0;
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                var asmName = asm.GetName().Name ?? "";
-                bool isBuiltin = IsBuiltinAssembly(asmName);
-                if (category == "user" && isBuiltin) continue;
-                if (category == "builtin" && !isBuiltin) continue;
-
-                Type[] types;
-                try { types = asm.GetTypes(); }
-                catch (ReflectionTypeLoadException tle) { types = tle.Types.Where(t => t != null).ToArray(); }
-                catch { continue; }
-
-                foreach (var t in types)
+            var normalizedCategory = string.IsNullOrEmpty(category) ? "all" : category.ToLowerInvariant();
+            return TypeCache.GetTypesDerivedFrom<Component>()
+                .Where(t => t != null && !t.IsAbstract && !t.IsGenericType && !t.ContainsGenericParameters)
+                .Where(t =>
                 {
-                    if (t == null) continue;
-                    if (!componentBase.IsAssignableFrom(t)) continue;
-                    if (t.IsAbstract) continue;
-                    if (t.IsGenericType) continue;
-                    if (!string.IsNullOrEmpty(nameContains)
-                        && t.Name.IndexOf(nameContains, StringComparison.OrdinalIgnoreCase) < 0
-                        && (t.FullName ?? "").IndexOf(nameContains, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    var isBuiltin = IsBuiltinAssembly(t.Assembly.GetName().Name ?? string.Empty);
+                    return normalizedCategory == "all"
+                        || (normalizedCategory == "builtin" && isBuiltin)
+                        || (normalizedCategory == "user" && !isBuiltin);
+                })
+                .Where(t => string.IsNullOrEmpty(nameContains)
+                    || t.Name.IndexOf(nameContains, StringComparison.OrdinalIgnoreCase) >= 0
+                    || (t.FullName ?? string.Empty).IndexOf(nameContains, StringComparison.OrdinalIgnoreCase) >= 0)
+                .OrderBy(t => t.FullName ?? t.Name, StringComparer.Ordinal)
+                .ThenBy(t => t.Assembly.GetName().Name, StringComparer.Ordinal)
+                .Take(Math.Max(0, limit))
+                .Select(t => Brief(t, IsBuiltinAssembly(t.Assembly.GetName().Name ?? string.Empty)))
+                .ToArray();
+        }
 
-                    yield return Brief(t, isBuiltin);
-                    count++;
-                    if (count >= limit) yield break;
-                }
-            }
+        public static int CountTypes(string nameContains, string category)
+        {
+            return ListTypes(nameContains, category, int.MaxValue).Count();
         }
 
         public static TypeDescriptor Describe(string typeName, bool includeMethods = false)
         {
-            var t = ResolveType(typeName);
+            return Describe(typeName, null, includeMethods, out _);
+        }
+
+        public static TypeDescriptor Describe(string typeName, string assemblyName, bool includeMethods, out string error)
+        {
+            var t = ResolveComponentType(typeName, assemblyName, out error);
             if (t == null) return null;
-            var asmName = t.Assembly.GetName().Name ?? "";
+            var asmName = t.Assembly.GetName().Name ?? string.Empty;
             var d = Brief(t, IsBuiltinAssembly(asmName));
-            d.Fields = GetSerializedFields(t);
-            if (includeMethods) d.Methods = GetPublicMethods(t);
+            d.Fields = GetSerializedFields(t)
+                .OrderBy(field => field.Name, StringComparer.Ordinal)
+                .ToList();
+            if (includeMethods) d.Methods = GetPublicMethods(t).OrderBy(method => method, StringComparer.Ordinal).ToList();
             return d;
+        }
+
+        private static Type ResolveComponentType(string typeName, string assemblyName, out string error)
+        {
+            error = null;
+            if (string.IsNullOrWhiteSpace(typeName)) { error = "BAD_ARGS: componentType is required"; return null; }
+            var matches = TypeCache.GetTypesDerivedFrom<Component>()
+                .Where(t => t != null && (string.Equals(t.FullName, typeName, StringComparison.Ordinal)
+                    || string.Equals(t.Name, typeName, StringComparison.Ordinal)))
+                .Where(t => string.IsNullOrEmpty(assemblyName)
+                    || string.Equals(t.Assembly.GetName().Name, assemblyName, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(t => t.FullName ?? t.Name, StringComparer.Ordinal)
+                .ThenBy(t => t.Assembly.GetName().Name, StringComparer.Ordinal)
+                .ToArray();
+            if (matches.Length == 1) return matches[0];
+            if (matches.Length > 1)
+            {
+                error = "AMBIGUOUS_COMPONENT_TYPE: multiple component types match; pass assemblyName or fullName. Candidates: "
+                    + string.Join(", ", matches.Select(t => $"{t.FullName}, {t.Assembly.GetName().Name}"));
+                return null;
+            }
+            error = $"COMPONENT_TYPE_NOT_FOUND: component type '{typeName}' was not found";
+            return null;
         }
 
         // ---- Helpers ----

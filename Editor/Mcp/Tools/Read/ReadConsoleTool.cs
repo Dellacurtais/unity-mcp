@@ -1,5 +1,6 @@
+using System;
 using System.Collections.Generic;
-using System.Text;
+using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -10,12 +11,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
     {
         public string Name => "read_console";
         public string Description =>
-            "Reads Unity Console messages from TWO sources merged together:\n" +
-            " 1. **Unity's own Console** (`UnityEditor.LogEntries` via reflection) — persistent across domain reloads, includes pre-existing compile errors and anything currently visible in the Console window. No `seq` available.\n" +
-            " 2. **Our live capture buffer** (subscribed to `Application.logMessageReceivedThreaded` + `CompilationPipeline.assemblyCompilationFinished`) — stable `seq` numbers for delta queries.\n\n" +
-            "Filters: `source` (`all` default / `unity` / `buffer`), `severity` (`all` / `warnings_and_errors` / `errors_only`), `since` (only entries with seq >= N — implies source=buffer because LogEntries has no seq), `messageContains`, `limit` (default 50), `includeStack`.\n" +
-            "When `since` is set OR `source=buffer`, only the live buffer is read — enables 'what changed during my op'. Without `since`, you get the full Console as the user sees it.\n" +
-            "Note: domain reload (after a successful .cs compile) resets the live buffer's seq counter; LogEntries persists.";
+            "Reads structured Unity Console entries from the persistent internal Console when available and/or the live capture buffer. " +
+            "Live delta anchors are valid only with the returned bufferDomainId; domain reload resets that epoch.";
 
         public JObject InputSchema => new JObject
         {
@@ -24,11 +21,33 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             {
                 ["source"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "all", "unity", "buffer" }, ["default"] = "all" },
                 ["severity"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "all", "warnings_and_errors", "errors_only" }, ["default"] = "all" },
-                ["since"] = new JObject { ["type"] = "integer" },
-                ["messageContains"] = new JObject { ["type"] = "string" },
-                ["limit"] = new JObject { ["type"] = "integer", ["default"] = 50, ["minimum"] = 1 },
+                ["since"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["bufferDomainId"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 64 },
+                ["messageContains"] = new JObject { ["type"] = "string", ["maxLength"] = 4096 },
+                ["limit"] = new JObject { ["type"] = "integer", ["default"] = 50, ["minimum"] = 1, ["maximum"] = 1000 },
                 ["includeStack"] = new JObject { ["type"] = "boolean", ["default"] = false },
             },
+            ["additionalProperties"] = false,
+        };
+
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["source"] = new JObject { ["type"] = "string" },
+                ["unityConsoleAvailable"] = new JObject { ["type"] = "boolean" },
+                ["bufferDomainId"] = new JObject { ["type"] = "string" },
+                ["nextSeq"] = new JObject { ["type"] = "integer" },
+                ["bufferSize"] = new JObject { ["type"] = "integer" },
+                ["errors"] = new JObject { ["type"] = "integer" },
+                ["warnings"] = new JObject { ["type"] = "integer" },
+                ["logs"] = new JObject { ["type"] = "integer" },
+                ["count"] = new JObject { ["type"] = "integer" },
+                ["truncated"] = new JObject { ["type"] = "boolean" },
+                ["entries"] = new JObject { ["type"] = "array", ["items"] = EntrySchema() },
+            },
+            ["required"] = new JArray { "source", "unityConsoleAvailable", "bufferDomainId", "nextSeq", "bufferSize", "errors", "warnings", "logs", "count", "truncated", "entries" },
             ["additionalProperties"] = false,
         };
 
@@ -37,94 +56,134 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
         public ToolResult Execute(JObject args)
         {
             var source = ((string)args["source"] ?? "all").ToLowerInvariant();
-            var severityFilter = ((string)args["severity"] ?? "all").ToLowerInvariant();
+            var severity = ((string)args["severity"] ?? "all").ToLowerInvariant();
             var since = (int?)args["since"];
+            var domainId = (string)args["bufferDomainId"];
             var contains = (string)args["messageContains"];
             var limit = (int?)args["limit"] ?? 50;
             var includeStack = (bool?)args["includeStack"] ?? false;
-
-            // `since` only applies to the live buffer (LogEntries has no seq).
+            if (limit < 1 || limit > 1000 || since < 0 || (contains?.Length ?? 0) > 4096)
+                return ToolResult.Error("BAD_ARGS", "limit must be in 1..1000, since must be non-negative and messageContains must be at most 4096 characters");
+            if (since.HasValue && string.IsNullOrWhiteSpace(domainId))
+                return ToolResult.Error("BAD_ARGS", "bufferDomainId is required with since because sequence numbers reset on domain reload");
+            if (since.HasValue && !ConsoleCapture.IsCurrentDomain(domainId))
+                return ToolResult.Error("STALE_CONSOLE_ANCHOR", "bufferDomainId belongs to a previous domain reload; request a new anchor");
             if (since.HasValue && source == "all") source = "buffer";
+            if (since.HasValue && source == "unity")
+                return ToolResult.Error("BAD_ARGS", "since applies only to source=buffer");
 
-            var sb = new StringBuilder();
-            int totalErrors = 0, totalWarnings = 0, totalInfo = 0;
+            var rows = new List<JObject>();
+            var unityAvailable = UnityConsoleReader.IsAvailable;
+            var candidateLimit = Math.Min(1000, limit + 1);
+            if (source == "unity" && !unityAvailable)
+                return ToolResult.Error("UNAVAILABLE", "UnityEditor.LogEntries reflection is unavailable; use source=buffer");
 
-            // 1) Unity LogEntries (persistent, full Console snapshot)
-            if (source == "all" || source == "unity")
+            if ((source == "all" || source == "unity") && unityAvailable)
             {
-                if (!UnityConsoleReader.IsAvailable && source == "unity")
+                foreach (var item in UnityConsoleReader.Read(severity == "all" ? null : severity, contains, candidateLimit))
                 {
-                    return ToolResult.Error("UNAVAILABLE",
-                        "UnityEditor.LogEntries reflection failed — internal API may have changed in this Unity version. Try source=buffer.");
-                }
-
-                var unityItems = UnityConsoleReader.IsAvailable
-                    ? UnityConsoleReader.Read(severityFilter == "all" ? null : severityFilter, contains, limit)
-                    : new List<UnityConsoleReader.Item>();
-
-                if (unityItems.Count > 0)
-                {
-                    var (e, w, l) = UnityConsoleReader.Counts();
-                    sb.AppendLine($"=== Unity Console (full state) — {e} error(s), {w} warning(s), {l} log(s) total ===");
-                    foreach (var it in unityItems)
+                    rows.Add(new JObject
                     {
-                        if (it.Severity == "Error") totalErrors++;
-                        else if (it.Severity == "Warning") totalWarnings++;
-                        else totalInfo++;
-                        var loc = !string.IsNullOrEmpty(it.File)
-                            ? $"[{it.File}:{it.Line}]"
-                            : $"[{it.Severity}]";
-                        sb.AppendLine($"row#{it.Row} {loc} {it.Message}");
-                    }
-                }
-                else if (source == "unity")
-                {
-                    sb.AppendLine("Unity Console is empty (or no entries match the filter).");
+                        ["source"] = "unity",
+                        ["row"] = item.Row,
+                        ["seq"] = null,
+                        ["timeUtc"] = null,
+                        ["severity"] = item.Severity,
+                        ["message"] = item.Message,
+                        ["stack"] = null,
+                        ["file"] = item.File,
+                        ["line"] = item.Line,
+                        ["column"] = 0,
+                        ["isCompile"] = UnityConsoleReader.IsCompilerDiagnostic(item),
+                    });
                 }
             }
 
-            // 2) Live capture buffer (delta-friendly via `since`)
             if (source == "all" || source == "buffer")
             {
-                LogType? min = severityFilter switch
+                LogType? min = severity == "errors_only"
+                    ? LogType.Error
+                    : severity == "warnings_and_errors" ? LogType.Warning : (LogType?)null;
+                foreach (var entry in ConsoleCapture.Snapshot(since, min, contains, candidateLimit))
                 {
-                    "errors_only" => LogType.Error,
-                    "warnings_and_errors" => LogType.Warning,
-                    _ => null,
-                };
-                var captured = ConsoleCapture.Snapshot(since, min, contains, limit);
-                if (captured.Count > 0)
-                {
-                    if (sb.Length > 0) sb.AppendLine();
-                    sb.AppendLine($"=== Live capture buffer — {ConsoleCapture.BufferSize} buffered, currentSeq={ConsoleCapture.CurrentSeq} ===");
-                    foreach (var e in captured)
+                    rows.Add(new JObject
                     {
-                        if (e.Severity == LogType.Error || e.Severity == LogType.Exception || e.Severity == LogType.Assert) totalErrors++;
-                        else if (e.Severity == LogType.Warning) totalWarnings++;
-                        else totalInfo++;
-                        var loc = e.IsCompile && !string.IsNullOrEmpty(e.SourceFile)
-                            ? $"[{e.SourceFile}:{e.SourceLine}{(e.SourceColumn > 0 ? $":{e.SourceColumn}" : "")}]"
-                            : $"[{e.Severity}]";
-                        sb.AppendLine($"#{e.Seq} {e.Time:HH:mm:ss.fff} {loc} {e.Message}");
-                        if (includeStack && !string.IsNullOrEmpty(e.Stack))
-                        {
-                            var stack = e.Stack.TrimEnd();
-                            if (stack.Length > 0) sb.AppendLine("    " + stack.Replace("\n", "\n    "));
-                        }
-                    }
-                }
-                else if (source == "buffer")
-                {
-                    sb.AppendLine("Live buffer is empty (or no entries match the filter).");
+                        ["source"] = "buffer",
+                        ["row"] = null,
+                        ["seq"] = entry.Seq,
+                        ["timeUtc"] = entry.Time.ToUniversalTime().ToString("O"),
+                        ["severity"] = entry.Severity.ToString(),
+                        ["message"] = entry.Message,
+                        ["stack"] = includeStack ? entry.Stack : null,
+                        ["file"] = entry.SourceFile,
+                        ["line"] = entry.SourceLine,
+                        ["column"] = entry.SourceColumn,
+                        ["isCompile"] = entry.IsCompile,
+                    });
                 }
             }
 
-            if (sb.Length == 0)
-                sb.AppendLine("(no console entries — both sources empty for these filters)");
-
-            // Summary header
-            var header = $"{totalErrors} error/exception, {totalWarnings} warning, {totalInfo} info  (source={source})\n\n";
-            return ToolResult.Ok(header + sb.ToString());
+            bool truncated;
+            if (source == "all")
+            {
+                var unityRows = rows.Where(row => string.Equals((string)row["source"], "unity", StringComparison.Ordinal)).ToList();
+                var bufferRows = rows.Where(row => string.Equals((string)row["source"], "buffer", StringComparison.Ordinal)).ToList();
+                var unityTake = Math.Min(unityRows.Count, (limit + 1) / 2);
+                var bufferTake = Math.Min(bufferRows.Count, limit - unityTake);
+                if (unityTake + bufferTake < limit)
+                    unityTake = Math.Min(unityRows.Count, limit - bufferTake);
+                truncated = unityRows.Count > unityTake || bufferRows.Count > bufferTake;
+                rows = unityRows.Skip(unityRows.Count - unityTake)
+                    .Concat(bufferRows.Skip(bufferRows.Count - bufferTake))
+                    .ToList();
+            }
+            else
+            {
+                truncated = rows.Count > limit;
+                if (truncated) rows = rows.Skip(rows.Count - limit).ToList();
+            }
+            var errors = rows.Count(row => IsError((string)row["severity"]));
+            var warnings = rows.Count(row => string.Equals((string)row["severity"], "Warning", StringComparison.Ordinal));
+            var payload = new JObject
+            {
+                ["source"] = source,
+                ["unityConsoleAvailable"] = unityAvailable,
+                ["bufferDomainId"] = ConsoleCapture.DomainId,
+                ["nextSeq"] = ConsoleCapture.CurrentSeq,
+                ["bufferSize"] = ConsoleCapture.BufferSize,
+                ["errors"] = errors,
+                ["warnings"] = warnings,
+                ["logs"] = rows.Count - errors - warnings,
+                ["count"] = rows.Count,
+                ["truncated"] = truncated,
+                ["entries"] = new JArray(rows),
+            };
+            return ToolResult.Ok($"{rows.Count} console entr{(rows.Count == 1 ? "y" : "ies")}", payload);
         }
+
+        private static bool IsError(string severity) =>
+            string.Equals(severity, "Error", StringComparison.Ordinal)
+            || string.Equals(severity, "Exception", StringComparison.Ordinal)
+            || string.Equals(severity, "Assert", StringComparison.Ordinal);
+
+        private static JObject EntrySchema() => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["source"] = new JObject { ["type"] = "string" },
+                ["row"] = new JObject { ["type"] = new JArray { "integer", "null" } },
+                ["seq"] = new JObject { ["type"] = new JArray { "integer", "null" } },
+                ["timeUtc"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["severity"] = new JObject { ["type"] = "string" },
+                ["message"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["stack"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["file"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["line"] = new JObject { ["type"] = "integer" },
+                ["column"] = new JObject { ["type"] = "integer" },
+                ["isCompile"] = new JObject { ["type"] = "boolean" },
+            },
+            ["additionalProperties"] = false,
+        };
     }
 }

@@ -73,8 +73,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
             Type t, string methodName, JArray argTypesHint, JArray jsonArgs)
         {
             var result = new MethodResolution();
-            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public
-                                        | BindingFlags.NonPublic | BindingFlags.FlattenHierarchy;
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.FlattenHierarchy;
             var all = t.GetMethods(flags).Where(m => m.Name == methodName).ToArray();
             if (all.Length == 0)
             {
@@ -224,6 +223,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
             return t.Name;
         }
 
+        private static UnityEngine.Object ResolveUnityObject(int instanceId)
+        {
+            if (instanceId == 0) return null;
+            return Resources.FindObjectsOfTypeAll<UnityEngine.Object>()
+                .FirstOrDefault(candidate => candidate != null && candidate.GetInstanceID() == instanceId);
+        }
+
         private static object CoerceValue(JToken token, Type targetType, string paramName)
         {
             if (token == null || token.Type == JTokenType.Null)
@@ -244,7 +250,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                 else
                     throw new InvalidOperationException(
                         $"param '{paramName}': expected instanceId int or {{instanceId:int}} for UnityEngine.Object subtype '{underlying.FullName}'");
-                var unityObj = EditorUtility.InstanceIDToObject(instanceId);
+                var unityObj = ResolveUnityObject(instanceId);
                 if (unityObj == null)
                     throw new InvalidOperationException(
                         $"param '{paramName}': instanceId {instanceId} did not resolve to a UnityEngine.Object (destroyed or never existed)");

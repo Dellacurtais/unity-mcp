@@ -1,10 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
@@ -13,106 +14,169 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
     {
         public string Name => "wait_for_compile_clean";
         public string Description =>
-            "Forces an AssetDatabase.Refresh, cooperatively waits for compilation to finish (pump stays responsive — other tools keep working), then reports any compile errors / warnings that appeared during the wait. " +
-            "Returns 'clean' when compile finishes with 0 errors. Single call replaces the refresh_assets + read_console errors_only since=N pattern. " +
-            "Note: a successful compile triggers a domain reload, which closes in-flight requests with HTTP 503 — if you see 'Unity MCP server didn't respond' followed by a system note about assembly reload, retry once: the second call returns clean immediately.";
+            "Refreshes assets and waits cooperatively for one public CompilationPipeline cycle. " +
+            "Returns structured compiler diagnostics when the request survives; a successful compilation can still trigger domain reload and interrupt the HTTP request.";
 
         public JObject InputSchema => new JObject
         {
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["timeoutSeconds"] = new JObject { ["type"] = "number", ["default"] = 60 },
+                ["timeoutSeconds"] = new JObject { ["type"] = "number", ["minimum"] = 1, ["maximum"] = 600, ["default"] = 60 },
                 ["includeWarnings"] = new JObject { ["type"] = "boolean", ["default"] = true },
             },
             ["additionalProperties"] = false,
         };
 
-        public bool IsWrite => false;
-
-        public ToolResult Execute(JObject args)
+        public JObject OutputSchema => new JObject
         {
-            return ToolResult.Error("INTERNAL_ERROR",
-                "wait_for_compile_clean requires async dispatch — the framework should call ExecuteAsync.");
-        }
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["compiled"] = new JObject { ["type"] = "boolean" },
+                ["clean"] = new JObject { ["type"] = "boolean" },
+                ["elapsedSeconds"] = new JObject { ["type"] = "number" },
+                ["errors"] = new JObject { ["type"] = "integer" },
+                ["warnings"] = new JObject { ["type"] = "integer" },
+                ["diagnostics"] = new JObject { ["type"] = "array", ["items"] = DiagnosticSchema() },
+                ["diagnosticsTruncated"] = new JObject { ["type"] = "boolean" },
+                ["bufferDomainId"] = new JObject { ["type"] = "string" },
+                ["nextSeq"] = new JObject { ["type"] = "integer" },
+                ["serverMayReload"] = new JObject { ["type"] = "boolean" },
+            },
+            ["required"] = new JArray { "compiled", "clean", "elapsedSeconds", "errors", "warnings", "diagnostics", "diagnosticsTruncated", "bufferDomainId", "nextSeq", "serverMayReload" },
+            ["additionalProperties"] = false,
+        };
+
+        public bool IsWrite => true;
+
+        public ToolResult Execute(JObject args) =>
+            ToolResult.Error("ASYNC_REQUIRED", "wait_for_compile_clean must run through ExecuteAsync");
 
         public async Task<ToolResult> ExecuteAsync(JObject args)
         {
-            var timeoutSeconds = (float?)args["timeoutSeconds"] ?? 60f;
+            var timeoutSeconds = (double?)args["timeoutSeconds"] ?? 60d;
             var includeWarnings = (bool?)args["includeWarnings"] ?? true;
+            if (timeoutSeconds < 1d || timeoutSeconds > 600d)
+                return ToolResult.Error("BAD_ARGS", "timeoutSeconds must be in 1..600");
+            if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isPlaying)
+                return ToolResult.Error("EDITOR_BUSY", "asset refresh and script compilation require stable Edit Mode");
+            if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+                return ToolResult.Error("EDITOR_BUSY", "Unity is already compiling or updating assets");
 
-            // Anchor: any compile messages with seq >= startSeq belong to this run.
-            int startSeq = ConsoleCapture.CurrentSeq;
+            var context = ToolExecutionContext.Current;
+            var token = context != null ? context.CancellationToken : default;
+            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var diagnostics = new List<JObject>();
+            var compilationStarted = false;
+            var diagnosticsTruncated = false;
+            const int maxDiagnostics = 1000;
+            double startTime = 0d;
 
-            // Trigger refresh on the main thread; capture wall-clock for the report.
-            double startTime = await MainThreadDispatcher.RunAsync(() =>
+            Action<object> onStarted = _ => compilationStarted = true;
+            Action<string, CompilerMessage[]> onAssemblyFinished = (assembly, messages) =>
             {
-                AssetDatabase.Refresh();
-                return EditorApplication.timeSinceStartup;
-            });
-
-            // Cooperative wait — same pattern as RefreshAssetsTool. Polling
-            // happens on EditorApplication.update without ever blocking the
-            // dispatcher pump.
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            EditorApplication.CallbackFunction onUpdate = null;
-            onUpdate = () =>
-            {
-                if (!EditorApplication.isCompiling)
+                if (messages == null) return;
+                foreach (var message in messages)
                 {
-                    EditorApplication.update -= onUpdate;
-                    tcs.TrySetResult(true);
+                    if (message.type != CompilerMessageType.Error
+                        && !(includeWarnings && message.type == CompilerMessageType.Warning)) continue;
+                    if (diagnostics.Count >= maxDiagnostics) { diagnosticsTruncated = true; continue; }
+                    diagnostics.Add(new JObject
+                    {
+                        ["assembly"] = assembly,
+                        ["severity"] = message.type.ToString(),
+                        ["message"] = message.message,
+                        ["file"] = message.file,
+                        ["line"] = message.line,
+                        ["column"] = message.column,
+                    });
                 }
             };
-            await MainThreadDispatcher.RunAsync(() =>
-            {
-                if (!EditorApplication.isCompiling) { tcs.TrySetResult(true); return; }
-                EditorApplication.update += onUpdate;
-            });
+            Action<object> onFinished = _ => completion.TrySetResult(true);
 
-            var winner = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(timeoutSeconds)));
-            if (winner != tcs.Task)
+            try
             {
-                await MainThreadDispatcher.RunAsync(() => EditorApplication.update -= onUpdate);
-                return ToolResult.Error("TIMEOUT",
-                    $"compilation still running after {timeoutSeconds}s — read_console errors_only since={startSeq} for details.");
-            }
-
-            // One delayCall tick so any pending assembly reload starts. If the
-            // reload fully takes us out, this call won't return — the framework
-            // closes the in-flight request with HTTP 503 and the agent retries.
-            var settled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            await MainThreadDispatcher.RunAsync(() =>
-            {
-                EditorApplication.delayCall += () => settled.TrySetResult(true);
-            });
-            await Task.WhenAny(settled.Task, Task.Delay(2000));
-
-            // Report
-            var min = includeWarnings ? LogType.Warning : LogType.Error;
-            var entries = ConsoleCapture.Snapshot(startSeq, min, contains: null, limit: 100);
-            int errors = entries.Count(e => e.Severity == LogType.Error || e.Severity == LogType.Exception || e.Severity == LogType.Assert);
-            int warnings = entries.Count(e => e.Severity == LogType.Warning);
-
-            double elapsed = await MainThreadDispatcher.RunAsync(() => EditorApplication.timeSinceStartup) - startTime;
-
-            var sb = new StringBuilder();
-            sb.AppendLine($"compile finished in {elapsed:F1}s — {errors} error(s), {warnings} warning(s)");
-            if (errors == 0 && warnings == 0)
-            {
-                sb.Append("✓ clean");
-            }
-            else
-            {
-                foreach (var e in entries)
+                await MainThreadDispatcher.RunAsync(() =>
                 {
-                    var loc = e.IsCompile && !string.IsNullOrEmpty(e.SourceFile)
-                        ? $"[{e.SourceFile}:{e.SourceLine}{(e.SourceColumn > 0 ? $":{e.SourceColumn}" : "")}]"
-                        : $"[{e.Severity}]";
-                    sb.AppendLine($"  {loc} {e.Message}");
+                    CompilationPipeline.compilationStarted += onStarted;
+                    CompilationPipeline.assemblyCompilationFinished += onAssemblyFinished;
+                    CompilationPipeline.compilationFinished += onFinished;
+                    startTime = EditorApplication.timeSinceStartup;
+                    AssetDatabase.Refresh();
+                    EditorApplication.delayCall += () =>
+                    {
+                        if (!compilationStarted && !EditorApplication.isCompiling)
+                            completion.TrySetResult(false);
+                    };
+                }, token);
+
+                using (token.Register(() => completion.TrySetCanceled(token)))
+                {
+                    var timeout = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds));
+                    var winner = await Task.WhenAny(completion.Task, timeout);
+                    if (winner != completion.Task)
+                        return ToolResult.Error("TIMEOUT", $"compilation or refresh did not settle within {timeoutSeconds:F1}s");
+                    var compiled = await completion.Task;
+                    var elapsed = await MainThreadDispatcher.RunAsync(() => EditorApplication.timeSinceStartup, token) - startTime;
+                    var errors = diagnostics.Count(item => string.Equals((string)item["severity"], CompilerMessageType.Error.ToString(), StringComparison.Ordinal));
+                    var warnings = diagnostics.Count - errors;
+                    var payload = new JObject
+                    {
+                        ["compiled"] = compiled,
+                        ["clean"] = errors == 0,
+                        ["elapsedSeconds"] = Math.Max(0d, elapsed),
+                        ["errors"] = errors,
+                        ["warnings"] = warnings,
+                        ["diagnostics"] = new JArray(diagnostics),
+                        ["diagnosticsTruncated"] = diagnosticsTruncated,
+                        ["bufferDomainId"] = ConsoleCapture.DomainId,
+                        ["nextSeq"] = ConsoleCapture.CurrentSeq,
+                        ["serverMayReload"] = compiled,
+                    };
+                    if (errors > 0)
+                        return ToolResult.Error("COMPILATION_FAILED", $"script compilation finished with {errors} error(s)", payload);
+                    return ToolResult.Ok(compiled
+                        ? $"script compilation finished with {warnings} warning(s)"
+                        : "asset refresh completed without script compilation", payload);
                 }
             }
-            return ToolResult.Ok(sb.ToString());
+            catch (OperationCanceledException)
+            {
+                return ToolResult.Error("CANCELLED", "compile wait cancelled");
+            }
+            catch (Exception exception)
+            {
+                return ToolResult.Error("COMPILE_WAIT_FAILED", exception.Message);
+            }
+            finally
+            {
+                try
+                {
+                    await MainThreadDispatcher.RunAsync(() =>
+                    {
+                        CompilationPipeline.compilationStarted -= onStarted;
+                        CompilationPipeline.assemblyCompilationFinished -= onAssemblyFinished;
+                        CompilationPipeline.compilationFinished -= onFinished;
+                    });
+                }
+                catch { }
+            }
         }
+
+        private static JObject DiagnosticSchema() => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["assembly"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["severity"] = new JObject { ["type"] = "string" },
+                ["message"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["file"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["line"] = new JObject { ["type"] = "integer" },
+                ["column"] = new JObject { ["type"] = "integer" },
+            },
+            ["additionalProperties"] = false,
+        };
     }
 }

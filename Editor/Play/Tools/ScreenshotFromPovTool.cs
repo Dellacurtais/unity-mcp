@@ -41,9 +41,9 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
                 },
                 ["fov"] = new JObject { ["type"] = "number", ["default"] = 60, ["minimum"] = 1, ["maximum"] = 179 },
                 ["isOrthographic"] = new JObject { ["type"] = "boolean", ["default"] = false },
-                ["orthographicSize"] = new JObject { ["type"] = "number", ["default"] = 5 },
-                ["nearClip"] = new JObject { ["type"] = "number", ["default"] = 0.1 },
-                ["farClip"] = new JObject { ["type"] = "number", ["default"] = 1000 },
+                ["orthographicSize"] = new JObject { ["type"] = "number", ["default"] = 5, ["minimum"] = 0.0001 },
+                ["nearClip"] = new JObject { ["type"] = "number", ["default"] = 0.1, ["exclusiveMinimum"] = 0 },
+                ["farClip"] = new JObject { ["type"] = "number", ["default"] = 1000, ["exclusiveMinimum"] = 0 },
                 ["width"] = new JObject { ["type"] = "integer", ["default"] = 1280, ["minimum"] = 64, ["maximum"] = 4096 },
                 ["height"] = new JObject { ["type"] = "integer", ["default"] = 720, ["minimum"] = 64, ["maximum"] = 4096 },
                 ["includePostFx"] = new JObject { ["type"] = "boolean", ["default"] = true },
@@ -62,27 +62,37 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             // wait. Dispatcher already marshals this onto the main thread.
             var spec = new PovCameraFactory.PovSpec();
 
-            var posArr = args["position"] as JArray;
-            if (posArr == null || posArr.Count != 3)
-                return ToolResult.Error("BAD_REQUEST", "'position' must be a [x,y,z] array.");
-            spec.Position = ReadVec3(posArr);
+            if (!TryReadVec3(args["position"], out spec.Position))
+                return ToolResult.Error("BAD_REQUEST", "'position' must contain three finite numbers.");
 
-            if (args["lookAt"] is JArray lookAtArr && lookAtArr.Count == 3)
+            var hasLookAt = args["lookAt"] != null && args["lookAt"].Type != JTokenType.Null;
+            var hasRotation = args["rotationEuler"] != null && args["rotationEuler"].Type != JTokenType.Null;
+            if (hasLookAt && hasRotation)
+                return ToolResult.Error("AMBIGUOUS_ORIENTATION", "pass either 'lookAt' or 'rotationEuler', not both.");
+            if (hasLookAt)
             {
+                if (!TryReadVec3(args["lookAt"], out spec.LookAt))
+                    return ToolResult.Error("BAD_REQUEST", "'lookAt' must contain three finite numbers.");
                 spec.HasLookAt = true;
-                spec.LookAt = ReadVec3(lookAtArr);
             }
-            else if (args["rotationEuler"] is JArray rotArr && rotArr.Count == 3)
+            else if (hasRotation)
             {
-                var eul = ReadVec3(rotArr);
-                spec.Rotation = Quaternion.Euler(eul.x, eul.y, eul.z);
+                if (!TryReadVec3(args["rotationEuler"], out var euler))
+                    return ToolResult.Error("BAD_REQUEST", "'rotationEuler' must contain three finite numbers.");
+                spec.Rotation = Quaternion.Euler(euler.x, euler.y, euler.z);
             }
 
-            spec.FieldOfView = Mathf.Clamp(ReadFloat(args, "fov", 60f), 1f, 179f);
+            if (!TryReadFiniteFloat(args, "fov", 60f, out spec.FieldOfView)
+                || spec.FieldOfView < 1f || spec.FieldOfView > 179f)
+                return ToolResult.Error("BAD_REQUEST", "'fov' must be finite and in the range 1..179.");
             spec.IsOrthographic = (bool?)args["isOrthographic"] ?? false;
-            spec.OrthographicSize = ReadFloat(args, "orthographicSize", 5f);
-            spec.NearClip = ReadFloat(args, "nearClip", 0.1f);
-            spec.FarClip = ReadFloat(args, "farClip", 1000f);
+            if (!TryReadFiniteFloat(args, "orthographicSize", 5f, out spec.OrthographicSize)
+                || spec.OrthographicSize <= 0f)
+                return ToolResult.Error("BAD_REQUEST", "'orthographicSize' must be finite and greater than zero.");
+            if (!TryReadFiniteFloat(args, "nearClip", 0.1f, out spec.NearClip)
+                || !TryReadFiniteFloat(args, "farClip", 1000f, out spec.FarClip)
+                || spec.NearClip <= 0f || spec.FarClip <= spec.NearClip)
+                return ToolResult.Error("INVALID_CLIP_PLANES", "clip planes must be finite and satisfy 0 < nearClip < farClip.");
             spec.IncludePostFx = (bool?)args["includePostFx"] ?? true;
 
             int width = Mathf.Clamp((int?)args["width"] ?? 1280, 64, 4096);
@@ -103,7 +113,7 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
 
                     string b64 = Convert.ToBase64String(result.Bytes);
                     string summary = $"{result.SourceDescription} — {result.Width}×{result.Height}, " +
-                                     $"{result.Bytes.Length:N0} bytes ({result.MimeType})";
+                                     $"{result.Bytes.Length:N0} bytes ({result.MimeType}), renderPath={result.RenderPath}";
                     return ToolResult.Image(b64, result.MimeType, summary);
                 }
             }
@@ -113,19 +123,31 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             }
         }
 
-        private static Vector3 ReadVec3(JArray arr)
+        private static bool TryReadVec3(JToken token, out Vector3 value)
         {
-            return new Vector3(
-                (float)(double)arr[0],
-                (float)(double)arr[1],
-                (float)(double)arr[2]);
+            value = default;
+            if (!(token is JArray array) || array.Count != 3) return false;
+            try
+            {
+                value = new Vector3((float)(double)array[0], (float)(double)array[1], (float)(double)array[2]);
+                return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+            }
+            catch { return false; }
         }
 
-        private static float ReadFloat(JObject args, string key, float fallback)
+        private static bool TryReadFiniteFloat(JObject args, string key, float fallback, out float value)
         {
+            value = fallback;
             var token = args[key];
-            if (token == null || token.Type == JTokenType.Null) return fallback;
-            try { return (float)(double)token; } catch { return fallback; }
+            if (token == null || token.Type == JTokenType.Null) return true;
+            try
+            {
+                value = (float)(double)token;
+                return IsFinite(value);
+            }
+            catch { return false; }
         }
+
+        private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
     }
 }

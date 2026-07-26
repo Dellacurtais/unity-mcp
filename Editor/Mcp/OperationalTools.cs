@@ -389,6 +389,69 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         });
     }
 
+    internal static class OperationalSchemas
+    {
+        public static JObject Inventory() => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["packageVersion"] = new JObject { ["type"] = "string" },
+                ["registryCount"] = new JObject { ["type"] = "integer" },
+                ["registryHash"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["matched"] = new JObject { ["type"] = "integer" },
+                ["offset"] = new JObject { ["type"] = "integer" },
+                ["returned"] = new JObject { ["type"] = "integer" },
+                ["hasMore"] = new JObject { ["type"] = "boolean" },
+                ["tools"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+                ["loadedModules"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            },
+            ["required"] = new JArray { "packageVersion", "registryCount", "matched", "offset", "returned", "hasMore", "tools", "loadedModules" },
+            ["additionalProperties"] = false,
+        };
+
+        public static JObject Health() => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["status"] = new JObject { ["type"] = "string" },
+                ["package"] = new JObject { ["type"] = "object" },
+                ["transport"] = new JObject { ["type"] = "object" },
+                ["server"] = new JObject { ["type"] = "object" },
+                ["registry"] = new JObject { ["type"] = "object" },
+                ["compilation"] = new JObject { ["type"] = "object" },
+                ["jobs"] = new JObject { ["type"] = "object" },
+                ["domain"] = new JObject { ["type"] = "object" },
+                ["capabilities"] = new JObject { ["type"] = "object" },
+                ["selfTest"] = new JObject { ["type"] = "object" },
+                ["loadedModules"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+                ["packageCompatibility"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            },
+            ["required"] = new JArray { "status", "package", "transport", "server", "registry", "compilation", "jobs", "domain", "capabilities", "selfTest", "loadedModules", "packageCompatibility" },
+            ["additionalProperties"] = false,
+        };
+
+        public static JObject SelfTest() => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["valid"] = new JObject { ["type"] = "boolean" },
+                ["checks"] = new JObject { ["type"] = "integer" },
+                ["errors"] = new JObject { ["type"] = "integer" },
+                ["warnings"] = new JObject { ["type"] = "integer" },
+                ["issues"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+                ["packageVersion"] = new JObject { ["type"] = "string" },
+                ["registryCount"] = new JObject { ["type"] = "integer" },
+                ["registryHash"] = new JObject { ["type"] = new JArray { "string", "null" } },
+                ["loadedModules"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            },
+            ["required"] = new JArray { "valid", "checks", "errors", "warnings", "issues", "packageVersion", "registryCount", "loadedModules" },
+            ["additionalProperties"] = false,
+        };
+    }
+
     public sealed class GetToolInventoryTool : IMcpTool
     {
         public string Name => "get_tool_inventory";
@@ -411,6 +474,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             },
             ["additionalProperties"] = false,
         };
+        public JObject OutputSchema => OperationalSchemas.Inventory();
         public bool IsWrite => false;
         public ToolDescriptor Descriptor => ReadDescriptor(Name);
         public ToolResult Execute(JObject arguments)
@@ -436,6 +500,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         public string Name => "get_server_health";
         public string Description => "Returns protocol, registry, module, compilation, queue, request, job, reload and package compatibility health.";
         public JObject InputSchema => new JObject { ["type"] = "object", ["properties"] = new JObject(), ["additionalProperties"] = false };
+        public JObject OutputSchema => OperationalSchemas.Health();
         public bool IsWrite => false;
         public ToolDescriptor Descriptor => GetToolInventoryTool.ReadDescriptor(Name);
         public ToolResult Execute(JObject arguments)
@@ -450,6 +515,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         public string Name => "self_test";
         public string Description => "Runs read-only registry, schema, descriptor, optional-module, version and protocol invariant checks.";
         public JObject InputSchema => new JObject { ["type"] = "object", ["properties"] = new JObject(), ["additionalProperties"] = false };
+        public JObject OutputSchema => OperationalSchemas.SelfTest();
         public bool IsWrite => false;
         public ToolDescriptor Descriptor => GetToolInventoryTool.ReadDescriptor(Name);
         public ToolResult Execute(JObject arguments)

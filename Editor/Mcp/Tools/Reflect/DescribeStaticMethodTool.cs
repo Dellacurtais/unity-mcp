@@ -12,7 +12,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
         public string Name => "describe_static_method";
 
         public string Description =>
-            "Returns parameter and return-type info for every static overload of a method. " +
+            "Returns parameter and return-type info for every public static overload of a method. " +
             "Pass typeName as FullName ('UnityEditor.EditorApplication'), simple Name " +
             "('EditorApplication'), or assembly-qualified ('UnityEditor.EditorApplication, " +
             "UnityEditor'); pass assemblyName when multiple assemblies define the same simple " +
@@ -24,11 +24,25 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
             ["type"] = "object",
             ["properties"] = new JObject
             {
-                ["typeName"] = new JObject { ["type"] = "string" },
-                ["methodName"] = new JObject { ["type"] = "string" },
-                ["assemblyName"] = new JObject { ["type"] = "string" },
+                ["typeName"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 1024 },
+                ["methodName"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 512 },
+                ["assemblyName"] = new JObject { ["type"] = "string", ["maxLength"] = 512 },
             },
             ["required"] = new JArray { "typeName", "methodName" },
+            ["additionalProperties"] = false,
+        };
+
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["typeFullName"] = new JObject { ["type"] = "string" },
+                ["assembly"] = new JObject { ["type"] = "string" },
+                ["methodName"] = new JObject { ["type"] = "string" },
+                ["overloads"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
+            },
+            ["required"] = new JArray { "typeFullName", "assembly", "methodName", "overloads" },
             ["additionalProperties"] = false,
         };
 
@@ -36,12 +50,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
 
         public ToolResult Execute(JObject args)
         {
-            var typeName = (string)args["typeName"];
-            var methodName = (string)args["methodName"];
-            var asmHint = (string)args["assemblyName"];
+            args = args ?? new JObject();
+            var typeName = ((string)args["typeName"] ?? string.Empty).Trim();
+            var methodName = ((string)args["methodName"] ?? string.Empty).Trim();
+            var asmHint = ((string)args["assemblyName"] ?? string.Empty).Trim();
 
-            if (string.IsNullOrEmpty(typeName) || string.IsNullOrEmpty(methodName))
-                return ToolResult.Error("BAD_ARGS", "typeName and methodName are required");
+            if (typeName.Length == 0 || methodName.Length == 0
+                || typeName.Length > 1024 || methodName.Length > 512 || asmHint.Length > 512)
+                return ToolResult.Error("BAD_ARGS", "typeName and methodName are required and names must fit supported limits");
 
             var resolution = ReflectionResolver.ResolveType(typeName, asmHint);
             if (resolution.Ambiguous)
@@ -54,9 +70,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                 return ToolResult.Error("TYPE_NOT_FOUND", $"type '{typeName}' not found");
 
             var t = resolution.Type;
-            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public
-                                        | BindingFlags.NonPublic | BindingFlags.FlattenHierarchy;
-            var overloads = t.GetMethods(flags).Where(m => m.Name == methodName).ToArray();
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.FlattenHierarchy;
+            var overloads = t.GetMethods(flags)
+                .Where(m => m.Name == methodName)
+                .OrderBy(ReflectionResolver.SignatureOf, System.StringComparer.Ordinal)
+                .ToArray();
 
             if (overloads.Length == 0)
             {
@@ -84,11 +102,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                     paramsArr.Add(po);
                 }
 
-                bool unsupported = m.ContainsGenericParameters
-                                   || m.GetParameters().Any(p => p.ParameterType.IsByRef);
-                string unsupportedReason = null;
-                if (m.ContainsGenericParameters) unsupportedReason = "generic";
-                else if (m.GetParameters().Any(p => p.ParameterType.IsByRef)) unsupportedReason = "ref/out";
+                var unsupported = !ReflectionPolicy.ValidateMethod(m, new JArray(), out var unsupportedReason);
 
                 var o = new JObject
                 {

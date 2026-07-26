@@ -192,17 +192,27 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
             ToolJobRecord record,
             Func<ToolJobRecord, CancellationToken, Task<JToken>> operation)
         {
+            var cancelledBeforeStart = false;
             lock (record.Sync)
             {
                 if (record.Status == ToolJobStatus.CancelRequested)
                 {
                     record.Status = ToolJobStatus.Cancelled;
+                    record.Message = "cancelled";
                     record.CompletedUtc = DateTimeOffset.UtcNow;
-                    return;
+                    cancelledBeforeStart = true;
                 }
-                record.Status = ToolJobStatus.Running;
-                record.StartedUtc = DateTimeOffset.UtcNow;
-                record.Message = "running";
+                else
+                {
+                    record.Status = ToolJobStatus.Running;
+                    record.StartedUtc = DateTimeOffset.UtcNow;
+                    record.Message = "running";
+                }
+            }
+            if (cancelledBeforeStart)
+            {
+                PersistTrackedJobs();
+                return;
             }
 
             try
@@ -250,10 +260,15 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                     record.CompletedUtc = DateTimeOffset.UtcNow;
                 }
             }
+            finally
+            {
+                PersistTrackedJobs();
+            }
         }
 
         private static bool ShouldPersist(ToolJobRecord record) => record != null
             && (string.Equals(record.Kind, "build", StringComparison.Ordinal)
+                || string.Equals(record.Kind, "test", StringComparison.Ordinal)
                 || record.Kind.StartsWith("package_", StringComparison.Ordinal));
 
         private static void PersistTrackedJobs()
@@ -295,9 +310,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                         Status = interrupted ? ToolJobStatus.Failed : status,
                         Progress = (double?)item["progress"] ?? 0d,
                         Message = interrupted ? "interrupted by assembly reload" : (string)item["message"],
-                        Error = interrupted
-                            ? "DOMAIN_RELOAD_INTERRUPTED: reconcile the operation with list_packages/read_build_report"
-                            : (string)item["error"],
+                        Error = interrupted ? InterruptionError(kind) : (string)item["error"],
                         Result = item["result"]?.DeepClone(),
                         Input = item["input"] as JObject != null ? (JObject)item["input"].DeepClone() : new JObject(),
                         CreatedUtc = DateTimeOffset.TryParse((string)item["createdUtc"], out var created) ? created : now,
@@ -310,6 +323,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                 }
             }
             catch { SessionState.EraseString(PersistedJobsKey); }
+        }
+
+        private static string InterruptionError(string kind)
+        {
+            if (string.Equals(kind, "test", StringComparison.Ordinal))
+                return "DOMAIN_RELOAD_INTERRUPTED: the TestRunner may continue, but this MCP callback cannot be recovered; rerun or inspect Unity Test Runner results";
+            return "DOMAIN_RELOAD_INTERRUPTED: reconcile the operation with list_packages/read_build_report";
         }
 
         private static bool IsTerminal(ToolJobStatus status) =>

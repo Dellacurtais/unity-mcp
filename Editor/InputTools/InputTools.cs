@@ -6,6 +6,7 @@ using System.Text;
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Mcp;
+using Maicon.SceneAnalyzer.Editor.Optional;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.PackageManager;
@@ -500,11 +501,36 @@ namespace Maicon.SceneAnalyzer.Editor.InputTools
                 else if (!string.IsNullOrEmpty(player.defaultActionMap) && player.actions.FindActionMap(player.defaultActionMap, false) == null)
                     issues.Add(new JObject { ["severity"] = "error", ["code"] = "DEFAULT_MAP_MISSING", ["target"] = ToolTargetRef.Capture(player)?.ToJson(), ["map"] = player.defaultActionMap });
             }
+
+            var eventSystemType = OptionalToolSupport.ResolveType("UnityEngine.EventSystems.EventSystem");
+            var inputSystemUiModuleType = OptionalToolSupport.ResolveType("UnityEngine.InputSystem.UI.InputSystemUIInputModule");
+            var legacyInputModuleType = OptionalToolSupport.ResolveType("UnityEngine.EventSystems.StandaloneInputModule");
+            var eventSystems = OptionalToolSupport.FindSceneComponents(eventSystemType);
+            var inputSystemUiModules = OptionalToolSupport.FindSceneComponents(inputSystemUiModuleType);
+            var legacyInputModules = OptionalToolSupport.FindSceneComponents(legacyInputModuleType);
+            foreach (var legacyInputModule in legacyInputModules)
+                issues.Add(new JObject
+                {
+                    ["severity"] = "warning",
+                    ["code"] = "LEGACY_INPUT_MODULE_WITH_INPUT_SYSTEM",
+                    ["target"] = ToolTargetRef.Capture(legacyInputModule)?.ToJson(),
+                });
+            if (eventSystems.Length > 0 && inputSystemUiModules.Length == 0)
+                issues.Add(new JObject
+                {
+                    ["severity"] = "error",
+                    ["code"] = "INPUT_SYSTEM_UI_MODULE_MISSING",
+                    ["eventSystemCount"] = eventSystems.Length,
+                });
+
             return ToolResult.Ok($"{issues.Count} input issue(s)", new JObject
             {
                 ["valid"] = !issues.Any(token => string.Equals((string)token["severity"], "error", StringComparison.Ordinal)),
                 ["issues"] = issues,
                 ["assetCount"] = assetPaths.Length,
+                ["eventSystemCount"] = eventSystems.Length,
+                ["inputSystemUiModuleCount"] = inputSystemUiModules.Length,
+                ["legacyInputModuleCount"] = legacyInputModules.Length,
             });
         }
     }

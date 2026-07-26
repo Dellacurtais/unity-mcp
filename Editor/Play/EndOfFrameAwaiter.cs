@@ -1,48 +1,65 @@
 using System;
 using System.Collections;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Play
 {
     /// Spawns a hidden runtime GameObject whose coroutine yields one
-    /// `WaitForEndOfFrame`, then invokes a callback on the main thread and
-    /// destroys itself. Used by screenshot tools to capture the post-process
-    /// pass in URP/HDRP — calling Camera.Render() synchronously from editor
-    /// code typically skips post-fx in scriptable render pipelines, but a
-    /// coroutine awaited after end-of-frame sees the final back buffer.
+    /// `WaitForEndOfFrame`, then completes on the main thread and destroys
+    /// itself. Screenshot tools use this to defer their explicit render until
+    /// the current player frame has finished. Cancellation and Play Mode exit
+    /// both complete the returned task instead of leaving a pending request.
     ///
     /// Only works in play mode (no player loop in edit mode means coroutines
-    /// don't tick). For edit-mode capture, fall back to a direct Camera.Render().
+    /// don't tick). Edit-mode capture uses a synchronous render path.
     public sealed class EndOfFrameAwaiter : MonoBehaviour
     {
-        private Action _callback;
+        private TaskCompletionSource<bool> _completion;
+        private CancellationTokenRegistration _cancellation;
+        private bool _completed;
 
-        public static Task WaitOneEndOfFrame()
+        public static Task WaitOneEndOfFrame(CancellationToken cancellationToken)
         {
             if (!Application.isPlaying)
-                return Task.CompletedTask; // caller must use sync render path
+                return Task.CompletedTask;
+            if (cancellationToken.IsCancellationRequested)
+                return Task.FromCanceled(cancellationToken);
 
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var go = new GameObject("__SceneAnalyzer_EndOfFrameAwaiter")
             {
                 hideFlags = HideFlags.HideAndDontSave
             };
             var awaiter = go.AddComponent<EndOfFrameAwaiter>();
-            awaiter._callback = () => tcs.TrySetResult(true);
+            awaiter._completion = completion;
+            if (cancellationToken.CanBeCanceled)
+                awaiter._cancellation = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
             awaiter.StartCoroutine(awaiter.Run());
-            return tcs.Task;
+            return completion.Task;
         }
 
         private IEnumerator Run()
         {
             yield return new WaitForEndOfFrame();
-            try { _callback?.Invoke(); }
-            finally
-            {
-                if (this != null && gameObject != null)
-                    UnityEngine.Object.DestroyImmediate(gameObject);
-            }
+            Complete();
+        }
+
+        private void OnDestroy()
+        {
+            _cancellation.Dispose();
+            if (!_completed) _completion?.TrySetCanceled();
+        }
+
+        private void Complete()
+        {
+            if (_completed) return;
+            _completed = true;
+            _cancellation.Dispose();
+            _completion?.TrySetResult(true);
+            if (this != null && gameObject != null)
+                UnityEngine.Object.DestroyImmediate(gameObject);
         }
     }
 }
