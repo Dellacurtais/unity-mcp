@@ -32,6 +32,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _portBuffer = Settings.Port.ToString();
             _brokerUrlBuffer = Settings.BrokerUrl;
             _pythonPathBuffer = Settings.BrokerPythonPath;
+            CodeStudioMcpRegistration.RequestSync();
         }
 
         private void OnDisable()
@@ -45,7 +46,6 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
         private void OnEditorUpdate()
         {
-            if (Settings.TransportMode != McpTransportMode.Broker) return;
             if (EditorApplication.timeSinceStartup < _nextBrokerRepaint) return;
             _nextBrokerRepaint = EditorApplication.timeSinceStartup + 0.5d;
             Repaint();
@@ -78,6 +78,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 else
                 {
                     Settings.TransportMode = mode;
+                    CodeStudioMcpRegistration.RequestSync();
                 }
             }
 
@@ -87,6 +88,29 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 DrawEmbeddedTransport();
 
             DrawToken();
+            DrawCodeStudioRegistration();
+        }
+
+        private static void DrawCodeStudioRegistration()
+        {
+            var codeStudio = CodeStudioMcpRegistration.Snapshot;
+            EditorGUILayout.Space(4);
+            EditorGUILayout.LabelField("CodeStudio", EditorStyles.boldLabel);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField("Discovery: " + codeStudio.State, EditorStyles.miniLabel);
+                if (GUILayout.Button("Detect now", GUILayout.Width(90)))
+                    CodeStudioMcpRegistration.RequestSync();
+            }
+            if (!string.IsNullOrEmpty(codeStudio.RuntimeUrl))
+                EditorGUILayout.SelectableLabel(
+                    "Runtime: " + codeStudio.RuntimeUrl,
+                    EditorStyles.miniLabel,
+                    GUILayout.Height(EditorGUIUtility.singleLineHeight));
+            if (!string.IsNullOrEmpty(codeStudio.Message))
+                EditorGUILayout.LabelField(codeStudio.Message, EditorStyles.wordWrappedMiniLabel);
+            if (!string.IsNullOrEmpty(codeStudio.Error))
+                EditorGUILayout.HelpBox(codeStudio.Error, MessageType.Warning);
         }
 
         private void DrawEmbeddedTransport()
@@ -308,6 +332,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         {
             ManagedBrokerProcess.Start();
             if (Bootstrap.BrokerBridge == null) Bootstrap.StartServer();
+            CodeStudioMcpRegistration.RequestSync();
             Bootstrap.RecordEntry("managed broker process started");
         }
 
@@ -374,6 +399,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 Bootstrap.RestartServer();
             }
+            CodeStudioMcpRegistration.RequestSync();
         }
 
         private static bool IsTransportRunning()

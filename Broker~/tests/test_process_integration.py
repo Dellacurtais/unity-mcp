@@ -156,7 +156,7 @@ def bridge_hello(generation: str = "generation-a") -> dict[str, Any]:
             "processId": 4242,
             "processStartUtc": "2026-07-26T00:00:00+00:00",
             "generationId": generation,
-            "packageVersion": "0.16.0",
+            "packageVersion": "0.16.2",
             "registryCount": 1,
             "registryHash": f"registry-{generation}",
             "state": "ready",
@@ -204,7 +204,7 @@ async def test_real_process_routes_websocket_command_and_recovers_sqlite_after_r
                 "params": {"protocolVersion": "2025-03-26"},
             },
         )
-        assert initialized.json()["result"]["serverInfo"]["version"] == "0.16.0"
+        assert initialized.json()["result"]["serverInfo"]["version"] == "0.16.2"
 
         with pytest.raises(InvalidStatus):
             async with websockets.connect(

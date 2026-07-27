@@ -255,7 +255,7 @@ def test_install_requirements_is_non_interactive_and_bounded(monkeypatch: pytest
     assert captured["kwargs"]["check"] is True
 
 
-def test_managed_state_update_preserves_process_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_managed_state_update_replaces_launcher_identity_with_worker_process(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     state_path = tmp_path / "runtime" / "broker-process.json"
     state_path.parent.mkdir()
     state_path.write_text(
@@ -269,12 +269,15 @@ def test_managed_state_update_preserves_process_identity(monkeypatch: pytest.Mon
     )
     monkeypatch.setenv("UNITY_MCP_BROKER_STATE", str(state_path))
     monkeypatch.setenv("UNITY_MCP_BROKER_INSTANCE_ID", "expected")
+    monkeypatch.setattr(main, "PROCESS_ID", 84)
+    monkeypatch.setattr(main, "PROCESS_START_UTC", "2026-01-01T00:00:01+00:00")
 
     main.update_managed_state("running")
 
     running = json.loads(state_path.read_text(encoding="utf-8"))
     assert running["state"] == "running"
-    assert running["pid"] == 42
+    assert running["pid"] == 84
+    assert running["processStartUtc"] == "2026-01-01T00:00:01+00:00"
     assert running["instanceId"] == "expected"
     assert "readyUtc" in running
     assert "updatedUtc" in running

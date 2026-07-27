@@ -19,6 +19,10 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+PROCESS_ID = os.getpid()
+PROCESS_START_UTC = utc_now()
+
+
 def logging_config() -> dict[str, object]:
     config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
     log_path = os.getenv("UNITY_MCP_BROKER_LOG", "").strip()
@@ -73,6 +77,8 @@ def update_managed_state(state: str, error: str | None = None) -> None:
         payload["state"] = state
         payload["updatedUtc"] = utc_now()
         if state == "running":
+            payload["pid"] = PROCESS_ID
+            payload["processStartUtc"] = PROCESS_START_UTC
             payload["readyUtc"] = utc_now()
             payload.pop("error", None)
         elif error:
