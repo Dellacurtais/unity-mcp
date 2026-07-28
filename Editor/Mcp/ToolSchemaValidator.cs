@@ -15,7 +15,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         public static bool ValidateSchema(JObject schema, out string error)
         {
             var errors = new List<string>();
-            ValidateSchemaNode(schema, "$", errors);
+            ValidateSchemaNode(schema, "$", null, errors);
             error = string.Join("; ", errors);
             return errors.Count == 0;
         }
@@ -28,7 +28,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             return errors.Count == 0;
         }
 
-        private static void ValidateSchemaNode(JObject schema, string path, List<string> errors)
+        private static void ValidateSchemaNode(JObject schema, string path, JObject inheritedProperties, List<string> errors)
         {
             if (schema == null) { errors.Add(path + ": schema must be an object"); return; }
             ValidateTypeDeclaration(schema["type"], path + ".type", errors);
@@ -39,7 +39,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 foreach (var property in properties.Properties())
                 {
                     if (!(property.Value is JObject child)) errors.Add(path + ".properties." + property.Name + ": must be an object");
-                    else ValidateSchemaNode(child, path + ".properties." + property.Name, errors);
+                    else ValidateSchemaNode(child, path + ".properties." + property.Name, null, errors);
                 }
 
             if (schema["required"] != null && !(schema["required"] is JArray))
@@ -51,7 +51,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 {
                     if (item.Type != JTokenType.String) errors.Add(path + ".required: entries must be strings");
                     else if (!seenRequired.Add((string)item)) errors.Add(path + ".required: duplicate property '" + item + "'");
-                    else if (properties == null || properties[(string)item] == null) errors.Add(path + ".required: unknown property '" + item + "'");
+                    else if (!IsRequiredPropertyKnown((string)item, properties, inheritedProperties))
+                        errors.Add(path + ".required: unknown property '" + item + "'");
                 }
             }
 
@@ -59,7 +60,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 errors.Add(path + ": array schema requires items");
             if (schema["items"] != null && !(schema["items"] is JObject))
                 errors.Add(path + ".items: must be an object");
-            if (schema["items"] is JObject items) ValidateSchemaNode(items, path + ".items", errors);
+            if (schema["items"] is JObject items) ValidateSchemaNode(items, path + ".items", null, errors);
             if (schema["enum"] != null && (!(schema["enum"] is JArray enumValues) || enumValues.Count == 0))
                 errors.Add(path + ".enum: must be a non-empty array");
             if (schema["additionalProperties"] != null && schema["additionalProperties"].Type != JTokenType.Boolean)
@@ -74,9 +75,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     continue;
                 }
                 if (variants.Count == 0) errors.Add(path + "." + keyword + ": must not be empty");
+                // oneOf/anyOf/allOf variants are validated against the *root* object schema's
+                // properties, so their `required` may legitimately reference parent-declared
+                // properties (standard JSON Schema composition behavior).
+                var variantInherited = inheritedProperties ?? properties;
                 for (int index = 0; index < variants.Count; index++)
                 {
-                    if (variants[index] is JObject variant) ValidateSchemaNode(variant, path + "." + keyword + "[" + index + "]", errors);
+                    if (variants[index] is JObject variant) ValidateSchemaNode(variant, path + "." + keyword + "[" + index + "]", variantInherited, errors);
                     else errors.Add(path + "." + keyword + "[" + index + "]: must be an object");
                 }
             }
@@ -179,6 +184,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             if (declaration is JArray types)
                 return types.Any(item => item.Type == JTokenType.String && MatchesType(value, (string)item));
             return declaration.Type == JTokenType.String && MatchesType(value, (string)declaration);
+        }
+
+        private static bool IsRequiredPropertyKnown(string propertyName, JObject localProperties, JObject inheritedProperties)
+        {
+            if (localProperties != null && localProperties[propertyName] != null) return true;
+            if (inheritedProperties != null && inheritedProperties[propertyName] != null) return true;
+            return false;
         }
 
         private static bool AllowsType(JToken declaration, string type)

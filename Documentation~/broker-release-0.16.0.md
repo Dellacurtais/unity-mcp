@@ -9,7 +9,7 @@ This checklist covers the validation that cannot be performed by the static CI w
 - Existing asmdef names and C# namespaces remain unchanged for source and binary compatibility.
 - **Embedded** is still the default transport and works without Python.
 - Broker mode is opt-in. The broker is a separate operating-system process; Unity only installs, launches, supervises, and connects its outbound bridge.
-- Domain Reload, script compilation, and closing the Editor disconnect the bridge but do not terminate a managed broker.
+- Domain Reload and script compilation disconnect the bridge but do not terminate a managed broker. Closing or crashing the Unity process that launched it terminates that managed broker; manually launched brokers retain operator-controlled lifetimes.
 - Unity APIs continue to execute through the Editor-side request processor and main-thread dispatcher.
 
 ## Automated gate (no Unity)
@@ -74,6 +74,7 @@ A failed Install or Repair must leave the previous `current.json` unchanged. Com
 - [ ] Confirm install and broker logs rotate and old versioned installations are pruned without deleting the current or running installation.
 - [ ] Start from two Unity Editors at the same time; confirm the process mutex prevents duplicate managed brokers.
 - [ ] Replace the stored PID with a live unrelated PID or mismatched start time; confirm Stop refuses to terminate the unverified process.
+- [ ] Close the Unity process that launched the managed broker and confirm both its launcher and worker exit. Repeat with a forced Unity termination to exercise the parent-process watchdog.
 
 ### Real transport and persistence
 
@@ -85,7 +86,7 @@ A failed Install or Repair must leave the previous `current.json` unchanged. Com
 - [ ] Trigger Domain Reload after a non-idempotent mutation is accepted but before its result is proven. Confirm the ledger returns `OUTCOME_UNKNOWN` and the broker never blindly repeats the mutation.
 - [ ] Start `broker_start_refresh_compile`; confirm the job survives bridge disconnect/reconnect and can be observed with `broker_get_job` or `broker_wait_job`.
 - [ ] Restart only the broker process and confirm SQLite restores the active project, registry snapshot, completed request, and reconciled in-flight states.
-- [ ] Close and reopen Unity without clicking **Stop**. Confirm the existing managed broker process is discovered and its PID is unchanged.
+- [ ] Trigger Domain Reload without clicking **Stop**. Confirm the existing managed broker process is discovered and its PID is unchanged.
 
 ### Multiple projects
 

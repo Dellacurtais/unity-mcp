@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -50,6 +51,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
         internal sealed class ProcessProbe
         {
             public bool Running;
+            public bool Exists;
             public string Error;
         }
 
@@ -76,7 +78,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             {
                 var running = TryGetOwnedProcess(state, out var process, out var error);
                 process?.Dispose();
-                return new ProcessProbe { Running = running, Error = error };
+                return new ProcessProbe
+                {
+                    Running = running,
+                    Exists = running || !string.IsNullOrEmpty(error),
+                    Error = error,
+                };
             });
         }
 
@@ -94,6 +101,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             var probe = probeProcess(processState) ?? new ProcessProbe();
             var processRunning = probe.Running;
             var ownershipError = probe.Error;
+            var processExists = probe.Exists || processRunning || !string.IsNullOrEmpty(ownershipError);
 
             var installState = (string)installStatus?["state"];
             var installing = IsInstallOperationActive(installStatus);
@@ -148,7 +156,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 IsCurrentVersion = installed && string.Equals(
                     (string)manifest["version"], currentVersion, StringComparison.Ordinal),
                 IsProcessRunning = processRunning,
-                IsProcessActive = processRunning || processStarting,
+                IsProcessActive = processExists || processStarting,
                 IsInstallInProgress = installing,
             };
         }
@@ -209,8 +217,15 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             var existingState = ReadObject(ProcessStatePath);
             if (TryGetOwnedProcess(existingState, out var existing, out var ownershipError))
             {
-                existing.Dispose();
-                return;
+                using (existing)
+                {
+                    if (!PathsEqual(
+                        (string)existingState?["installPath"],
+                        (string)manifest["installPath"]))
+                        throw new InvalidOperationException(
+                            "A managed broker from a different installation is still running. Stop it before starting the current installation.");
+                    return;
+                }
             }
             if (!string.IsNullOrEmpty(ownershipError))
                 throw new InvalidOperationException(ownershipError);
@@ -243,6 +258,17 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             startInfo.EnvironmentVariables["UNITY_MCP_BROKER_STATE"] = ProcessStatePath;
             startInfo.EnvironmentVariables["UNITY_MCP_BROKER_LOG"] = BrokerLogPath;
 
+            int ownerProcessId;
+            DateTime ownerProcessStartUtc;
+            using (var ownerProcess = Process.GetCurrentProcess())
+            {
+                ownerProcessId = ownerProcess.Id;
+                ownerProcessStartUtc = ownerProcess.StartTime.ToUniversalTime();
+            }
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_PARENT_PID"] = ownerProcessId.ToString();
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_PARENT_START_UTC"] =
+                ownerProcessStartUtc.ToString("O", CultureInfo.InvariantCulture);
+
             var initialState = new JObject
             {
                 ["schemaVersion"] = 1,
@@ -252,6 +278,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 ["port"] = port,
                 ["installPath"] = (string)manifest["installPath"],
                 ["logPath"] = BrokerLogPath,
+                ["ownerPid"] = ownerProcessId,
+                ["ownerStartUtc"] = ownerProcessStartUtc.ToString("O", CultureInfo.InvariantCulture),
                 ["startedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
                 ["updatedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
             };
@@ -294,6 +322,22 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
         }
 
         public static void Stop() => WithProcessLock(StopCore);
+
+        public static void StopOwnedByCurrentUnity()
+        {
+            int processId;
+            DateTime processStartUtc;
+            using (var current = Process.GetCurrentProcess())
+            {
+                processId = current.Id;
+                processStartUtc = current.StartTime.ToUniversalTime();
+            }
+            WithProcessLock(() =>
+            {
+                var state = ReadObject(ProcessStatePath);
+                if (IsOwnedByProcess(state, processId, processStartUtc)) StopCore();
+            });
+        }
 
         private static void StopCore()
         {
@@ -560,18 +604,18 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         private static bool IsRecentState(JObject value, TimeSpan maximumAge)
         {
-            return DateTimeOffset.TryParse((string)value?["updatedUtc"], out var updatedUtc)
+            return TryParseUtc((string)value?["updatedUtc"], out var updatedUtc)
                 && DateTimeOffset.UtcNow - updatedUtc <= maximumAge;
         }
 
-        private static bool IsInstallOperationActive(JObject status)
+        internal static bool IsInstallOperationActive(JObject status)
         {
             var state = (string)status?["state"];
             if (!string.Equals(state, "locating_python", StringComparison.Ordinal)
                 && !string.Equals(state, "installing", StringComparison.Ordinal)) return false;
             var processId = (int?)status?["pid"] ?? 0;
             if (processId <= 0) return false;
-            if (!DateTimeOffset.TryParse((string)status["updatedUtc"], out var updatedUtc)) return false;
+            if (!TryParseUtc((string)status["updatedUtc"], out var updatedUtc)) return false;
             var maximumAge = string.Equals(state, "locating_python", StringComparison.Ordinal)
                 ? TimeSpan.FromMinutes(2)
                 : TimeSpan.FromHours(2);
@@ -604,17 +648,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             return true;
         }
 
-        private static bool TryGetOwnedProcess(JObject state, out Process process, out string error)
+        internal static bool TryGetOwnedProcess(JObject state, out Process process, out string error)
         {
             process = null;
             error = null;
             var processId = (int?)state?["pid"] ?? 0;
             if (processId <= 0) return false;
-            if (!DateTimeOffset.TryParse((string)state["processStartUtc"], out var expectedStart))
-            {
-                error = "Managed broker process metadata is invalid; refusing to stop an unverified process.";
-                return false;
-            }
             try
             {
                 process = Process.GetProcessById(processId);
@@ -622,6 +661,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 {
                     process.Dispose();
                     process = null;
+                    return false;
+                }
+                if (!TryParseUtc((string)state["processStartUtc"], out var expectedStart))
+                {
+                    process.Dispose();
+                    process = null;
+                    error = "Managed broker process metadata is invalid; refusing to stop an unverified process.";
                     return false;
                 }
                 var actualStart = process.StartTime.ToUniversalTime();
@@ -638,12 +684,48 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             catch (InvalidOperationException) { return false; }
         }
 
+        internal static bool IsOwnedByProcess(JObject state, int processId, DateTime processStartUtc)
+        {
+            if (((int?)state?["ownerPid"] ?? 0) != processId) return false;
+            if (!TryParseUtc((string)state["ownerStartUtc"], out var expectedStart)) return false;
+            return Math.Abs((processStartUtc.ToUniversalTime() - expectedStart.UtcDateTime).TotalSeconds) <= 2;
+        }
+
+        private static bool TryParseUtc(string value, out DateTimeOffset parsed)
+        {
+            return DateTimeOffset.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out parsed);
+        }
+
+        private static bool PathsEqual(string first, string second)
+        {
+            if (string.IsNullOrWhiteSpace(first) || string.IsNullOrWhiteSpace(second)) return false;
+            try
+            {
+                return string.Equals(
+                    Path.GetFullPath(first).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    Path.GetFullPath(second).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    Environment.OSVersion.Platform == PlatformID.Win32NT
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         private static JObject ReadObject(string path)
         {
             try
             {
                 if (!File.Exists(path)) return null;
-                return JObject.Parse(File.ReadAllText(path));
+                using (var text = File.OpenText(path))
+                using (var json = new JsonTextReader(text) { DateParseHandling = DateParseHandling.None })
+                    return JObject.Load(json);
             }
             catch { return null; }
         }

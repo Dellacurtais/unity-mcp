@@ -5,11 +5,27 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.4] - 2026-07-28
+
+### Changed
+
+- Patch release bump to `0.16.4`.
+
+### Fixed
+
+- Managed broker process timestamps emitted by Python are now parsed independently of the Unity Editor culture, preventing false invalid-metadata failures under locales such as `pt-BR`.
+- PID ownership remains fail-closed by requiring the persisted process start time to match the live process before Unity controls it.
+
 ## [0.16.3] - 2026-07-26
 
 ### Changed
 
 - Patch release bump to `0.16.3`.
+
+### Fixed
+
+- Unity-managed brokers now stop when their owning Unity process exits or crashes while still surviving compilation and Domain Reload.
+- Stale process metadata without a live PID no longer blocks a clean broker restart; incomplete metadata for a live PID remains fail-closed.
 
 ## [0.16.2] - 2026-07-26
 

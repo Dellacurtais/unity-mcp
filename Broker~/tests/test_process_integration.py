@@ -33,6 +33,7 @@ def reserve_loopback_port() -> int:
 class BrokerProcess:
     root: Path
     port: int = field(default_factory=reserve_loopback_port)
+    environment_overrides: dict[str, str] = field(default_factory=dict)
     process: subprocess.Popen[str] | None = None
     _log: Any = None
 
@@ -71,6 +72,7 @@ class BrokerProcess:
             "UNITY_MCP_BROKER_RECONNECT_GRACE": "0.25",
             "UNITY_MCP_BROKER_MAX_REQUEST_BYTES": "1024",
         })
+        environment.update(self.environment_overrides)
         self.process = subprocess.Popen(
             [sys.executable, str(BROKER_ROOT / "main.py")],
             cwd=BROKER_ROOT,
@@ -129,6 +131,29 @@ def broker_process(tmp_path: Path):
         broker.stop()
 
 
+def test_real_process_stops_when_managed_parent_exits(tmp_path: Path) -> None:
+    guardian = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    broker = BrokerProcess(
+        tmp_path / "parent-owned broker",
+        environment_overrides={"UNITY_MCP_BROKER_PARENT_PID": str(guardian.pid)},
+    )
+    try:
+        broker.start()
+        guardian.terminate()
+        guardian.wait(timeout=5)
+        assert broker.process is not None
+        assert broker.process.wait(timeout=10) == 0
+    finally:
+        broker.stop()
+        if guardian.poll() is None:
+            guardian.kill()
+            guardian.wait(timeout=5)
+
+
 def bridge_hello(generation: str = "generation-a") -> dict[str, Any]:
     tool = {
         "name": "read_scene",
@@ -156,7 +181,7 @@ def bridge_hello(generation: str = "generation-a") -> dict[str, Any]:
             "processId": 4242,
             "processStartUtc": "2026-07-26T00:00:00+00:00",
             "generationId": generation,
-            "packageVersion": "0.16.2",
+            "packageVersion": "0.16.4",
             "registryCount": 1,
             "registryHash": f"registry-{generation}",
             "state": "ready",
@@ -204,7 +229,7 @@ async def test_real_process_routes_websocket_command_and_recovers_sqlite_after_r
                 "params": {"protocolVersion": "2025-03-26"},
             },
         )
-        assert initialized.json()["result"]["serverInfo"]["version"] == "0.16.2"
+        assert initialized.json()["result"]["serverInfo"]["version"] == "0.16.4"
 
         with pytest.raises(InvalidStatus):
             async with websockets.connect(

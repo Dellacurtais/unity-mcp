@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Mcp.Broker;
@@ -181,13 +182,19 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         {
             var runtime = Path.Combine(_root, "runtime");
             Directory.CreateDirectory(runtime);
-            File.WriteAllText(Path.Combine(runtime, "install-status.json"), new JObject
+            var installStatus = new JObject
             {
                 ["state"] = "installing",
                 ["pid"] = Process.GetCurrentProcess().Id,
                 ["updatedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
                 ["message"] = "Installing dependencies",
-            }.ToString());
+            };
+            File.WriteAllText(Path.Combine(runtime, "install-status.json"), installStatus.ToString());
+
+            Assert.That(
+                ManagedBrokerProcess.IsInstallOperationActive(installStatus),
+                Is.True,
+                "The current Unity process must be recognized as the live installer owner.");
 
             var snapshot = ManagedBrokerProcess.InspectPersistedState(
                 _root,
@@ -197,6 +204,145 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(snapshot.State, Is.EqualTo(ManagedBrokerState.Installing));
             Assert.That(snapshot.IsInstallInProgress, Is.True);
             Assert.That(snapshot.Message, Is.EqualTo("Installing dependencies"));
+        }
+
+        [Test]
+        public void ProcessOwnership_IgnoresIncompleteMetadataAfterProcessExited()
+        {
+            var state = new JObject { ["pid"] = int.MaxValue };
+
+            Assert.That(
+                ManagedBrokerProcess.TryGetOwnedProcess(state, out var process, out var error),
+                Is.False);
+            Assert.That(process, Is.Null);
+            Assert.That(error, Is.Null);
+        }
+
+        [Test]
+        public void ProcessOwnership_RejectsIncompleteMetadataForLiveProcess()
+        {
+            using (var current = Process.GetCurrentProcess())
+            {
+                var state = new JObject { ["pid"] = current.Id };
+
+                Assert.That(
+                    ManagedBrokerProcess.TryGetOwnedProcess(state, out var owned, out var error),
+                    Is.False);
+                Assert.That(owned, Is.Null);
+                Assert.That(error, Does.Contain("metadata is invalid"));
+            }
+        }
+
+        [Test]
+        public void ProcessOwnership_RejectsMismatchedStartTimeForLiveProcess()
+        {
+            using (var current = Process.GetCurrentProcess())
+            {
+                var state = new JObject
+                {
+                    ["pid"] = current.Id,
+                    ["processStartUtc"] = current.StartTime.ToUniversalTime()
+                        .AddMinutes(-1)
+                        .ToString("O", CultureInfo.InvariantCulture),
+                };
+
+                Assert.That(
+                    ManagedBrokerProcess.TryGetOwnedProcess(state, out var owned, out var error),
+                    Is.False);
+                Assert.That(owned, Is.Null);
+                Assert.That(error, Does.Contain("PID was reused"));
+            }
+        }
+
+        [Test]
+        public void PersistedState_ValidatesPythonTimestampUnderNonUsCulture()
+        {
+            var installPath = Path.Combine(_root, "installations", "1.2.3-test");
+            var pythonPath = Path.Combine(installPath, "venv", "python.exe");
+            var mainPath = Path.Combine(installPath, "source", "main.py");
+            Directory.CreateDirectory(Path.GetDirectoryName(pythonPath));
+            Directory.CreateDirectory(Path.GetDirectoryName(mainPath));
+            File.WriteAllText(pythonPath, string.Empty);
+            File.WriteAllText(mainPath, string.Empty);
+            File.WriteAllText(Path.Combine(_root, "current.json"), new JObject
+            {
+                ["version"] = "1.2.3",
+                ["installPath"] = installPath,
+                ["pythonPath"] = pythonPath,
+                ["mainPath"] = mainPath,
+            }.ToString());
+            var runtime = Path.Combine(_root, "runtime");
+            Directory.CreateDirectory(runtime);
+
+            using (var current = Process.GetCurrentProcess())
+            {
+                var processStartUtc = new DateTimeOffset(current.StartTime.ToUniversalTime())
+                    .ToString("yyyy-MM-dd'T'HH:mm:ss.ffffffzzz", CultureInfo.InvariantCulture);
+                File.WriteAllText(Path.Combine(runtime, "broker-process.json"), new JObject
+                {
+                    ["state"] = "running",
+                    ["pid"] = current.Id,
+                    ["processStartUtc"] = processStartUtc,
+                    ["installPath"] = installPath,
+                    ["updatedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
+                }.ToString());
+
+                var previousCulture = CultureInfo.CurrentCulture;
+                try
+                {
+                    CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("pt-BR");
+                    var snapshot = ManagedBrokerProcess.InspectPersistedState(
+                        _root,
+                        "1.2.3",
+                        state =>
+                        {
+                            var running = ManagedBrokerProcess.TryGetOwnedProcess(
+                                state,
+                                out var process,
+                                out var error);
+                            process?.Dispose();
+                            return new ManagedBrokerProcess.ProcessProbe
+                            {
+                                Running = running,
+                                Exists = running || !string.IsNullOrEmpty(error),
+                                Error = error,
+                            };
+                        });
+
+                    Assert.That(snapshot.State, Is.EqualTo(ManagedBrokerState.Running), snapshot.Error);
+                    Assert.That(snapshot.IsProcessRunning, Is.True);
+                    Assert.That(snapshot.Error, Is.Null);
+                }
+                finally
+                {
+                    CultureInfo.CurrentCulture = previousCulture;
+                }
+            }
+        }
+
+        [Test]
+        public void UnityOwnership_RequiresMatchingPidAndStartTime()
+        {
+            using (var current = Process.GetCurrentProcess())
+            {
+                var startUtc = current.StartTime.ToUniversalTime();
+                var state = new JObject
+                {
+                    ["ownerPid"] = current.Id,
+                    ["ownerStartUtc"] = startUtc.ToString("O"),
+                };
+
+                Assert.That(
+                    ManagedBrokerProcess.IsOwnedByProcess(state, current.Id, startUtc),
+                    Is.True);
+                Assert.That(
+                    ManagedBrokerProcess.IsOwnedByProcess(state, current.Id + 1, startUtc),
+                    Is.False);
+                state.Remove("ownerStartUtc");
+                Assert.That(
+                    ManagedBrokerProcess.IsOwnedByProcess(state, current.Id, startUtc),
+                    Is.False);
+            }
         }
     }
 }

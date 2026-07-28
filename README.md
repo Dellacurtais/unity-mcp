@@ -141,10 +141,10 @@ Managed setup from **Window → Unity MCP Transport**:
 1. Install Python **3.10 or newer**. Unity discovers `py -3`, `python3`, or `python`; an explicit executable can also be selected.
 2. Stop the embedded transport and select **Mode = Broker**.
 3. Click **Install**. Unity copies the broker to a versioned user-owned directory under local application data, creates a private virtual environment, and installs `Broker~/requirements.txt`. The package itself is never modified.
-4. Click **Start**. Unity launches the separate broker with the configured bearer token and persistent SQLite/log paths, then connects the outbound WebSocket bridge. The process survives compilation, Domain Reload, and closing the Editor until **Stop** is clicked.
+4. Click **Start**. Unity launches the separate broker with the configured bearer token and persistent SQLite/log paths, then connects the outbound WebSocket bridge. The process survives compilation and Domain Reload. It stops when the Unity process that launched it exits, including after an abnormal termination; **Stop** remains available for an explicit shutdown.
 5. Point the MCP client at `http://127.0.0.1:8765/mcp/` with the token shown in the window. Use **Repair** to rebuild the private environment and **Logs** to reveal installation/runtime logs.
 
-Manual setup remains supported: install `Broker~/requirements.txt` in an external environment, set `UNITY_MCP_BROKER_TOKEN`, run `python Broker~/main.py`, then click **Connect** in Broker mode.
+Manual setup remains supported: install `Broker~/requirements.txt` in an external environment, set `UNITY_MCP_BROKER_TOKEN`, run `python Broker~/main.py`, then click **Connect** in Broker mode. A manually launched broker has no Unity owner and keeps the operator-controlled lifetime.
 
 The broker persists requests, registries, projects, lifecycle events, and refresh/compile jobs in SQLite. `broker_start_refresh_compile` returns a durable job immediately; use `broker_get_job` or `broker_wait_job` while Unity compiles/reloads. Read-only and explicitly idempotent calls may resume after reconnect; accepted non-idempotent writes are never blindly repeated and return `OUTCOME_UNKNOWN` when their result cannot be proven.
 

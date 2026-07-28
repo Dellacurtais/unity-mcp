@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "com.maicon.scene-analyzer"
-RELEASE_VERSION = "0.16.2"
+RELEASE_VERSION = "0.16.4"
 PINNED_REQUIREMENT = re.compile(r"^[A-Za-z0-9_.-]+==[^=<>!~]+$")
 
 
@@ -62,7 +62,11 @@ def main() -> int:
     reload_block = reload_block[: reload_block.index("private static void OnQuitting")]
     quitting_block = bootstrap[bootstrap.index("private static void OnQuitting") :]
     require("ManagedBrokerProcess.Stop" not in reload_block, "Domain Reload must not stop the external broker", failures)
-    require("ManagedBrokerProcess.Stop" not in quitting_block, "Editor quit must not stop the external broker", failures)
+    require(
+        "ManagedBrokerProcess.StopOwnedByCurrentUnity()" in quitting_block,
+        "Editor quit must stop the managed broker owned by that Unity process",
+        failures,
+    )
 
     for relative in ("Broker~/requirements.txt", "Broker~/requirements-dev.txt"):
         for line in read(relative).splitlines():

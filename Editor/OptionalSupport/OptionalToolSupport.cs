@@ -560,7 +560,7 @@ namespace Maicon.SceneAnalyzer.Editor.Optional
         {
             ["package"] = new JObject { ["type"] = "object" },
             ["components"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "object" } },
-            ["unavailableTypes"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "array" } },
+            ["unavailableTypes"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" } } },
         }, "package", "components", "unavailableTypes");
         public ToolResult Execute(JObject arguments) => OptionalToolSupport.ListComponents(_packageId, _typeGroups);
     }

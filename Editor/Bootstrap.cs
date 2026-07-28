@@ -730,6 +730,9 @@ namespace Maicon.SceneAnalyzer.Editor
             catch (Exception e) { Debug.LogException(e); }
             StopBrokerBridge();
 
+            try { ManagedBrokerProcess.StopOwnedByCurrentUnity(); }
+            catch (Exception e) { Debug.LogWarning("[unity-mcp] failed to stop owned managed broker: " + e.Message); }
+
             try { Server?.Stop("Unity Editor is quitting"); }
             catch (Exception e) { Debug.LogException(e); }
 

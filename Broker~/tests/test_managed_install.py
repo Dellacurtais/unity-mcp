@@ -287,6 +287,61 @@ def test_managed_state_update_replaces_launcher_identity_with_worker_process(mon
     assert json.loads(state_path.read_text(encoding="utf-8")) == running
 
 
+@pytest.mark.asyncio
+async def test_parent_watch_stops_server_and_closes_process_monitor() -> None:
+    class FakeServer:
+        should_exit = False
+
+    class FakeMonitor:
+        def __init__(self) -> None:
+            self.probes = iter((True, False))
+            self.closed = False
+
+        def is_alive(self) -> bool:
+            return next(self.probes)
+
+        def close(self) -> None:
+            self.closed = True
+
+    server = FakeServer()
+    monitor = FakeMonitor()
+
+    await main.stop_when_parent_exits(server, monitor, poll_interval=0)
+
+    assert server.should_exit is True
+    assert monitor.closed is True
+
+
+def test_parent_monitor_environment_is_optional_and_rejects_invalid_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("UNITY_MCP_BROKER_PARENT_PID", raising=False)
+    assert main.parent_monitor_from_environment() is None
+
+    monkeypatch.setenv("UNITY_MCP_BROKER_PARENT_PID", "not-a-pid")
+    with pytest.raises(RuntimeError, match="positive integer"):
+        main.parent_monitor_from_environment()
+
+
+def test_managed_parent_monitor_falls_back_to_unity_ancestor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    class FakeMonitor:
+        def __init__(self, process_id: int) -> None:
+            captured["process_id"] = process_id
+
+    monkeypatch.delenv("UNITY_MCP_BROKER_PARENT_PID", raising=False)
+    monkeypatch.setenv("UNITY_MCP_BROKER_STATE", "broker-process.json")
+    monkeypatch.setenv("UNITY_MCP_BROKER_INSTANCE_ID", "managed")
+    monkeypatch.setattr(main, "infer_managed_parent_process_id", lambda: 321)
+    monkeypatch.setattr(main, "ParentProcessMonitor", FakeMonitor)
+
+    assert isinstance(main.parent_monitor_from_environment(), FakeMonitor)
+    assert captured["process_id"] == 321
+
+
 def test_managed_logging_uses_only_rotating_file_handler(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     log_path = tmp_path / "logs" / "broker.log"
     monkeypatch.setenv("UNITY_MCP_BROKER_LOG", str(log_path))
