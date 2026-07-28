@@ -42,24 +42,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                 ["args"] = new JObject
                 {
                     ["type"] = "array",
-                    // anyOf with explicit primitive/object branches — empty-schema
-                    // items ({}) gets stripped by some provider validators (OpenAI
-                    // strict-mode, Gemini), so enumerate valid JSON value kinds.
-                    // Vector3/Quaternion/Color args should use object form
-                    // ({x,y,z}, {r,g,b,a}); JsonHelpers.Parse* already accepts those.
-                    ["items"] = new JObject
-                    {
-                        ["anyOf"] = new JArray
-                        {
-                            new JObject { ["type"] = "string" },
-                            new JObject { ["type"] = "number" },
-                            new JObject { ["type"] = "integer" },
-                            new JObject { ["type"] = "boolean" },
-                            new JObject { ["type"] = "object" },
-                            new JObject { ["type"] = "array" },
-                            new JObject { ["type"] = "null" },
-                        },
-                    },
+                    // Empty item schemas are stripped by some provider validators,
+                    // so advertise explicit JSON value branches. Arrays are bounded
+                    // only in the schema to avoid unsupported recursive $ref usage.
+                    ["items"] = JsonValueSchema(4),
                     ["description"] = "JSON values, one per parameter. UnityEngine.Object params accept {instanceId:int}; Vector3/Quaternion/Color use object form like {x,y,z} or {r,g,b,a}.",
                 },
             },
@@ -75,22 +61,35 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                 ["typeFullName"] = new JObject { ["type"] = "string" },
                 ["method"] = new JObject { ["type"] = "string" },
                 ["returnTypeFullName"] = new JObject { ["type"] = "string" },
-                ["returnValue"] = new JObject
-                {
-                    ["anyOf"] = new JArray
-                    {
-                        new JObject { ["type"] = "string" }, new JObject { ["type"] = "number" },
-                        new JObject { ["type"] = "integer" }, new JObject { ["type"] = "boolean" },
-                        new JObject { ["type"] = "object" }, new JObject { ["type"] = "array" },
-                        new JObject { ["type"] = "null" },
-                    },
-                },
+                ["returnValue"] = JsonValueSchema(4),
             },
             ["required"] = new JArray { "typeFullName", "method", "returnTypeFullName", "returnValue" },
             ["additionalProperties"] = false,
         };
 
         public bool IsWrite => true;
+
+        private static JObject JsonValueSchema(int remainingArrayDepth)
+        {
+            var variants = new JArray
+            {
+                new JObject { ["type"] = "string" },
+                new JObject { ["type"] = "number" },
+                new JObject { ["type"] = "integer" },
+                new JObject { ["type"] = "boolean" },
+                new JObject { ["type"] = "object" },
+                new JObject { ["type"] = "null" },
+            };
+            if (remainingArrayDepth > 0)
+            {
+                variants.Add(new JObject
+                {
+                    ["type"] = "array",
+                    ["items"] = JsonValueSchema(remainingArrayDepth - 1),
+                });
+            }
+            return new JObject { ["anyOf"] = variants };
+        }
 
         public ToolResult Execute(JObject args)
         {
