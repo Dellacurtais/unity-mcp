@@ -370,6 +370,15 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             }));
             Assert.That(registry.Count, Is.EqualTo(1));
             Assert.That(registry.TryGet("also-valid", out _), Is.False);
+
+            Assert.Throws<InvalidOperationException>(() => registry.RegisterRange(new IMcpTool[]
+            {
+                new StubTool("missing-root-type", schema: new JObject
+                {
+                    ["oneOf"] = new JArray { new JObject { ["type"] = "object" } },
+                }),
+            }));
+            Assert.That(registry.Count, Is.EqualTo(1));
         }
 
         [TestCase("configure_addressable_entry")]
@@ -581,7 +590,10 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(tools.Select(tool => tool.Name).Distinct(StringComparer.Ordinal).Count(), Is.EqualTo(tools.Length));
             foreach (var tool in tools)
             {
-                Assert.That(ToolSchemaValidator.ValidateSchema(tool.InputSchema, out var error), Is.True,
+                var inputSchema = tool.InputSchema;
+                Assert.That((string)inputSchema?["type"], Is.EqualTo("object"),
+                    $"{tool.Name}: input schema root must declare type object");
+                Assert.That(ToolSchemaValidator.ValidateSchema(inputSchema, out var error), Is.True,
                     $"{tool.Name}: {error}");
                 if (tool.OutputSchema != null)
                     Assert.That(ToolSchemaValidator.ValidateSchema(tool.OutputSchema, out var outputError), Is.True,

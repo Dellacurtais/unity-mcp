@@ -813,6 +813,7 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         public string Description => "Runs a read-only Physics2D raycast, overlap point, overlap circle or overlap box query and returns every matching collider in deterministic order.";
         public JObject InputSchema => new JObject
         {
+            ["type"] = "object",
             ["oneOf"] = new JArray
             {
                 Variant("raycast", new JObject

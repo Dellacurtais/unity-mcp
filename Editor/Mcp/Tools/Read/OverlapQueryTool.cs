@@ -13,6 +13,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
 
         public JObject InputSchema => new JObject
         {
+            ["type"] = "object",
             ["oneOf"] = new JArray
             {
                 Variant("box", new JObject

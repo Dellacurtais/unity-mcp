@@ -28,7 +28,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 if (tool == null) throw new ArgumentNullException(nameof(tools), "MCP tool collection contains null.");
                 if (string.IsNullOrWhiteSpace(tool.Name)) throw new ArgumentException("MCP tool name is required.", nameof(tools));
                 if (!names.Add(tool.Name)) throw new InvalidOperationException($"Duplicate MCP tool name '{tool.Name}' in registration batch.");
-                if (!ToolSchemaValidator.ValidateSchema(tool.InputSchema ?? new Newtonsoft.Json.Linq.JObject { ["type"] = "object" }, out var schemaError))
+                var inputSchema = tool.InputSchema ?? new Newtonsoft.Json.Linq.JObject { ["type"] = "object" };
+                if (!string.Equals((string)inputSchema["type"], "object", StringComparison.Ordinal))
+                    throw new InvalidOperationException($"Invalid input schema for MCP tool '{tool.Name}': root type must be 'object'.");
+                if (!ToolSchemaValidator.ValidateSchema(inputSchema, out var schemaError))
                     throw new InvalidOperationException($"Invalid input schema for MCP tool '{tool.Name}': {schemaError}");
                 if (tool.OutputSchema != null && !ToolSchemaValidator.ValidateSchema(tool.OutputSchema, out var outputSchemaError))
                     throw new InvalidOperationException($"Invalid output schema for MCP tool '{tool.Name}': {outputSchemaError}");
