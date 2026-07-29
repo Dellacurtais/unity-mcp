@@ -37,7 +37,11 @@ namespace Maicon.SceneAnalyzer.Editor.BuildTools
             ["properties"] = new JObject
             {
                 ["locationPathName"] = new JObject { ["type"] = "string" },
-                ["target"] = new JObject { ["type"] = "string", ["default"] = EditorUserBuildSettings.activeBuildTarget.ToString() },
+                ["target"] = new JObject
+                {
+                    ["type"] = "string",
+                    ["description"] = "BuildTarget enum name. Defaults to the currently active build target when omitted.",
+                },
                 ["scenes"] = new JObject
                 {
                     ["type"] = "array",

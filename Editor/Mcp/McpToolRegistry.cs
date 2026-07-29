@@ -8,8 +8,23 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 {
     public sealed class McpToolRegistry
     {
+        private sealed class ContractSnapshot
+        {
+            public string InputSchemaJson;
+            public string OutputSchemaJson;
+            public string Fingerprint;
+        }
+
+        private sealed class PreparedTool
+        {
+            public IMcpTool Tool;
+            public ToolDescriptor Descriptor;
+            public ContractSnapshot Contract;
+        }
+
         private readonly Dictionary<string, IMcpTool> _tools = new Dictionary<string, IMcpTool>(StringComparer.Ordinal);
         private readonly Dictionary<string, ToolDescriptor> _descriptors = new Dictionary<string, ToolDescriptor>(StringComparer.Ordinal);
+        private readonly Dictionary<string, ContractSnapshot> _contracts = new Dictionary<string, ContractSnapshot>(StringComparer.Ordinal);
         private readonly object _lock = new object();
         private string _versionHash;
 
@@ -23,6 +38,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             var candidates = tools.ToArray();
             if (candidates.Length == 0) return;
             var names = new HashSet<string>(StringComparer.Ordinal);
+            var prepared = new List<PreparedTool>(candidates.Length);
             foreach (var tool in candidates)
             {
                 if (tool == null) throw new ArgumentNullException(nameof(tools), "MCP tool collection contains null.");
@@ -33,21 +49,29 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     throw new InvalidOperationException($"Invalid input schema for MCP tool '{tool.Name}': root type must be 'object'.");
                 if (!ToolSchemaValidator.ValidateSchema(inputSchema, out var schemaError))
                     throw new InvalidOperationException($"Invalid input schema for MCP tool '{tool.Name}': {schemaError}");
-                if (tool.OutputSchema != null && !ToolSchemaValidator.ValidateSchema(tool.OutputSchema, out var outputSchemaError))
+                var outputSchema = tool.OutputSchema;
+                if (outputSchema != null && !ToolSchemaValidator.ValidateSchema(outputSchema, out var outputSchemaError))
                     throw new InvalidOperationException($"Invalid output schema for MCP tool '{tool.Name}': {outputSchemaError}");
                 var descriptor = tool.Descriptor ?? ToolDescriptor.Infer(tool);
                 if (!string.Equals(descriptor.Name, tool.Name, StringComparison.Ordinal))
                     throw new InvalidOperationException($"Descriptor name '{descriptor.Name}' does not match tool '{tool.Name}'.");
+                prepared.Add(new PreparedTool
+                {
+                    Tool = tool,
+                    Descriptor = descriptor,
+                    Contract = CaptureContract(tool.Name, inputSchema, outputSchema, descriptor),
+                });
             }
 
             lock (_lock)
             {
                 foreach (var name in names)
                     if (_tools.ContainsKey(name)) throw new InvalidOperationException($"Duplicate MCP tool name '{name}'.");
-                foreach (var tool in candidates)
+                foreach (var item in prepared)
                 {
-                    _tools.Add(tool.Name, tool);
-                    _descriptors[tool.Name] = tool.Descriptor ?? ToolDescriptor.Infer(tool);
+                    _tools.Add(item.Tool.Name, item.Tool);
+                    _descriptors[item.Tool.Name] = item.Descriptor;
+                    _contracts[item.Tool.Name] = item.Contract;
                 }
                 _versionHash = null;
             }
@@ -65,7 +89,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     throw new InvalidOperationException($"Descriptor mutability does not match MCP tool '{descriptor.Name}'.");
                 if (descriptor.OutputSchema != null && !ToolSchemaValidator.ValidateSchema(descriptor.OutputSchema, out var outputSchemaError))
                     throw new InvalidOperationException($"Invalid descriptor output schema for MCP tool '{descriptor.Name}': {outputSchemaError}");
+                if (!_contracts.TryGetValue(descriptor.Name, out var existingContract))
+                    throw new InvalidOperationException($"Contract snapshot is missing for MCP tool '{descriptor.Name}'.");
                 _descriptors[descriptor.Name] = descriptor;
+                _contracts[descriptor.Name] = new ContractSnapshot
+                {
+                    InputSchemaJson = existingContract.InputSchemaJson,
+                    OutputSchemaJson = existingContract.OutputSchemaJson,
+                    Fingerprint = BuildContractFingerprint(
+                        descriptor.Name, existingContract.InputSchemaJson, existingContract.OutputSchemaJson, descriptor),
+                };
                 _versionHash = null;
             }
             Changed?.Invoke();
@@ -85,6 +118,29 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             }
         }
 
+        public Newtonsoft.Json.Linq.JObject GetInputSchema(string name)
+        {
+            string json;
+            lock (_lock)
+            {
+                if (!_contracts.TryGetValue(name ?? string.Empty, out var contract)) return null;
+                json = contract.InputSchemaJson;
+            }
+            return Newtonsoft.Json.Linq.JObject.Parse(json);
+        }
+
+        public Newtonsoft.Json.Linq.JObject GetOutputSchema(string name)
+        {
+            string json;
+            lock (_lock)
+            {
+                if (!_contracts.TryGetValue(name ?? string.Empty, out var contract)
+                    || string.Equals(contract.OutputSchemaJson, "null", StringComparison.Ordinal)) return null;
+                json = contract.OutputSchemaJson;
+            }
+            return Newtonsoft.Json.Linq.JObject.Parse(json);
+        }
+
         public IEnumerable<IMcpTool> All
         {
             get
@@ -95,6 +151,35 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 
         public int Count { get { lock (_lock) return _tools.Count; } }
 
+        private static ContractSnapshot CaptureContract(
+            string name, Newtonsoft.Json.Linq.JObject inputSchema, Newtonsoft.Json.Linq.JObject outputSchema, ToolDescriptor descriptor)
+        {
+            var inputSchemaJson = inputSchema?.ToString(Newtonsoft.Json.Formatting.None) ?? "{}";
+            var outputSchemaJson = outputSchema?.ToString(Newtonsoft.Json.Formatting.None) ?? "null";
+            return new ContractSnapshot
+            {
+                InputSchemaJson = inputSchemaJson,
+                OutputSchemaJson = outputSchemaJson,
+                Fingerprint = BuildContractFingerprint(name, inputSchemaJson, outputSchemaJson, descriptor),
+            };
+        }
+
+        private static string BuildContractFingerprint(
+            string name, string inputSchemaJson, string outputSchemaJson, ToolDescriptor descriptor)
+            => string.Join("|", new[]
+            {
+                name,
+                inputSchemaJson,
+                outputSchemaJson,
+                descriptor?.OutputSchema?.ToString(Newtonsoft.Json.Formatting.None) ?? "null",
+                descriptor?.Category ?? string.Empty,
+                descriptor?.Capabilities.ToString() ?? string.Empty,
+                descriptor?.Risk.ToString() ?? string.Empty,
+                descriptor?.ConfirmationPolicy.ToString() ?? string.Empty,
+                descriptor?.EditorMode.ToString() ?? string.Empty,
+                descriptor != null && descriptor.IsIdempotent ? "1" : "0",
+            });
+
         public string VersionHash
         {
             get
@@ -102,26 +187,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 lock (_lock)
                 {
                     if (_versionHash != null) return _versionHash;
-                    var canonical = string.Join("\n", _tools.Values
-                        .OrderBy(tool => tool.Name, StringComparer.Ordinal)
-                        .Select(tool =>
-                        {
-                            _descriptors.TryGetValue(tool.Name, out var descriptor);
-                            descriptor = descriptor ?? ToolDescriptor.Infer(tool);
-                            return string.Join("|", new[]
-                            {
-                                tool.Name,
-                                tool.InputSchema?.ToString(Newtonsoft.Json.Formatting.None) ?? "{}",
-                                tool.OutputSchema?.ToString(Newtonsoft.Json.Formatting.None) ?? "null",
-                                descriptor.OutputSchema?.ToString(Newtonsoft.Json.Formatting.None) ?? "null",
-                                descriptor.Category ?? string.Empty,
-                                descriptor.Capabilities.ToString(),
-                                descriptor.Risk.ToString(),
-                                descriptor.ConfirmationPolicy.ToString(),
-                                descriptor.EditorMode.ToString(),
-                                descriptor.IsIdempotent ? "1" : "0",
-                            });
-                        }));
+                    var canonical = string.Join("\n", _contracts
+                        .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+                        .Select(entry => entry.Value.Fingerprint));
                     using (var sha = SHA256.Create())
                     {
                         var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(canonical));

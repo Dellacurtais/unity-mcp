@@ -5,6 +5,18 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.7] - 2026-07-29
+
+### Changed
+
+- Patch release bump to `0.16.7`.
+- Registry hashes now use validated schema snapshots captured during registration, so response metadata never reevaluates tool schemas on a worker thread.
+
+### Fixed
+
+- Build-tool schemas no longer access `EditorUserBuildSettings.activeBuildTarget` while registry metadata is generated; omitted targets still resolve to the active target during main-thread execution.
+- Advertised structured-output schemas now accept standard MCP tool errors alongside successful payloads, preventing `read_prefab` and other failures from being rejected as malformed success responses.
+
 ## [0.16.6] - 2026-07-28
 
 ### Changed

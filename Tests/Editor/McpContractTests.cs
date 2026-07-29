@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect;
+using Maicon.SceneAnalyzer.Editor.PrefabTools;
 using Maicon.SceneAnalyzer.ReflectionTestSurface;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
@@ -54,6 +55,43 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             public string Name { get; }
             public string Description => Name;
             public JObject InputSchema => new JObject { ["type"] = "object" };
+            public bool IsWrite => false;
+            public ToolResult Execute(JObject arguments) => ToolResult.Ok("ok");
+        }
+
+        private sealed class OneShotSchemaTool : IMcpTool
+        {
+            private int _inputReads;
+            private int _outputReads;
+
+            public string Name => "one_shot_schema";
+            public string Description => Name;
+            public int InputReads => Volatile.Read(ref _inputReads);
+            public int OutputReads => Volatile.Read(ref _outputReads);
+            public JObject InputSchema
+            {
+                get
+                {
+                    if (Interlocked.Increment(ref _inputReads) != 1)
+                        throw new InvalidOperationException("InputSchema was evaluated after registration.");
+                    return new JObject { ["type"] = "object" };
+                }
+            }
+            public JObject OutputSchema
+            {
+                get
+                {
+                    if (Interlocked.Increment(ref _outputReads) != 1)
+                        throw new InvalidOperationException("OutputSchema was evaluated after registration.");
+                    return new JObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JObject { ["value"] = new JObject { ["type"] = "integer" } },
+                        ["required"] = new JArray { "value" },
+                        ["additionalProperties"] = false,
+                    };
+                }
+            }
             public bool IsWrite => false;
             public ToolResult Execute(JObject arguments) => ToolResult.Ok("ok");
         }
@@ -347,6 +385,53 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 IsIdempotent = true,
             });
             Assert.That(registry.VersionHash, Is.Not.EqualTo(before));
+        }
+
+        [Test]
+        public async Task RegistryHash_DoesNotReevaluateSchemasOnWorkerThread()
+        {
+            var registry = new McpToolRegistry();
+            var tool = new OneShotSchemaTool();
+            registry.Register(tool);
+
+            var hash = await Task.Run(() => registry.VersionHash);
+
+            Assert.That(hash, Has.Length.EqualTo(64));
+            Assert.That(tool.InputReads, Is.EqualTo(1));
+            Assert.That(tool.OutputReads, Is.EqualTo(1));
+        }
+
+        [Test]
+        public async Task ToolList_DoesNotReevaluateSchemasOnWorkerThread()
+        {
+            var registry = new McpToolRegistry();
+            var tool = new OneShotSchemaTool();
+            registry.Register(tool);
+            using var processor = new McpRequestProcessor(registry, 1, 10);
+
+            var list = await Task.Run(() => processor.ListTools());
+
+            Assert.That((string)list["tools"]?[0]?["name"], Is.EqualTo(tool.Name));
+            Assert.That((string)list["tools"]?[0]?["inputSchema"]?["type"], Is.EqualTo("object"));
+            Assert.That((string)list["tools"]?[0]?["outputSchema"]?["type"], Is.EqualTo("object"));
+            Assert.That(tool.InputReads, Is.EqualTo(1));
+            Assert.That(tool.OutputReads, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void ReadPrefab_AdvertisedOutputSchemaAcceptsStructuredToolErrors()
+        {
+            var tool = new ReadPrefabTool();
+            var registry = new McpToolRegistry();
+            registry.Register(tool);
+            var result = tool.Execute(new JObject { ["prefabPath"] = "Packages/Outside.prefab" });
+            var advertised = McpRequestProcessor.BuildAdvertisedOutputSchema(registry.GetOutputSchema(tool.Name));
+
+            Assert.That(result.IsError, Is.True);
+            Assert.That((string)advertised["type"], Is.EqualTo("object"));
+            Assert.That(ToolSchemaValidator.ValidateSchema(advertised, out var schemaError), Is.True, schemaError);
+            Assert.That(ToolSchemaValidator.ValidateArguments((JObject)result.Json, advertised, out var resultError),
+                Is.True, resultError);
         }
 
         [Test]

@@ -144,13 +144,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             }
         }
 
-        private JObject ListTools()
+        internal JObject ListTools()
         {
             var tools = new JArray();
             foreach (var tool in _registry.All)
             {
                 var descriptor = _registry.GetDescriptor(tool.Name) ?? ToolDescriptor.Infer(tool);
-                var inputSchema = BuildAdvertisedInputSchema(tool, descriptor);
+                var inputSchema = BuildAdvertisedInputSchema(_registry.GetInputSchema(tool.Name));
                 if (ToolAuthorization.RequiresConfirmation(descriptor))
                 {
                     var properties = inputSchema["properties"] as JObject;
@@ -184,7 +184,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                         ["editorMode"] = descriptor.EditorMode.ToString(),
                     },
                 };
-                if (tool.OutputSchema != null) item["outputSchema"] = tool.OutputSchema;
+                var outputSchema = _registry.GetOutputSchema(tool.Name);
+                if (outputSchema != null) item["outputSchema"] = BuildAdvertisedOutputSchema(outputSchema);
                 tools.Add(item);
             }
             return new JObject
@@ -198,9 +199,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             };
         }
 
-        private static JObject BuildAdvertisedInputSchema(IMcpTool tool, ToolDescriptor descriptor)
+        private static JObject BuildAdvertisedInputSchema(JObject registeredSchema)
         {
-            var schema = (JObject)(tool.InputSchema ?? new JObject { ["type"] = "object" }).DeepClone();
+            var schema = (JObject)(registeredSchema ?? new JObject { ["type"] = "object" }).DeepClone();
             var properties = schema["properties"] as JObject;
             if (properties == null || properties["instanceId"] == null) return schema;
 
@@ -220,6 +221,28 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             return schema;
         }
 
+        internal static JObject BuildAdvertisedOutputSchema(JObject successSchema)
+        {
+            if (successSchema == null) return null;
+            var errorSchema = new JObject
+            {
+                ["type"] = "object",
+                ["properties"] = new JObject
+                {
+                    ["code"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                    ["message"] = new JObject { ["type"] = "string" },
+                    ["data"] = new JObject(),
+                },
+                ["required"] = new JArray { "code", "message" },
+                ["additionalProperties"] = false,
+            };
+            return new JObject
+            {
+                ["type"] = "object",
+                ["anyOf"] = new JArray { successSchema.DeepClone(), errorSchema },
+            };
+        }
+
         internal static bool RequiresLegacyMutationFinalization(ToolDescriptor descriptor) =>
             descriptor != null && (descriptor.Capabilities & McpCapability.SceneWrite) != 0;
 
@@ -236,12 +259,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             executionArguments.Remove(ConfirmationArgument);
 
             ToolDescriptor descriptor = null;
+            var inputSchema = _registry.GetInputSchema(name) ?? new JObject { ["type"] = "object" };
             var requiresConfirmation = false;
             string preparationCode = null;
             string preparationMessage = null;
             var prepared = await MainThreadDispatcher.RunAsync(() =>
             {
-                var inputSchema = tool.InputSchema ?? new JObject { ["type"] = "object" };
                 if (executionArguments["target"] != null && inputSchema["properties"]?["instanceId"] != null)
                 {
                     var target = ToolTargetResolver.Resolve(
