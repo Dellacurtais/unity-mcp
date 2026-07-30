@@ -181,7 +181,7 @@ def bridge_hello(generation: str = "generation-a") -> dict[str, Any]:
             "processId": 4242,
             "processStartUtc": "2026-07-26T00:00:00+00:00",
             "generationId": generation,
-            "packageVersion": "0.16.7",
+            "packageVersion": "0.16.8",
             "registryCount": 1,
             "registryHash": f"registry-{generation}",
             "state": "ready",
@@ -229,7 +229,7 @@ async def test_real_process_routes_websocket_command_and_recovers_sqlite_after_r
                 "params": {"protocolVersion": "2025-03-26"},
             },
         )
-        assert initialized.json()["result"]["serverInfo"]["version"] == "0.16.7"
+        assert initialized.json()["result"]["serverInfo"]["version"] == "0.16.8"
 
         with pytest.raises(InvalidStatus):
             async with websockets.connect(
@@ -249,6 +249,11 @@ async def test_real_process_routes_websocket_command_and_recovers_sqlite_after_r
             acknowledgement = json.loads(await asyncio.wait_for(bridge.recv(), timeout=2))
             assert acknowledgement["type"] == "hello_ack"
             assert acknowledgement["payload"]["active"] is True
+            health = (await client.get("/health")).json()
+            assert health["bridgeConnected"] is True
+            assert health["routeReady"] is True
+            assert health["activeProjectName"] == "Process Project"
+            assert health["registryCount"] == 1
 
             listed = await client.post(
                 "/mcp/",
@@ -304,6 +309,7 @@ async def test_real_process_routes_websocket_command_and_recovers_sqlite_after_r
         health = (await client.get("/health")).json()
         assert health["activeProjectKey"] == "process-project"
         assert health["bridgeConnected"] is False
+        assert health["routeReady"] is False
 
         listed = await client.post(
             "/mcp/",

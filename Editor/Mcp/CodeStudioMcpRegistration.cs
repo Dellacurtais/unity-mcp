@@ -40,6 +40,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             public string Error;
         }
 
+        private sealed class BrokerProbeResult
+        {
+            public bool Ready;
+            public string Message;
+            public string Error;
+        }
+
         private static readonly HttpClient Http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         private static Task<SyncResult> _syncTask;
         private static RegistrationSnapshot _snapshot = new RegistrationSnapshot("Waiting", message: "Looking for CodeStudio automatically.");
@@ -78,11 +85,23 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         {
             if (mode == McpTransportMode.Broker
                 && Uri.TryCreate(brokerUrl, UriKind.Absolute, out var brokerUri)
+                && (brokerUri.Scheme == "ws" || brokerUri.Scheme == "wss")
                 && brokerUri.Port > 0)
             {
-                return $"http://127.0.0.1:{brokerUri.Port}/mcp/";
+                var builder = new UriBuilder(
+                    brokerUri.Scheme == "wss" ? Uri.UriSchemeHttps : Uri.UriSchemeHttp,
+                    brokerUri.Host,
+                    brokerUri.Port,
+                    "/mcp/");
+                return builder.Uri.AbsoluteUri;
             }
             return $"http://127.0.0.1:{embeddedPort}/mcp/";
+        }
+
+        internal static string BuildBrokerHealthUrl(string mcpUrl)
+        {
+            if (!Uri.TryCreate(mcpUrl, UriKind.Absolute, out var uri)) return null;
+            return new UriBuilder(uri.Scheme, uri.Host, uri.Port, "/health").Uri.AbsoluteUri;
         }
 
         internal static JObject BuildRegistrationPayload(string mcpUrl, string token)
@@ -117,6 +136,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             var token = Settings.Token;
             var runtimeUrl = Settings.CoderUrl;
             var mcpUrl = BuildUnityMcpUrl(Settings.TransportMode, Settings.Port, Settings.BrokerUrl);
+            var brokerMode = Settings.TransportMode == McpTransportMode.Broker;
+            var projectKey = brokerMode
+                ? Broker.BrokerProtocol.ProjectKey(Bootstrap.UnityProjectRoot)
+                : null;
             var fingerprint = BuildFingerprint(runtimeUrl, mcpUrl, token);
             if (!_forceSync && string.Equals(fingerprint, _registeredFingerprint, StringComparison.Ordinal)) return;
 
@@ -134,7 +157,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 Environment.GetEnvironmentVariable("MCP_API_URL"));
             _snapshot = new RegistrationSnapshot("Searching", message: "Detecting the local CodeStudio runtime.");
             _nextAttempt = now + 5d;
-            _syncTask = Task.Run(() => SyncAsync(candidates, mcpUrl, token));
+            _syncTask = Task.Run(() => SyncAsync(
+                candidates,
+                mcpUrl,
+                token,
+                brokerMode,
+                projectKey));
         }
 
         private static void ApplyCompletedSync()
@@ -165,7 +193,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             _nextAttempt = EditorApplication.timeSinceStartup + 5d;
         }
 
-        private static async Task<SyncResult> SyncAsync(IReadOnlyList<string> candidates, string mcpUrl, string token)
+        private static async Task<SyncResult> SyncAsync(
+            IReadOnlyList<string> candidates,
+            string mcpUrl,
+            string token,
+            bool brokerMode,
+            string expectedProjectKey)
         {
             var errors = new List<string>();
             foreach (var runtimeUrl in candidates)
@@ -205,6 +238,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                         var toolsReady = (bool?)tested?["ok"] ?? false;
                         var toolCount = (int?)tested?["toolCount"] ?? 0;
                         var error = (string)tested?["error"];
+                        BrokerProbeResult brokerProbe = null;
+                        if (toolsReady && brokerMode)
+                        {
+                            brokerProbe = await ProbeBrokerRoundTripAsync(
+                                mcpUrl,
+                                token,
+                                expectedProjectKey).ConfigureAwait(false);
+                            toolsReady = brokerProbe.Ready;
+                            if (!toolsReady) error = brokerProbe.Error;
+                        }
                         return new SyncResult
                         {
                             Found = true,
@@ -213,8 +256,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                             RuntimeUrl = runtimeUrl,
                             Fingerprint = BuildFingerprint(runtimeUrl, mcpUrl, token),
                             Message = toolsReady
-                                ? $"CodeStudio found automatically; Unity registered with {toolCount} tools."
-                                : "CodeStudio found and Unity registered; waiting for the MCP endpoint to become ready.",
+                                ? brokerProbe?.Message
+                                    ?? $"CodeStudio found automatically; Unity registered with {toolCount} tools."
+                                : brokerProbe?.Message
+                                    ?? "CodeStudio found and Unity registered; waiting for the MCP endpoint to become ready.",
                             Error = toolsReady ? null : error ?? $"Tool discovery returned HTTP {(int)response.StatusCode}: {Truncate(body)}",
                         };
                     }
@@ -233,6 +278,113 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 Error = "CodeStudio runtime not found. Tried: " + string.Join(", ", candidates)
                     + (errors.Count > 0 ? ". " + Truncate(string.Join(" | ", errors)) : string.Empty),
             };
+        }
+
+        private static async Task<BrokerProbeResult> ProbeBrokerRoundTripAsync(
+            string mcpUrl,
+            string token,
+            string expectedProjectKey)
+        {
+            try
+            {
+                var healthUrl = BuildBrokerHealthUrl(mcpUrl);
+                if (string.IsNullOrEmpty(healthUrl))
+                    return new BrokerProbeResult { Error = "The broker MCP endpoint is invalid." };
+
+                JObject health;
+                using (var healthCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                using (var response = await Http.GetAsync(healthUrl, healthCts.Token).ConfigureAwait(false))
+                {
+                    var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    if (!response.IsSuccessStatusCode)
+                        return new BrokerProbeResult
+                        {
+                            Error = $"Broker health failed (HTTP {(int)response.StatusCode}): {Truncate(body)}",
+                        };
+                    health = JObject.Parse(body);
+                }
+
+                if (!((bool?)health["bridgeConnected"] ?? false))
+                    return new BrokerProbeResult
+                    {
+                        Message = "CodeStudio is configured, but no Unity bridge is connected to the broker.",
+                        Error = "Broker is online, but Unity is offline.",
+                    };
+                var activeProjectKey = (string)health["activeProjectKey"];
+                if (!string.IsNullOrEmpty(expectedProjectKey)
+                    && !string.Equals(activeProjectKey, expectedProjectKey, StringComparison.Ordinal))
+                    return new BrokerProbeResult
+                    {
+                        Message = "CodeStudio is configured, but this Unity project is not the broker's active route.",
+                        Error = "Activate this Unity project before using its tools.",
+                    };
+                if (health["routeReady"] != null && !((bool?)health["routeReady"] ?? false))
+                    return new BrokerProbeResult
+                    {
+                        Message = "CodeStudio is configured, but the broker route is not ready.",
+                        Error = (string)health["routeError"] ?? "Unity route is unavailable.",
+                    };
+
+                var requestBody = new JObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = "codestudio-unity-health",
+                    ["method"] = "tools/call",
+                    ["params"] = new JObject
+                    {
+                        ["name"] = "get_server_health",
+                        ["arguments"] = new JObject(),
+                    },
+                };
+                using (var probeCts = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+                using (var request = new HttpRequestMessage(HttpMethod.Post, mcpUrl))
+                {
+                    request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token);
+                    request.Headers.TryAddWithoutValidation(
+                        "MCP-Protocol-Version",
+                        McpProtocolNegotiator.Preferred);
+                    request.Headers.TryAddWithoutValidation("Accept", "application/json");
+                    request.Content = new StringContent(
+                        requestBody.ToString(Formatting.None),
+                        Encoding.UTF8,
+                        "application/json");
+                    using (var response = await Http.SendAsync(request, probeCts.Token).ConfigureAwait(false))
+                    {
+                        var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        if (!response.IsSuccessStatusCode)
+                            return new BrokerProbeResult
+                            {
+                                Error = $"Unity round-trip failed (HTTP {(int)response.StatusCode}): {Truncate(body)}",
+                            };
+                        var rpc = JObject.Parse(body);
+                        var rpcError = (string)rpc["error"]?["message"];
+                        var toolError = (bool?)rpc["result"]?["isError"] ?? false;
+                        if (!string.IsNullOrEmpty(rpcError) || toolError)
+                            return new BrokerProbeResult
+                            {
+                                Error = rpcError
+                                    ?? (string)rpc["result"]?["structuredContent"]?["message"]
+                                    ?? "Unity health tool returned an error.",
+                            };
+                    }
+                }
+
+                return new BrokerProbeResult
+                {
+                    Ready = true,
+                    Message = "CodeStudio registered; broker → Unity tool round-trip passed.",
+                };
+            }
+            catch (Exception exception) when (exception is HttpRequestException
+                || exception is TaskCanceledException
+                || exception is OperationCanceledException
+                || exception is JsonException)
+            {
+                return new BrokerProbeResult
+                {
+                    Error = "Broker → Unity readiness probe failed: " + exception.GetBaseException().Message,
+                };
+            }
         }
 
         private static async Task<bool> IsCodeStudioAsync(string runtimeUrl)

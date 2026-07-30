@@ -22,6 +22,12 @@ def app(tmp_path):
 async def test_mcp_http_auth_and_initialize(app) -> None:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        health = await client.get("/health")
+        assert health.status_code == 200
+        assert health.json()["bridgeConnected"] is False
+        assert health.json()["routeReady"] is False
+        assert health.json()["routeError"]
+
         unauthorized = await client.post("/mcp/", json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
         assert unauthorized.status_code == 401
 

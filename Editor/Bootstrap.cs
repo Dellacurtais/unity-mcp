@@ -496,6 +496,7 @@ namespace Maicon.SceneAnalyzer.Editor
             {
                 _ = MainThreadDispatcher.RunAsync(() =>
                 {
+                    CodeStudioMcpRegistration.RequestSync();
                     try { OnServerCoordinationChanged?.Invoke(); }
                     catch (Exception e) { Debug.LogException(e); }
                 });

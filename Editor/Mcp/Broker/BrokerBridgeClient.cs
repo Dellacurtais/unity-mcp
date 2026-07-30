@@ -27,6 +27,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         private CancellationTokenSource _lifetime;
         private ClientWebSocket _socket;
+        private TaskCompletionSource<JObject> _helloAcknowledgement;
+        private string _helloMessageId;
+        private bool _activeProject;
         private BrokerBridgeSnapshot _snapshot = BrokerBridgeSnapshot.Stopped;
 
         public BrokerBridgeSnapshot Snapshot => Volatile.Read(ref _snapshot);
@@ -61,7 +64,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
         {
             if (_lifetime != null) return;
             _lifetime = new CancellationTokenSource();
-            SetState(false, "connecting", null);
+            SetState(false, "connecting", null, false);
             _ = Task.Run(() => RunAsync(_lifetime.Token));
         }
 
@@ -99,7 +102,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             try { socket?.Abort(); } catch { }
             try { socket?.Dispose(); } catch { }
             try { lifetime?.Dispose(); } catch { }
-            SetState(false, "stopped", null);
+            SetState(false, "stopped", null, false);
         }
 
         private async Task RunAsync(CancellationToken cancellationToken)
@@ -114,15 +117,37 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                     if (!string.IsNullOrEmpty(_token))
                         socket.Options.SetRequestHeader("Authorization", "Bearer " + _token);
                     lock (_socketLock) _socket = socket;
-                    SetState(false, attempt == 0 ? "connecting" : "reconnecting", null);
+                    SetState(false, attempt == 0 ? "connecting" : "reconnecting", null, false);
                     await socket.ConnectAsync(_uri, cancellationToken);
                     attempt = 0;
-                    SetState(true, "bootstrapping", null);
-                    await SendHelloAsync(cancellationToken);
-                    SetState(true, "ready", null);
                     using (var connectionLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                     {
+                        var acknowledgement = new TaskCompletionSource<JObject>(
+                            TaskCreationOptions.RunContinuationsAsynchronously);
+                        _helloAcknowledgement = acknowledgement;
                         var receiveTask = ReceiveLoopAsync(socket, connectionLifetime.Token);
+                        SetState(false, "waiting_for_broker_ack", null, false);
+                        await SendHelloAsync(cancellationToken);
+                        var acknowledgementTimeout = Task.Delay(
+                            TimeSpan.FromSeconds(10),
+                            connectionLifetime.Token);
+                        var acknowledgementCompleted = await Task.WhenAny(
+                            acknowledgement.Task,
+                            receiveTask,
+                            acknowledgementTimeout);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (acknowledgementCompleted == receiveTask)
+                        {
+                            await receiveTask;
+                            throw new WebSocketException(
+                                "Broker bridge closed before acknowledging the Unity registry.");
+                        }
+                        if (acknowledgementCompleted != acknowledgement.Task)
+                            throw new TimeoutException(
+                                "Broker did not acknowledge the Unity registry within 10 seconds.");
+                        var acknowledgementPayload = await acknowledgement.Task;
+                        _activeProject = (bool?)acknowledgementPayload["active"] ?? false;
+                        SetState(true, "ready", null, _activeProject);
                         var heartbeatTask = HeartbeatLoopAsync(connectionLifetime.Token);
                         var completed = await Task.WhenAny(receiveTask, heartbeatTask);
                         connectionLifetime.Cancel();
@@ -136,11 +161,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 }
                 catch (Exception exception)
                 {
-                    SetState(false, "reconnecting", exception.Message);
+                    SetState(false, "reconnecting", exception.Message, false);
                     SafeLog("bridge disconnected: " + exception.Message);
                 }
                 finally
                 {
+                    _helloAcknowledgement = null;
+                    _helloMessageId = null;
                     lock (_socketLock)
                     {
                         if (ReferenceEquals(_socket, socket)) _socket = null;
@@ -183,8 +210,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 _registryHash);
             identity["tools"] = tools.DeepClone();
             identity["state"] = "ready";
-            await SendCurrentAsync(BrokerProtocol.Envelope(
-                "hello", identity, _projectKey, _processId), cancellationToken);
+            var hello = BrokerProtocol.Envelope(
+                "hello", identity, _projectKey, _processId);
+            _helloMessageId = (string)hello["messageId"];
+            await SendCurrentAsync(hello, cancellationToken);
         }
 
         private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)
@@ -223,19 +252,57 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                     if (result.MessageType != WebSocketMessageType.Text) continue;
                     var json = Encoding.UTF8.GetString(stream.ToArray());
                     var message = JObject.Parse(json);
-                    _ = HandleMessageAsync(message, cancellationToken);
+                    _ = HandleMessageSafelyAsync(message, cancellationToken);
                 }
+            }
+        }
+
+        private async Task HandleMessageSafelyAsync(
+            JObject message,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await HandleMessageAsync(message, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                SafeLog("bridge message failed: " + exception.Message);
+                await TrySendCommandErrorAsync(message, exception, cancellationToken);
             }
         }
 
         private async Task HandleMessageAsync(JObject message, CancellationToken cancellationToken)
         {
-            if ((int?)message["version"] != BrokerProtocol.Version) return;
-            if (!string.Equals((string)message["generationId"], BrokerProtocol.GenerationId, StringComparison.Ordinal)) return;
+            if ((int?)message["version"] != BrokerProtocol.Version)
+                throw new InvalidDataException("Unsupported broker bridge protocol version.");
+            if (!string.Equals((string)message["projectKey"], _projectKey, StringComparison.Ordinal)
+                || (int?)message["processId"] != _processId
+                || !string.Equals(
+                    (string)message["generationId"],
+                    BrokerProtocol.GenerationId,
+                    StringComparison.Ordinal))
+                throw new InvalidDataException("Broker message targets a stale Unity bridge generation.");
             var type = (string)message["type"];
             var payload = message["payload"] as JObject ?? new JObject();
             var correlationId = (string)message["correlationId"];
 
+            if (type == "hello_ack")
+            {
+                if (!string.Equals(correlationId, _helloMessageId, StringComparison.Ordinal))
+                    throw new InvalidDataException("Broker acknowledgement does not match the Unity hello.");
+                _helloAcknowledgement?.TrySetResult(payload);
+                return;
+            }
+            if (type == "route_state")
+            {
+                _activeProject = (bool?)payload["active"] ?? false;
+                SetState(true, "ready", null, _activeProject);
+                return;
+            }
             if (type == "cancel")
             {
                 _processor.Cancel((string)payload["requestId"]);
@@ -274,6 +341,54 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 correlationId), cancellationToken);
         }
 
+        private async Task TrySendCommandErrorAsync(
+            JObject message,
+            Exception exception,
+            CancellationToken cancellationToken)
+        {
+            if (!string.Equals((string)message?["type"], "command", StringComparison.Ordinal))
+                return;
+            var correlationId = (string)message["correlationId"];
+            var payload = message["payload"] as JObject;
+            var requestId = (string)payload?["requestId"];
+            var rpcId = payload?["jsonRpc"]?["id"];
+            if (string.IsNullOrEmpty(correlationId) || string.IsNullOrEmpty(requestId))
+                return;
+
+            var errorResponse = new JObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = rpcId?.DeepClone() ?? JValue.CreateNull(),
+                ["error"] = new JObject
+                {
+                    ["code"] = -32603,
+                    ["message"] = "Unity bridge failed to process the command.",
+                    ["data"] = new JObject
+                    {
+                        ["code"] = "UNITY_BRIDGE_ERROR",
+                        ["detail"] = exception.Message,
+                    },
+                },
+            };
+            try
+            {
+                await SendCurrentAsync(BrokerProtocol.Envelope(
+                    "result",
+                    new JObject
+                    {
+                        ["requestId"] = requestId,
+                        ["jsonRpc"] = errorResponse,
+                    },
+                    _projectKey,
+                    _processId,
+                    correlationId), cancellationToken);
+            }
+            catch (Exception sendException)
+            {
+                SafeLog("failed to report bridge command error: " + sendException.Message);
+            }
+        }
+
         private async Task SendCurrentAsync(JObject message, CancellationToken cancellationToken)
         {
             ClientWebSocket socket;
@@ -295,10 +410,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             finally { _sendLock.Release(); }
         }
 
-        private void SetState(bool connected, string state, string error)
+        private void SetState(bool connected, string state, string error, bool activeProject)
         {
             var snapshot = new BrokerBridgeSnapshot(
                 connected,
+                activeProject,
                 state,
                 error,
                 _projectKey,

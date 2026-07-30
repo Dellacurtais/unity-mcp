@@ -194,9 +194,15 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             }
 
             var state = snapshot.IsConnected ? "connected" : snapshot.State;
+            if (snapshot.IsConnected)
+                state += snapshot.IsActiveProject ? " · active route" : " · standby (not active)";
             EditorGUILayout.LabelField("Bridge: " + state, EditorStyles.miniLabel);
             if (!string.IsNullOrEmpty(snapshot.Error))
                 EditorGUILayout.HelpBox(snapshot.Error, MessageType.Warning);
+            if (snapshot.IsConnected && !snapshot.IsActiveProject)
+                EditorGUILayout.HelpBox(
+                    "This Unity Editor is connected, but MCP calls are routed to another project. Use broker_activate_project before calling Unity tools here.",
+                    MessageType.Warning);
             if (!string.IsNullOrEmpty(snapshot.ProjectKey))
                 EditorGUILayout.SelectableLabel(
                     "Project: " + snapshot.ProjectKey,
@@ -220,6 +226,23 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 GUILayout.Label("Broker URL", GUILayout.Width(80));
                 using (new EditorGUI.DisabledScope(running))
                     _brokerUrlBuffer = EditorGUILayout.TextField(_brokerUrlBuffer);
+            }
+            var mcpEndpoint = CodeStudioMcpRegistration.BuildUnityMcpUrl(
+                McpTransportMode.Broker,
+                Settings.Port,
+                _brokerUrlBuffer);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Label("MCP endpoint", GUILayout.Width(80));
+                EditorGUILayout.SelectableLabel(
+                    mcpEndpoint,
+                    EditorStyles.textField,
+                    GUILayout.Height(EditorGUIUtility.singleLineHeight));
+                if (GUILayout.Button("Copy", GUILayout.Width(50)))
+                {
+                    EditorGUIUtility.systemCopyBuffer = mcpEndpoint;
+                    Bootstrap.RecordEntry("MCP endpoint copied to clipboard");
+                }
             }
             Settings.BrokerAutoConnect = EditorGUILayout.Toggle(
                 new GUIContent(

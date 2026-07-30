@@ -60,7 +60,8 @@ class BridgeRouter:
                 await self._fail_pending(previous, "Unity bridge connection was replaced")
             self.connections[identity.project_key] = connection
             self._connection_events.setdefault(identity.project_key, asyncio.Event()).set()
-            if self.active_project_key is None:
+            active_connection = self.connections.get(self.active_project_key or "")
+            if active_connection is None:
                 self.store.set_active_project(identity.project_key)
         self.registry.update(identity.project_key, identity.registry_hash, tools)
         self.store.save_registry(identity.project_key, identity.registry_hash, tools)
@@ -119,7 +120,21 @@ class BridgeRouter:
         if not connection:
             raise BridgeUnavailable(f"Unity project is not connected: {project_key}")
         self.store.set_active_project(project_key)
+        await self._publish_route_state()
         return connection
+
+    async def _publish_route_state(self) -> None:
+        active = self.active_project_key
+        sends = [
+            connection.send(envelope(
+                "route_state",
+                {"active": project_key == active},
+                identity=connection.identity,
+            ))
+            for project_key, connection in self.connections.items()
+        ]
+        if sends:
+            await asyncio.gather(*sends, return_exceptions=True)
 
     async def wait_for_connection(
         self, project_key: str, timeout: float

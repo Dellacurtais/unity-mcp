@@ -211,11 +211,18 @@ class McpBroker:
         if name == "broker_get_status":
             active = self.router.active_project_key
             connection = self.router.connections.get(active or "")
+            route_ready = connection is not None and connection.state in {
+                "ready", "compiling", "compile_failed",
+            }
             return self._broker_result(request_id, {
                 "service": "unity-mcp-broker",
                 "activeProjectKey": active,
+                "activeProjectName": connection.identity.project_name if connection else None,
+                "activeProjectPath": connection.identity.project_path if connection else None,
                 "bridgeConnected": connection is not None,
                 "bridgeState": connection.state if connection else "offline",
+                "routeReady": route_ready,
+                "routeError": None if route_ready else "no active Unity bridge is ready",
                 "generationId": connection.identity.generation_id if connection else None,
                 "registryHash": connection.identity.registry_hash if connection else None,
                 "connectedProjects": len(self.router.connections),

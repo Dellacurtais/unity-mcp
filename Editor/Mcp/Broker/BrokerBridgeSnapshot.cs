@@ -5,9 +5,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
     public sealed class BrokerBridgeSnapshot
     {
         public static readonly BrokerBridgeSnapshot Stopped = new BrokerBridgeSnapshot(
-            false, "stopped", null, null, 0, null, null, DateTimeOffset.MinValue);
+            false, false, "stopped", null, null, 0, null, null, DateTimeOffset.MinValue);
 
         public bool IsConnected { get; }
+        public bool IsActiveProject { get; }
         public string State { get; }
         public string Error { get; }
         public string ProjectKey { get; }
@@ -18,6 +19,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         public BrokerBridgeSnapshot(
             bool isConnected,
+            bool isActiveProject,
             string state,
             string error,
             string projectKey,
@@ -27,6 +29,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             DateTimeOffset updatedUtc)
         {
             IsConnected = isConnected;
+            IsActiveProject = isActiveProject;
             State = state ?? "unknown";
             Error = error;
             ProjectKey = projectKey;

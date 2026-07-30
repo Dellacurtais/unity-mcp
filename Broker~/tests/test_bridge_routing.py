@@ -92,6 +92,44 @@ async def test_replaced_connection_cannot_mark_new_generation_offline(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_first_live_bridge_replaces_a_persisted_offline_active_route(tmp_path, identity) -> None:
+    store = BrokerStore(tmp_path / "broker.sqlite3")
+    store.set_active_project("offline-project")
+    router = BridgeRouter(store, RegistryCache())
+
+    await router.register(FakeWebSocket(), identity, [], "ready")
+
+    assert router.active_project_key == identity.project_key
+    assert router.active_connection().identity.project_key == identity.project_key
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_activate_publishes_route_state_to_every_live_bridge(tmp_path, identity) -> None:
+    store = BrokerStore(tmp_path / "broker.sqlite3")
+    router = BridgeRouter(store, RegistryCache())
+    first_socket = FakeWebSocket()
+    second_socket = FakeWebSocket()
+    await router.register(first_socket, identity, [], "ready")
+    second_identity = BridgeIdentity(**{
+        **identity.__dict__,
+        "project_key": "project-b",
+        "project_name": "Game B",
+        "project_path": "D:/Game B",
+        "generation_id": "generation-b",
+    })
+    await router.register(second_socket, second_identity, [], "ready")
+
+    await router.activate(second_identity.project_key)
+
+    assert first_socket.sent[-1]["type"] == "route_state"
+    assert first_socket.sent[-1]["payload"]["active"] is False
+    assert second_socket.sent[-1]["type"] == "route_state"
+    assert second_socket.sent[-1]["payload"]["active"] is True
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_running_refresh_job_waits_when_bridge_disconnects(tmp_path, identity) -> None:
     store = BrokerStore(tmp_path / "broker.sqlite3")
     router = BridgeRouter(store, RegistryCache())

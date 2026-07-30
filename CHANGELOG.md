@@ -5,6 +5,20 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.8] - 2026-07-29
+
+### Changed
+
+- Patch release bump to `0.16.8`.
+- Broker health and status now distinguish a reachable catalogue from a live, routable Unity bridge and report the active project identity.
+
+### Fixed
+
+- The Unity bridge now waits for the broker's registry acknowledgement before reporting itself connected and reports command-processing failures back to the caller instead of leaving requests to time out.
+- A newly connected Unity project becomes active when the broker's persisted route points to an offline project; explicit activation updates the route state shown by every connected Editor.
+- The transport window now shows and copies the exact MCP HTTP endpoint, including secure and IPv6 authorities, and identifies whether this Editor owns the active route.
+- Automatic CodeStudio registration now proves a real broker-to-Unity `get_server_health` round trip before reporting the tools ready.
+
 ## [0.16.7] - 2026-07-29
 
 ### Changed

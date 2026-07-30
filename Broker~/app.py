@@ -64,13 +64,23 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
     async def health() -> dict[str, object]:
         active = router.active_project_key
         connection = router.connections.get(active or "")
+        route_ready = connection is not None and connection.state in {
+            "ready", "compiling", "compile_failed",
+        }
+        registry_snapshot = registry.get(active)
         return {
             "service": "unity-mcp-broker",
             "version": BROKER_VERSION,
             "schemaVersion": store.schema_version(),
             "activeProjectKey": active,
+            "activeProjectName": connection.identity.project_name if connection else None,
+            "activeProjectPath": connection.identity.project_path if connection else None,
             "bridgeConnected": connection is not None,
             "bridgeState": connection.state if connection else "offline",
+            "routeReady": route_ready,
+            "routeError": None if route_ready else "no active Unity bridge is ready",
+            "connectedProjects": len(router.connections),
+            "registryCount": len(registry_snapshot.tools) if registry_snapshot else 0,
         }
 
     @app.post("/mcp/")
