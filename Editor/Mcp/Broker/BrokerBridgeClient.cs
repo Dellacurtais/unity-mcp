@@ -58,7 +58,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             _projectKey = BrokerProtocol.ProjectKey(projectRoot);
             _processId = System.Diagnostics.Process.GetCurrentProcess().Id;
             _registryHash = registry.VersionHash;
+            _registry.Changed += OnRegistryChanged;
         }
+
+        internal string AdvertisedRegistryHash => Volatile.Read(ref _registryHash);
 
         public void Start()
         {
@@ -91,6 +94,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         public void Dispose()
         {
+            _registry.Changed -= OnRegistryChanged;
             var lifetime = Interlocked.Exchange(ref _lifetime, null);
             try { lifetime?.Cancel(); } catch { }
             ClientWebSocket socket;
@@ -103,6 +107,23 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             try { socket?.Dispose(); } catch { }
             try { lifetime?.Dispose(); } catch { }
             SetState(false, "stopped", null, false);
+        }
+
+        private void OnRegistryChanged()
+        {
+            var registryHash = _registry.VersionHash;
+            if (string.Equals(registryHash, Volatile.Read(ref _registryHash), StringComparison.Ordinal)) return;
+            Volatile.Write(ref _registryHash, registryHash);
+
+            if (_lifetime == null) return;
+            ClientWebSocket socket;
+            lock (_socketLock) socket = _socket;
+            if (socket == null
+                || socket.State != WebSocketState.Open && socket.State != WebSocketState.Connecting) return;
+
+            SetState(false, "registry_changed", null, false);
+            try { socket.Abort(); }
+            catch { }
         }
 
         private async Task RunAsync(CancellationToken cancellationToken)

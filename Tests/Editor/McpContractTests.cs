@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
+using Maicon.SceneAnalyzer.Editor.Mcp.Broker;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect;
@@ -226,6 +227,27 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(task.IsCanceled, Is.False);
             Assert.That(task.Result, Is.Not.Null);
             StringAssert.DoesNotContain("main thread", task.Result.Text ?? string.Empty);
+        }
+
+        [Test]
+        public void BrokerBridgeClient_TracksToolsRegisteredAfterConstruction()
+        {
+            var registry = new McpToolRegistry();
+            registry.Register(new StubTool("initial_tool"));
+            using var processor = new McpRequestProcessor(registry, 1, 10);
+            using var bridge = new BrokerBridgeClient(
+                processor,
+                registry,
+                "C:/late-registry-test",
+                "ws://127.0.0.1:8765/bridge",
+                "test-token",
+                1024 * 1024);
+            var before = bridge.AdvertisedRegistryHash;
+
+            registry.Register(new StubTool("late_tool"));
+
+            Assert.That(bridge.AdvertisedRegistryHash, Is.EqualTo(registry.VersionHash));
+            Assert.That(bridge.AdvertisedRegistryHash, Is.Not.EqualTo(before));
         }
 
         private static int FindFreePort()
