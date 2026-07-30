@@ -26,6 +26,7 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KMaxConcurrentRequests = "Maicon.SceneAnalyzer.MaxConcurrentRequests";
         private const string KToolTimeoutSeconds = "Maicon.SceneAnalyzer.ToolTimeoutSeconds";
         private const string KRequireHighRiskConfirmation = "Maicon.SceneAnalyzer.RequireHighRiskConfirmation";
+        private const string KSafetySettingsVersion = "Maicon.SceneAnalyzer.SafetySettingsVersion";
         private const string KAllowReflectionTools = "Maicon.SceneAnalyzer.AllowReflectionTools";
         private const string KAllowDestructiveTools = "Maicon.SceneAnalyzer.AllowDestructiveTools";
         private const string KAllowPackageTools = "Maicon.SceneAnalyzer.AllowPackageTools";
@@ -150,8 +151,14 @@ namespace Maicon.SceneAnalyzer.Editor
 
         public static bool RequireHighRiskConfirmation
         {
-            get => EditorPrefs.GetBool(KRequireHighRiskConfirmation, true);
+            get => EditorPrefs.GetBool(KRequireHighRiskConfirmation, false);
             set => EditorPrefs.SetBool(KRequireHighRiskConfirmation, value);
+        }
+
+        public static int SafetySettingsVersion
+        {
+            get => EditorPrefs.GetInt(KSafetySettingsVersion, 0);
+            set => EditorPrefs.SetInt(KSafetySettingsVersion, value);
         }
 
         public static bool AllowReflectionTools

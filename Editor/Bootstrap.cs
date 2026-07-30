@@ -122,6 +122,18 @@ namespace Maicon.SceneAnalyzer.Editor
                     Settings.CoderSettingsVersion = 2;
                 }
 
+                // Confirmation was historically enabled without being exposed
+                // in the Transport window. Agents then avoided otherwise
+                // Undo-safe operations (for example remove_component) after
+                // receiving CONFIRMATION_REQUIRED. Migrate existing installs
+                // once to the new direct-execution default; subsequent user
+                // choices made through the visible toggle are preserved.
+                if (Settings.SafetySettingsVersion < 1)
+                {
+                    Settings.RequireHighRiskConfirmation = false;
+                    Settings.SafetySettingsVersion = 1;
+                }
+
                 Snapshot = new SceneSnapshot();
                 AssetCatalog = new AssetCatalog();
                 ChangesetExecutor.OnApplied += NotifyWriteCompleted;

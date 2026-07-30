@@ -99,7 +99,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                                 ["name"] = ServerName,
                                 ["version"] = SceneAnalyzerVersion.Current,
                             },
-                            ["instructions"] = "High-risk tools return CONFIRMATION_REQUIRED with a single-use token; retry the same arguments with _confirmationToken.",
+                            ["instructions"] = Settings.RequireHighRiskConfirmation
+                                ? "High-risk tools return CONFIRMATION_REQUIRED with a single-use token; retry the same arguments with _confirmationToken."
+                                : "High-risk confirmation is disabled; authorized tools execute directly subject to the configured capability switches.",
                         }));
                     }
                     case "notifications/initialized":

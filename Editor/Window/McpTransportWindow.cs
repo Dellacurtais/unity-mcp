@@ -472,6 +472,11 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             Settings.AllowWrites = EditorGUILayout.Toggle(
                 new GUIContent("Allow writes", "Disable to make MCP tools read-only."),
                 Settings.AllowWrites);
+            Settings.RequireHighRiskConfirmation = EditorGUILayout.Toggle(
+                new GUIContent(
+                    "Confirm high-risk tools",
+                    "When enabled, high-risk tools require a second call with a single-use confirmation token. Disabled by default so authorized agents can execute directly."),
+                Settings.RequireHighRiskConfirmation);
 
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -484,6 +489,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 EditorGUILayout.HelpBox(
                     "Writes disabled. All write tools return WRITE_DISABLED.",
                     MessageType.Warning);
+            else if (Settings.RequireHighRiskConfirmation)
+                EditorGUILayout.HelpBox(
+                    "High-risk confirmation is enabled. Agents must retry gated calls with the returned token.",
+                    MessageType.Info);
         }
 
         private void DrawLogSection()

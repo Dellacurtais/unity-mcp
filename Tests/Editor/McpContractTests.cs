@@ -459,6 +459,36 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void HighRiskConfirmationToggle_ControlsAdvertisedGateAndInventory()
+        {
+            var previous = Settings.RequireHighRiskConfirmation;
+            var registry = new McpToolRegistry();
+            registry.Register(new StubTool("remove_component", true));
+            using var processor = new McpRequestProcessor(registry, 1, 10);
+            try
+            {
+                Settings.RequireHighRiskConfirmation = false;
+                var direct = processor.ListTools();
+                Assert.That(direct["tools"]?[0]?["inputSchema"]?["properties"]?["_confirmationToken"], Is.Null);
+                Assert.That((bool)direct["tools"]?[0]?["_meta"]?["confirmationRequired"], Is.False);
+                var directInventory = OperationalReport.Inventory(registry);
+                Assert.That((bool)directInventory["tools"]?[0]?["confirmationRequired"], Is.False);
+                Assert.That((string)directInventory["tools"]?[0]?["confirmationPolicy"], Is.EqualTo("Required"));
+
+                Settings.RequireHighRiskConfirmation = true;
+                var gated = processor.ListTools();
+                Assert.That(gated["tools"]?[0]?["inputSchema"]?["properties"]?["_confirmationToken"], Is.Not.Null);
+                Assert.That((bool)gated["tools"]?[0]?["_meta"]?["confirmationRequired"], Is.True);
+                var gatedInventory = OperationalReport.Inventory(registry);
+                Assert.That((bool)gatedInventory["tools"]?[0]?["confirmationRequired"], Is.True);
+            }
+            finally
+            {
+                Settings.RequireHighRiskConfirmation = previous;
+            }
+        }
+
+        [Test]
         public void ReadPrefab_AdvertisedOutputSchemaAcceptsStructuredToolErrors()
         {
             var tool = new ReadPrefabTool();

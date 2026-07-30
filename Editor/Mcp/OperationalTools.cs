@@ -13,7 +13,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 {
     public static class SceneAnalyzerVersion
     {
-        public const string Fallback = "0.16.10";
+        public const string Fallback = "0.16.11";
         private static string _current;
         private static string _packageName;
 
@@ -66,7 +66,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 var module = moduleByTool.TryGetValue(tool.Name, out var knownModule)
                     ? knownModule
                     : ModuleFromType(tool.GetType());
-                var confirmationRequired = descriptor.ConfirmationPolicy == McpConfirmationPolicy.Required;
+                var confirmationRequired = ToolAuthorization.RequiresConfirmation(descriptor);
                 var previewTool = PreviewToolFor(tool.Name, registry);
                 if (!Matches(module, moduleFilter) || !Matches(descriptor.Category, categoryFilter)) continue;
                 if (!Matches(descriptor.Risk.ToString(), riskFilter) || !Matches(descriptor.EditorMode.ToString(), editorModeFilter)) continue;
