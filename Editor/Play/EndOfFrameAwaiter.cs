@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Threading;
 using System.Threading.Tasks;
+using Maicon.SceneAnalyzer.Editor.Mcp;
 using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Play
@@ -20,24 +21,33 @@ namespace Maicon.SceneAnalyzer.Editor.Play
         private CancellationTokenRegistration _cancellation;
         private bool _completed;
 
-        public static Task WaitOneEndOfFrame(CancellationToken cancellationToken)
+        public static async Task WaitOneEndOfFrame(CancellationToken cancellationToken)
         {
-            if (!Application.isPlaying)
-                return Task.CompletedTask;
             if (cancellationToken.IsCancellationRequested)
-                return Task.FromCanceled(cancellationToken);
+                throw new OperationCanceledException(cancellationToken);
 
-            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var go = new GameObject("__SceneAnalyzer_EndOfFrameAwaiter")
+            Task completionTask = null;
+            await MainThreadDispatcher.RunAsync(() =>
             {
-                hideFlags = HideFlags.HideAndDontSave
-            };
-            var awaiter = go.AddComponent<EndOfFrameAwaiter>();
-            awaiter._completion = completion;
-            if (cancellationToken.CanBeCanceled)
-                awaiter._cancellation = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
-            awaiter.StartCoroutine(awaiter.Run());
-            return completion.Task;
+                if (!Application.isPlaying)
+                {
+                    completionTask = Task.CompletedTask;
+                    return;
+                }
+
+                var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var go = new GameObject("__SceneAnalyzer_EndOfFrameAwaiter")
+                {
+                    hideFlags = HideFlags.HideAndDontSave
+                };
+                var awaiter = go.AddComponent<EndOfFrameAwaiter>();
+                awaiter._completion = completion;
+                if (cancellationToken.CanBeCanceled)
+                    awaiter._cancellation = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+                awaiter.StartCoroutine(awaiter.Run());
+                completionTask = completion.Task;
+            }, cancellationToken);
+            await completionTask;
         }
 
         private IEnumerator Run()

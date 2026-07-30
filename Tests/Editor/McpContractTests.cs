@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
+using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect;
 using Maicon.SceneAnalyzer.Editor.PrefabTools;
@@ -208,6 +209,23 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 server.Dispose();
             }
+        }
+
+        [UnityTest]
+        public IEnumerator WaitForCompileClean_StartsSafelyFromWorkerThread()
+        {
+            var task = Task.Run(async () => await new WaitForCompileCleanTool().ExecuteAsync(new JObject
+            {
+                ["timeoutSeconds"] = 5,
+                ["includeWarnings"] = false,
+            }));
+
+            while (!task.IsCompleted) yield return null;
+
+            Assert.That(task.IsFaulted, Is.False, task.Exception?.ToString());
+            Assert.That(task.IsCanceled, Is.False);
+            Assert.That(task.Result, Is.Not.Null);
+            StringAssert.DoesNotContain("main thread", task.Result.Text ?? string.Empty);
         }
 
         private static int FindFreePort()

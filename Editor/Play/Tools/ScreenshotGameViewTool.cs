@@ -55,7 +55,7 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             {
                 var cam = await MainThreadDispatcher.RunAsync(() =>
                     GameViewCapture.PickGameViewCamera(cameraInstanceId, cameraTag));
-                if (cam == null)
+                if (ReferenceEquals(cam, null))
                 {
                     return ToolResult.Error("NO_CAMERA",
                         "no suitable camera found in play mode (no MainCamera-tagged camera, no enabled cameras present, and no explicit cameraInstanceId/cameraTag matched). Inspect get_active_cameras.");

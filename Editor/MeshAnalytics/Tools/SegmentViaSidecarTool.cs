@@ -86,6 +86,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             Matrix4x4 ltw = default;
             string meshObj = null;
             string captureError = null;
+            int instanceId = 0;
             try
             {
                 await MainThreadDispatcher.RunAsync(() =>
@@ -107,6 +108,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                     }
                     gameObjectName = go.name;
                     meshName = mesh.name;
+                    instanceId = go.GetInstanceID();
                     meshObj = MeshSidecarClient.MeshToObj(mesh, ltw);
                 }, cancellationToken);
             }
@@ -136,7 +138,6 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             if (!string.IsNullOrEmpty(result.Error))
                 return ToolResult.Error(result.ErrorCode ?? "SIDECAR_ERROR", result.Error);
 
-            int instanceId = go.GetInstanceID();
             string meshKey = await MainThreadDispatcher.RunAsync(() => MeshResolver.MakeMeshKey(mesh), cancellationToken);
             string analysisKey = await MainThreadDispatcher.RunAsync(() => MeshResolver.MakeAnalysisKey(mesh, go), cancellationToken);
             string paramsHash = string.Format(System.Globalization.CultureInfo.InvariantCulture,

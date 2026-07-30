@@ -5,6 +5,20 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.9] - 2026-07-30
+
+### Changed
+
+- Patch release bump to `0.16.9`.
+- Custom asynchronous tools now keep Unity Editor, object, Test Runner, Package Manager, and frame-capture API access on the Editor main thread.
+
+### Fixed
+
+- `wait_for_compile_clean` no longer reads play/compile state from the broker request thread.
+- Game View end-of-frame capture now creates and checks its coroutine helper on the main thread.
+- Mesh sidecar results capture Unity object identity before leaving the main thread.
+- Test discovery and Package Manager request completion no longer inspect Unity-owned state from asynchronous continuations.
+
 ## [0.16.8] - 2026-07-29
 
 ### Changed

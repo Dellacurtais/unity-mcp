@@ -59,10 +59,6 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             var includeWarnings = (bool?)args["includeWarnings"] ?? true;
             if (timeoutSeconds < 1d || timeoutSeconds > 600d)
                 return ToolResult.Error("BAD_ARGS", "timeoutSeconds must be in 1..600");
-            if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isPlaying)
-                return ToolResult.Error("EDITOR_BUSY", "asset refresh and script compilation require stable Edit Mode");
-            if (EditorApplication.isCompiling || EditorApplication.isUpdating)
-                return ToolResult.Error("EDITOR_BUSY", "Unity is already compiling or updating assets");
 
             var context = ToolExecutionContext.Current;
             var token = context != null ? context.CancellationToken : default;
@@ -97,6 +93,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
 
             try
             {
+                var precheck = await MainThreadDispatcher.RunAsync<ToolResult>(() =>
+                {
+                    if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isPlaying)
+                        return ToolResult.Error("EDITOR_BUSY", "asset refresh and script compilation require stable Edit Mode");
+                    if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+                        return ToolResult.Error("EDITOR_BUSY", "Unity is already compiling or updating assets");
+                    return null;
+                }, token);
+                if (precheck != null) return precheck;
+
                 await MainThreadDispatcher.RunAsync(() =>
                 {
                     CompilationPipeline.compilationStarted += onStarted;

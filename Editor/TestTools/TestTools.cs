@@ -248,14 +248,18 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
             var limit = (int?)args["limit"] ?? 500;
             if (offsetArg < 0 || limit < 1 || limit > 5000)
                 return ToolResult.Error("BAD_ARGS", "offset must be non-negative and limit must be in 1..5000");
-            if (!TestToolSupport.ValidateRunState(out var stateError))
-                return ToolResult.Error("EDITOR_BUSY", stateError);
 
             var context = ToolExecutionContext.Current;
             var token = context != null ? context.CancellationToken : default;
             TestRunnerApi api = null;
             try
             {
+                var stateError = await MainThreadDispatcher.RunAsync(() =>
+                {
+                    return TestToolSupport.ValidateRunState(out var error) ? null : error;
+                }, token);
+                if (stateError != null) return ToolResult.Error("EDITOR_BUSY", stateError);
+
                 api = await MainThreadDispatcher.RunAsync(ScriptableObject.CreateInstance<TestRunnerApi>, token);
                 var completion = new TaskCompletionSource<ITestAdaptor>(TaskCreationOptions.RunContinuationsAsynchronously);
 #pragma warning disable CS0618
@@ -265,19 +269,22 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
                 using (token.Register(() => completion.TrySetCanceled(token)))
                 {
                     var root = await completion.Task;
-                    var tests = new List<ITestAdaptor>();
-                    TestToolSupport.FlattenTests(root, tests);
-                    tests.Sort((left, right) => string.Compare(left.FullName, right.FullName, StringComparison.Ordinal));
-                    var offset = Math.Min(offsetArg, tests.Count);
-                    var page = new JArray(tests.Skip(offset).Take(limit).Select(TestToolSupport.TestJson));
-                    return ToolResult.Ok($"{tests.Count} {TestToolSupport.ParseMode(args)} test(s)", new JObject
+                    return await MainThreadDispatcher.RunAsync(() =>
                     {
-                        ["tests"] = page,
-                        ["offset"] = offset,
-                        ["count"] = page.Count,
-                        ["total"] = tests.Count,
-                        ["truncated"] = offset + page.Count < tests.Count,
-                    });
+                        var tests = new List<ITestAdaptor>();
+                        TestToolSupport.FlattenTests(root, tests);
+                        tests.Sort((left, right) => string.Compare(left.FullName, right.FullName, StringComparison.Ordinal));
+                        var offset = Math.Min(offsetArg, tests.Count);
+                        var page = new JArray(tests.Skip(offset).Take(limit).Select(TestToolSupport.TestJson));
+                        return ToolResult.Ok($"{tests.Count} {TestToolSupport.ParseMode(args)} test(s)", new JObject
+                        {
+                            ["tests"] = page,
+                            ["offset"] = offset,
+                            ["count"] = page.Count,
+                            ["total"] = tests.Count,
+                            ["truncated"] = offset + page.Count < tests.Count,
+                        });
+                    }, token);
                 }
             }
             catch (OperationCanceledException) { return ToolResult.Error("CANCELLED", "test listing cancelled"); }

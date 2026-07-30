@@ -32,20 +32,21 @@ namespace Maicon.SceneAnalyzer.Editor.Play
             Camera camera, int width, int height, bool waitForEndOfFrame,
             string encoding, int jpgQuality)
         {
-            if (camera == null) throw new ArgumentNullException(nameof(camera));
+            if (ReferenceEquals(camera, null)) throw new ArgumentNullException(nameof(camera));
 
             var cancellationToken = ToolExecutionContext.Current?.CancellationToken ?? default;
             cancellationToken.ThrowIfCancellationRequested();
-            if (waitForEndOfFrame && Application.isPlaying)
-            {
+            if (waitForEndOfFrame)
                 await EndOfFrameAwaiter.WaitOneEndOfFrame(cancellationToken);
-            }
             cancellationToken.ThrowIfCancellationRequested();
 
             // Render + readback must happen on the main thread.
             return await MainThreadDispatcher.RunAsync(() =>
-                RenderCameraToBytes(camera, width, height, encoding, jpgQuality,
-                    sourceDescription: $"Game view camera '{camera.name}' (depth={camera.depth})"),
+            {
+                if (camera == null) throw new InvalidOperationException("target camera was destroyed before capture");
+                return RenderCameraToBytes(camera, width, height, encoding, jpgQuality,
+                    sourceDescription: $"Game view camera '{camera.name}' (depth={camera.depth})");
+            },
                 cancellationToken);
         }
 

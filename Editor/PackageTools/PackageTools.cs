@@ -94,11 +94,15 @@ namespace Maicon.SceneAnalyzer.Editor.PackageTools
                 try { await MainThreadDispatcher.RunAsync(() => EditorApplication.update -= update); }
                 catch { }
             }
-            if (request.Status != StatusCode.Success)
+            var outcome = await MainThreadDispatcher.RunAsync(() => (
+                status: request.Status,
+                error: request.Error?.message,
+                result: request.Result), cancellationToken);
+            if (outcome.status != StatusCode.Success)
                 throw new InvalidOperationException(
-                    $"Package Manager request ended with {request.Status}: {request.Error?.message ?? "no error details"}");
+                    $"Package Manager request ended with {outcome.status}: {outcome.error ?? "no error details"}");
             cancellationToken.ThrowIfCancellationRequested();
-            return request.Result;
+            return outcome.result;
         }
 
         public static async Task AwaitRequest(Request request, CancellationToken cancellationToken)
@@ -123,9 +127,12 @@ namespace Maicon.SceneAnalyzer.Editor.PackageTools
                 try { await MainThreadDispatcher.RunAsync(() => EditorApplication.update -= update); }
                 catch { }
             }
-            if (request.Status != StatusCode.Success)
+            var outcome = await MainThreadDispatcher.RunAsync(() => (
+                status: request.Status,
+                error: request.Error?.message), cancellationToken);
+            if (outcome.status != StatusCode.Success)
                 throw new InvalidOperationException(
-                    $"Package Manager request ended with {request.Status}: {request.Error?.message ?? "no error details"}");
+                    $"Package Manager request ended with {outcome.status}: {outcome.error ?? "no error details"}");
             cancellationToken.ThrowIfCancellationRequested();
         }
 
