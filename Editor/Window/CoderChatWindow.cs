@@ -700,7 +700,9 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             foreach (var session in Bootstrap.CoderSessions ?? new List<CoderSessionInfo>())
             {
                 if (session == null || !CoderSessionIdentity.IsValid(session.Id)) continue;
-                var label = $"{(string.IsNullOrEmpty(session.Title) ? "Sessão" : session.Title)} · #{CoderSessionIdentity.Short(session.Id)}";
+                // Unity's popup menu treats '#' as the Shift shortcut marker,
+                // so keep it out of dropdown labels (the header can still use it).
+                var label = $"{(string.IsNullOrEmpty(session.Title) ? "Sessão" : session.Title)} · {CoderSessionIdentity.Short(session.Id)}";
                 if (_sessionByLabel.ContainsKey(label)) label += $" · {session.UpdatedAt:HH:mm}";
                 _sessionByLabel[label] = session;
                 labels.Add(label);
