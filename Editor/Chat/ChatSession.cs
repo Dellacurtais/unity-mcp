@@ -256,8 +256,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 foreach (var remote in snapshot.Messages)
                 {
                     foreach (var reference in remote.References) reference?.Validate();
-                    var existing = remote.RemoteId > 0
-                        ? Messages.Find(message => message.RemoteId == remote.RemoteId && message.RemoteSessionId == remote.RemoteSessionId)
+                    var existing = !string.IsNullOrEmpty(remote.RemoteId)
+                        ? Messages.Find(message =>
+                            string.Equals(message.RemoteId, remote.RemoteId, StringComparison.Ordinal)
+                            && string.Equals(message.RemoteSessionId, remote.RemoteSessionId, StringComparison.Ordinal))
                         : null;
                     if (existing == null) existing = FindEquivalentLocal(remote);
                     if (existing != null && reconciled != null && reconciled.Contains(existing)) existing = null;
@@ -399,7 +401,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             for (var index = Messages.Count - 1; index >= 0; index--)
             {
                 var local = Messages[index];
-                if (local.IsRemote || local.RemoteId != 0 || local.Role != remote.Role) continue;
+                if (local.IsRemote || !string.IsNullOrEmpty(local.RemoteId) || local.Role != remote.Role) continue;
                 if (EquivalentText(local.Text, remote.Text) && EquivalentToolCalls(local.ToolCalls, remote.ToolCalls)) return local;
             }
             return null;

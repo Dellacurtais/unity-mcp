@@ -13,6 +13,12 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 {
     public sealed class CoderChatTests
     {
+        private const string SessionA = "11111111-1111-4111-8111-111111111111";
+        private const string SessionB = "22222222-2222-4222-8222-222222222222";
+        private const string SessionC = "33333333-3333-4333-8333-333333333333";
+        private const string MessageA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        private const string MessageB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
         [Test]
         public void StreamEvents_CoalesceAdjacentTextWithoutCrossingBoundaries()
         {
@@ -114,13 +120,14 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 + "\n\u0060\u0060\u0060";
             var snapshot = CoderSessionSnapshot.FromJson(new JObject
             {
-                ["session"] = new JObject { ["id"] = 42, ["status"] = "idle" },
+                ["session"] = new JObject { ["id"] = SessionA, ["status"] = "idle" },
                 ["message_rows"] = new JArray
                 {
                     new JObject
                     {
-                        ["id"] = 7,
-                        ["session_id"] = 42,
+                        ["id"] = MessageA,
+                        ["seq"] = 7,
+                        ["session_id"] = SessionA,
                         ["role"] = "user",
                         ["content_json"] = new JArray
                         {
@@ -141,7 +148,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             Assert.That(session.Messages, Has.Count.EqualTo(1));
             Assert.That(session.Messages[0].IsRemote, Is.True);
-            Assert.That(session.Messages[0].RemoteId, Is.EqualTo(7));
+            Assert.That(session.Messages[0].RemoteId, Is.EqualTo(MessageA));
+            Assert.That(session.Messages[0].RemoteSessionId, Is.EqualTo(SessionA));
             Assert.That(session.Messages[0].References, Has.Count.EqualTo(1));
         }
 
@@ -150,13 +158,14 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         {
             var snapshot = CoderSessionSnapshot.FromJson(new JObject
             {
-                ["session"] = new JObject { ["id"] = 9 },
+                ["session"] = new JObject { ["id"] = SessionB },
                 ["message_rows"] = new JArray
                 {
                     new JObject
                     {
-                        ["id"] = 1,
-                        ["session_id"] = 9,
+                        ["id"] = MessageA,
+                        ["seq"] = 1,
+                        ["session_id"] = SessionB,
                         ["role"] = "assistant",
                         ["content_json"] = new JArray
                         {
@@ -171,8 +180,9 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                     },
                     new JObject
                     {
-                        ["id"] = 2,
-                        ["session_id"] = 9,
+                        ["id"] = MessageB,
+                        ["seq"] = 2,
+                        ["session_id"] = SessionB,
                         ["role"] = "tool",
                         ["content_json"] = new JArray
                         {
@@ -201,7 +211,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 ["session"] = new JObject
                 {
-                    ["id"] = 17,
+                    ["id"] = SessionC,
                     ["project_id"] = 3,
                     ["status"] = "idle",
                     ["agent"] = "plan",
@@ -211,8 +221,9 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 {
                     new JObject
                     {
-                        ["id"] = 1,
-                        ["session_id"] = 17,
+                        ["id"] = MessageA,
+                        ["seq"] = 1,
+                        ["session_id"] = SessionC,
                         ["role"] = "assistant",
                         ["created_at"] = "2026-07-23T12:00:00Z",
                         ["content_json"] = new JArray
@@ -230,8 +241,9 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                     },
                     new JObject
                     {
-                        ["id"] = 2,
-                        ["session_id"] = 17,
+                        ["id"] = MessageB,
+                        ["seq"] = 2,
+                        ["session_id"] = SessionC,
                         ["role"] = "tool",
                         ["created_at"] = "2026-07-23T12:00:01Z",
                         ["content_json"] = new JArray
@@ -479,6 +491,26 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(fallbackBody["agent"], Is.Null);
             Assert.That((string)fallbackBody["profile"], Is.EqualTo("auto"));
             Assert.That(fallbackBody["thinking"], Is.Null);
+        }
+
+        [Test]
+        public void SessionInfo_UsesCanonicalUuidAndRejectsLegacyNumericIdentity()
+        {
+            var current = CoderSessionInfo.FromJson(new JObject
+            {
+                ["id"] = SessionA.ToUpperInvariant(),
+                ["project_id"] = 112,
+                ["title"] = "Unity",
+            });
+            var legacy = CoderSessionInfo.FromJson(new JObject
+            {
+                ["id"] = 1326,
+                ["project_id"] = 112,
+            });
+
+            Assert.That(current.Id, Is.EqualTo(SessionA));
+            Assert.That(current.ProjectId, Is.EqualTo(112));
+            Assert.That(legacy.Id, Is.Empty);
         }
 
         private static void AssertExpandedFoldouts(VisualElement element)

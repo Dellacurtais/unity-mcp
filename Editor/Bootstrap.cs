@@ -79,8 +79,9 @@ namespace Maicon.SceneAnalyzer.Editor
 
         public static void UpdateCoderSession(CoderSessionInfo session)
         {
-            if (session == null || session.Id <= 0) return;
-            var index = CoderSessions.FindIndex(item => item.Id == session.Id);
+            if (session == null || !CoderSessionIdentity.IsValid(session.Id)) return;
+            var index = CoderSessions.FindIndex(item =>
+                string.Equals(item.Id, session.Id, StringComparison.Ordinal));
             if (index >= 0)
             {
                 if (CoderSessions[index].SemanticallyEquals(session)) return;

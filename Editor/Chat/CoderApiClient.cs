@@ -46,18 +46,20 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         // Send, or via the "New" button) and removed on the first message that
         // actually goes out. Locked because creation and send paths can race
         // on different Task.Run continuations.
-        private readonly HashSet<int> _pendingPreambleFor = new();
+        private readonly HashSet<string> _pendingPreambleFor = new(StringComparer.Ordinal);
         private readonly object _preambleLock = new();
 
-        private void MarkPreamblePending(int sessionId)
+        private void MarkPreamblePending(string sessionId)
         {
-            if (sessionId <= 0) return;
+            sessionId = CoderSessionIdentity.Normalize(sessionId);
+            if (string.IsNullOrEmpty(sessionId)) return;
             lock (_preambleLock) _pendingPreambleFor.Add(sessionId);
         }
 
-        private bool ConsumePendingPreamble(int sessionId)
+        private bool ConsumePendingPreamble(string sessionId)
         {
-            if (sessionId <= 0) return false;
+            sessionId = CoderSessionIdentity.Normalize(sessionId);
+            if (string.IsNullOrEmpty(sessionId)) return false;
             lock (_preambleLock) return _pendingPreambleFor.Remove(sessionId);
         }
 
@@ -118,7 +120,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             _lifetimeCts.Dispose();
         }
 
-        public void Send(string serverUrl, string token, int sessionId, string content,
+        public void Send(string serverUrl, string token, string sessionId, string content,
             string profile, string agent)
         {
             // Caller is the main thread (button click). Don't dispatch + wait —
@@ -145,9 +147,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             {
                 try
                 {
-                    int effectiveSessionId = sessionId;
+                    var effectiveSessionId = CoderSessionIdentity.Normalize(sessionId);
 
-                    if (effectiveSessionId <= 0)
+                    if (string.IsNullOrEmpty(effectiveSessionId))
                     {
                         // Always go through the resolver — it cheaply returns
                         // the cached id when the workdir still matches, and
@@ -167,7 +169,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                             serverUrl, token, projectId,
                             $"Unity chat — {DateTime.Now:HH:mm:ss}",
                             snapProvider, snapModel, agent, token2);
-                        if (effectiveSessionId <= 0)
+                        if (string.IsNullOrEmpty(effectiveSessionId))
                         {
                             await MainThreadDispatcher.RunAsync(() => _session.AddError(
                                 "step 2 failed (no session id) — aborting before message"));
@@ -334,7 +336,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     }
 
                     var id = await CreateSessionAsync(serverUrl, token, resolvedProjectId, title, provider, model, agent, ct);
-                    if (id > 0)
+                    if (CoderSessionIdentity.IsValid(id))
                     {
                         // Mark the session as needing the preamble on its first
                         // outgoing message — the New button creates the session
@@ -398,7 +400,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
         /// Answer an `ask_user` tool call. POSTs the dev's answer to
         /// `/api/coder/sessions/<id>/answer` so the paused run continues.
-        public void AnswerQuestion(string serverUrl, string token, int sessionId, string questionId, string answer)
+        public void AnswerQuestion(string serverUrl, string token, string sessionId, string questionId, string answer)
         {
             var key = "question:" + (questionId ?? "");
             var body = new JObject { ["answer"] = answer ?? "" };
@@ -408,7 +410,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         }
 
         /// Approve / reject a plan submitted by the agent via `submit_plan`.
-        public void RespondToPlan(string serverUrl, string token, int sessionId, string planId, bool approved, string note)
+        public void RespondToPlan(string serverUrl, string token, string sessionId, string planId, bool approved, string note)
         {
             var key = "plan:" + (planId ?? "");
             var body = new JObject
@@ -421,7 +423,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 approved ? "Plano aprovado" : string.IsNullOrWhiteSpace(note) ? "Plano rejeitado" : "Alterações solicitadas no plano");
         }
 
-        public void RespondToTasks(string serverUrl, string token, int sessionId, string toolUseId, bool approved)
+        public void RespondToTasks(string serverUrl, string token, string sessionId, string toolUseId, bool approved)
         {
             var key = "tasks:" + (toolUseId ?? "");
             var body = new JObject { ["approved"] = approved };
@@ -712,7 +714,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             });
         }
 
-        public async Task<int> CreateSessionAsync(string serverUrl, string token, int projectId,
+        public async Task<string> CreateSessionAsync(string serverUrl, string token, int projectId,
             string title, string provider, string model, string agent, CancellationToken ct)
         {
             try
@@ -741,24 +743,24 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 {
                     await MainThreadDispatcher.RunAsync(() => _session.AddError(
                         $"create session failed — HTTP {(int)resp.StatusCode}: {resp.ReasonPhrase}\n{bodyText}"));
-                    return 0;
+                    return "";
                 }
 
                 var json = JObject.Parse(bodyText);
-                var id = (int?)json["id"] ?? 0;
-                if (id <= 0)
+                var id = CoderSessionIdentity.FromToken(json["id"]);
+                if (string.IsNullOrEmpty(id))
                 {
                     await MainThreadDispatcher.RunAsync(() => _session.AddError(
                         $"create session returned no id: {bodyText}"));
                 }
                 return id;
             }
-            catch (OperationCanceledException) { return 0; }
+            catch (OperationCanceledException) { return ""; }
             catch (Exception e)
             {
                 Debug.LogException(e);
                 await MainThreadDispatcher.RunAsync(() => _session.AddError($"create session error: {e.Message}"));
-                return 0;
+                return "";
             }
         }
 
@@ -784,7 +786,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             }
         }
 
-        private async Task SendAsync(string serverUrl, string token, int sessionId, string content,
+        private async Task SendAsync(string serverUrl, string token, string sessionId, string content,
             string profile, string agent, bool thinking, CancellationToken ct)
         {
             try
@@ -1110,8 +1112,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     break;
                 }
                 case "session":
-                    var sid = AsInt(payload?["id"]);
-                    if (sid.HasValue && sid.Value > 0) Settings.CoderSessionId = sid.Value;
+                    var sid = CoderSessionIdentity.FromToken(payload?["id"]);
+                    if (!string.IsNullOrEmpty(sid)) Settings.CoderSessionId = sid;
                     break;
                 case "error":
                     _session.AddError(AsString(payload?["message"]) ?? data);

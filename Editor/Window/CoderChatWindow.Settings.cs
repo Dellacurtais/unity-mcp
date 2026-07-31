@@ -12,7 +12,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private TextField _urlField;
         private TextField _tokenField;
         private IntegerField _projectField;
-        private IntegerField _sessionIdField;
+        private TextField _sessionIdField;
         private DropdownField _providerField;
         private DropdownField _modelField;
         private Toggle _autoContextToggle;
@@ -73,9 +73,13 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _projectStatusLabel.AddToClassList("settings-note");
             grid.Add(_projectStatusLabel);
 
-            _sessionIdField = new IntegerField("Sessão") { value = Settings.CoderSessionId };
+            _sessionIdField = new TextField("Sessão UUID")
+            {
+                value = Settings.CoderSessionId,
+                tooltip = "UUID canônico da sessão no CodeStudio",
+            };
             var sessionRow = CreateSettingsRow(_sessionIdField);
-            sessionRow.Add(new Button(() => AttachSession(Math.Max(0, _sessionIdField.value), true))
+            sessionRow.Add(new Button(() => AttachSession(_sessionIdField.value, true))
             {
                 text = "Anexar",
             });

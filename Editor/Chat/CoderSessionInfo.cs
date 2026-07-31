@@ -6,9 +6,32 @@ using Newtonsoft.Json.Linq;
 
 namespace Maicon.SceneAnalyzer.Editor.Chat
 {
+    internal static class CoderSessionIdentity
+    {
+        internal static string Normalize(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "";
+            return Guid.TryParseExact(value.Trim(), "D", out var parsed)
+                ? parsed.ToString("D")
+                : "";
+        }
+
+        internal static string FromToken(JToken token)
+            => token?.Type == JTokenType.String ? Normalize((string)token) : "";
+
+        internal static bool IsValid(string value)
+            => !string.IsNullOrEmpty(Normalize(value));
+
+        internal static string Short(string value)
+        {
+            var normalized = Normalize(value);
+            return normalized.Length >= 8 ? normalized.Substring(0, 8) : "";
+        }
+    }
+
     public sealed class CoderSessionInfo
     {
-        public int Id;
+        public string Id;
         public int ProjectId;
         public string Title;
         public string Provider;
@@ -27,7 +50,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (token == null) return null;
             return new CoderSessionInfo
             {
-                Id = (int?)token["id"] ?? 0,
+                Id = CoderSessionIdentity.FromToken(token["id"]),
                 ProjectId = (int?)token["project_id"] ?? 0,
                 Title = (string)token["title"],
                 Provider = (string)token["provider"],
@@ -46,7 +69,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public bool SemanticallyEquals(CoderSessionInfo other)
         {
             return other != null
-                && Id == other.Id
+                && string.Equals(Id, other.Id, StringComparison.Ordinal)
                 && ProjectId == other.ProjectId
                 && string.Equals(Title, other.Title, StringComparison.Ordinal)
                 && string.Equals(Provider, other.Provider, StringComparison.Ordinal)
@@ -68,7 +91,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 : null;
         }
 
-        public override string ToString() => string.IsNullOrEmpty(Title) ? $"Sessão #{Id}" : Title;
+        public override string ToString()
+            => string.IsNullOrEmpty(Title) ? $"Sessão #{CoderSessionIdentity.Short(Id)}" : Title;
     }
 
     public sealed class CoderSessionSnapshot
@@ -94,8 +118,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             var toolCalls = new Dictionary<string, ChatToolCall>(StringComparer.Ordinal);
             foreach (var row in rows)
             {
-                var remoteId = (long?)row["id"] ?? 0;
-                snapshot.LastMessageId = Math.Max(snapshot.LastMessageId, remoteId);
+                var remoteId = (string)row["id"] ?? "";
+                var remoteSequence = ReadSequence(row["seq"]);
+                if (remoteSequence <= 0) remoteSequence = ReadSequence(row["id"]);
+                snapshot.LastMessageId = Math.Max(snapshot.LastMessageId, remoteSequence);
                 var role = (string)row["role"];
                 var content = ParseContent(row["content_json"]);
                 if (string.Equals(role, "tool", StringComparison.OrdinalIgnoreCase)
@@ -103,7 +129,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 var message = ParseMessage(role, content, toolCalls);
                 if (message == null) continue;
                 message.RemoteId = remoteId;
-                message.RemoteSessionId = (int?)row["session_id"] ?? snapshot.Session?.Id ?? 0;
+                message.RemoteSessionId = CoderSessionIdentity.FromToken(row["session_id"]);
+                if (string.IsNullOrEmpty(message.RemoteSessionId))
+                    message.RemoteSessionId = snapshot.Session?.Id ?? "";
                 message.IsRemote = true;
                 message.IsMeta = (int?)row["is_meta"] == 1;
                 message.Timestamp = ParseDate((string)row["created_at"]) ?? DateTime.Now;
@@ -122,12 +150,21 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     && ApplyToolResults(content, toolCalls)) continue;
                 var message = ParseMessage((string)item["role"], content, toolCalls);
                 if (message == null) continue;
-                message.RemoteId = syntheticId++;
-                message.RemoteSessionId = snapshot.Session?.Id ?? 0;
+                message.RemoteId = "legacy:" + syntheticId++;
+                message.RemoteSessionId = snapshot.Session?.Id ?? "";
                 message.IsRemote = true;
                 snapshot.Messages.Add(message);
             }
             snapshot.LastMessageId = syntheticId - 1;
+        }
+
+        private static long ReadSequence(JToken token)
+        {
+            if (token == null) return 0;
+            return long.TryParse(token.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                && value > 0
+                ? value
+                : 0;
         }
 
         private static ChatMessage ParseMessage(string role, JToken content, Dictionary<string, ChatToolCall> toolCalls)

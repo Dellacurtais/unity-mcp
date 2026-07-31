@@ -97,15 +97,17 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             foreach (var item in JArray.Parse(body))
             {
                 var session = CoderSessionInfo.FromJson(item);
-                if (session != null && session.Id > 0) list.Add(session);
+                if (session != null && CoderSessionIdentity.IsValid(session.Id)) list.Add(session);
             }
             return list.OrderByDescending(session => session.UpdatedAt ?? session.CreatedAt).ToList();
         }
 
         public async Task<CoderSessionSnapshot> GetSessionAsync(
-            string serverUrl, string token, int sessionId, CancellationToken ct)
+            string serverUrl, string token, string sessionId, CancellationToken ct)
         {
-            if (sessionId <= 0) throw new ArgumentOutOfRangeException(nameof(sessionId));
+            sessionId = CoderSessionIdentity.Normalize(sessionId);
+            if (string.IsNullOrEmpty(sessionId))
+                throw new ArgumentException("Session id must be a canonical UUID.", nameof(sessionId));
             var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}";
             using var request = CreateRequest(HttpMethod.Get, url, token);
             using var response = await Http.SendAsync(request, ct).ConfigureAwait(false);
@@ -115,10 +117,11 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             return CoderSessionSnapshot.FromJson(JObject.Parse(body));
         }
 
-        public void AttachSession(string serverUrl, string token, int sessionId, bool replaceConversation = true)
+        public void AttachSession(string serverUrl, string token, string sessionId, bool replaceConversation = true)
         {
             StopSessionSync();
-            if (sessionId <= 0)
+            sessionId = CoderSessionIdentity.Normalize(sessionId);
+            if (string.IsNullOrEmpty(sessionId))
             {
                 _session.SetConnectionState(ChatConnectionState.Offline, "Nenhuma sessão selecionada");
                 return;
@@ -132,7 +135,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         }
 
         public async Task<CoderSessionSnapshot> RefreshAttachedSessionAsync(
-            string serverUrl, string token, int sessionId, bool replaceConversation, CancellationToken ct)
+            string serverUrl, string token, string sessionId, bool replaceConversation, CancellationToken ct)
         {
             var snapshot = await GetSessionAsync(serverUrl, token, sessionId, ct).ConfigureAwait(false);
             await MainThreadDispatcher.RunAsync(() =>
@@ -145,7 +148,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         }
 
         private async Task SessionSyncLoopAsync(
-            string serverUrl, string token, int sessionId, bool replaceConversation, CancellationToken ct)
+            string serverUrl, string token, string sessionId, bool replaceConversation, CancellationToken ct)
         {
             var failureCount = 0;
             var replace = replaceConversation;
@@ -184,14 +187,15 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         private async Task PostInteractionAsync(
             string serverUrl,
             string token,
-            int sessionId,
+            string sessionId,
             string endpoint,
             string requestedKey,
             JObject body,
             string successMessage)
         {
             var key = ResolveInteractionKey(requestedKey);
-            if (sessionId <= 0)
+            sessionId = CoderSessionIdentity.Normalize(sessionId);
+            if (string.IsNullOrEmpty(sessionId))
             {
                 _session.SetInteractionFailed(key, "Sessão não definida");
                 return;

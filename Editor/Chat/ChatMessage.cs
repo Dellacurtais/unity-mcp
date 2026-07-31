@@ -34,8 +34,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public readonly List<ChatReference> References = new();
         public bool Streaming;
         public string SystemNote;
-        public long RemoteId;
-        public int RemoteSessionId;
+        public string RemoteId;
+        public string RemoteSessionId;
         public bool IsRemote;
         public bool IsMeta;
         public bool ThinkingExpanded;
@@ -53,8 +53,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 || !string.Equals(Text ?? "", source.Text ?? "", StringComparison.Ordinal)
                 || !string.Equals(ThinkingText ?? "", source.ThinkingText ?? "", StringComparison.Ordinal)
                 || Timestamp != source.Timestamp
-                || RemoteId != source.RemoteId
-                || RemoteSessionId != source.RemoteSessionId
+                || !string.Equals(RemoteId, source.RemoteId, StringComparison.Ordinal)
+                || !string.Equals(RemoteSessionId, source.RemoteSessionId, StringComparison.Ordinal)
                 || !IsRemote
                 || IsMeta != source.IsMeta
                 || Streaming

@@ -42,7 +42,10 @@ namespace Maicon.SceneAnalyzer.Editor
         // Coder client (Model B — chat panel inside Unity that talks to D:\MCP).
         private const string KCoderUrl = "Maicon.SceneAnalyzer.Coder.Url";
         private const string KCoderToken = "Maicon.SceneAnalyzer.Coder.Token";
-        private const string KCoderSessionId = "Maicon.SceneAnalyzer.Coder.SessionId";
+        // Session ids became opaque filesystem UUIDs in CodeStudio. Keep them
+        // under a new string key so an older numeric EditorPrefs value cannot
+        // be coerced into a UUID or trigger a format exception after upgrade.
+        private const string KCoderSessionId = "Maicon.SceneAnalyzer.Coder.SessionUuid";
         private const string KCoderProfile = "Maicon.SceneAnalyzer.Coder.Profile";
         private const string KCoderAgent = "Maicon.SceneAnalyzer.Coder.Agent";
         private const string KCoderProjectId = "Maicon.SceneAnalyzer.Coder.ProjectId";
@@ -215,10 +218,10 @@ namespace Maicon.SceneAnalyzer.Editor
             set => EditorPrefs.SetString(KCoderToken, value ?? "");
         }
 
-        public static int CoderSessionId
+        public static string CoderSessionId
         {
-            get => EditorPrefs.GetInt(KCoderSessionId, 0);
-            set => EditorPrefs.SetInt(KCoderSessionId, value);
+            get => EditorPrefs.GetString(KCoderSessionId, "");
+            set => EditorPrefs.SetString(KCoderSessionId, value ?? "");
         }
 
         public static string CoderProfile

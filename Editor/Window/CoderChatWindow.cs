@@ -54,8 +54,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private bool _eventsSubscribed;
         private string _composerDraft = "";
         private string _interactionSignature = "";
-        private int _pendingAttachSessionId;
-        private int _attachedSessionId;
+        private string _pendingAttachSessionId = "";
+        private string _attachedSessionId = "";
 
         [MenuItem("Window/Coder Chat (Unity MCP)")]
         public static void Open()
@@ -68,7 +68,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private void OnEnable()
         {
             _showSystemMessages = Settings.CoderShowSystemMessages;
-            _attachedSessionId = 0;
+            _attachedSessionId = "";
             _pendingAttachSessionId = Settings.CoderSessionId;
             SubscribeEvents();
         }
@@ -79,7 +79,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             CancelScheduledUiFlush();
             CloseReferencePicker();
             Bootstrap.ChatClient?.StopSessionSync();
-            _attachedSessionId = 0;
+            _attachedSessionId = "";
             UnsubscribeEvents();
         }
 
@@ -217,7 +217,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _connectionActions.Add(new Button(() =>
             {
                 var sessionId = Settings.CoderSessionId;
-                if (sessionId > 0) AttachSession(sessionId, false);
+                if (CoderSessionIdentity.IsValid(sessionId)) AttachSession(sessionId, false);
                 RefreshRemoteCatalogs();
             }) { text = "Sincronizar", tooltip = "Atualizar sessão, agentes, modelos e lista de sessões" });
 
@@ -417,9 +417,9 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         {
             if (Bootstrap.ChatClient == null || Bootstrap.ChatSession == null) return;
             Bootstrap.ChatClient.StopSessionSync();
-            _attachedSessionId = 0;
-            _pendingAttachSessionId = 0;
-            Settings.CoderSessionId = 0;
+            _attachedSessionId = "";
+            _pendingAttachSessionId = "";
+            Settings.CoderSessionId = "";
             Bootstrap.ChatSession.Reset();
             Bootstrap.ChatClient.CreateSession(
                 Settings.CoderUrl,
@@ -431,9 +431,12 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 Settings.CoderAgent);
         }
 
-        private void AttachSession(int sessionId, bool replaceConversation)
+        private void AttachSession(string sessionId, bool replaceConversation)
         {
-            if (sessionId <= 0 || Bootstrap.ChatClient == null || Bootstrap.ChatSession == null) return;
+            sessionId = CoderSessionIdentity.Normalize(sessionId);
+            if (string.IsNullOrEmpty(sessionId)
+                || Bootstrap.ChatClient == null
+                || Bootstrap.ChatSession == null) return;
             if (replaceConversation) Bootstrap.ChatSession.Reset();
             Settings.CoderSessionId = sessionId;
             _attachedSessionId = sessionId;
@@ -481,8 +484,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
         private void TryAttachPendingSession()
         {
-            if (_pendingAttachSessionId <= 0
-                || _pendingAttachSessionId == _attachedSessionId
+            if (!CoderSessionIdentity.IsValid(_pendingAttachSessionId)
+                || string.Equals(_pendingAttachSessionId, _attachedSessionId, StringComparison.Ordinal)
                 || Bootstrap.ChatClient == null
                 || Bootstrap.ChatClient.IsRunning) return;
 
@@ -612,10 +615,13 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             var sessionId = remote?.Id ?? Settings.CoderSessionId;
             var title = remote?.Title;
             var model = remote?.Model ?? Settings.CoderModel;
-            _sessionMetaLabel.text = sessionId > 0
-                ? $"#{sessionId} · {(string.IsNullOrEmpty(title) ? "sessão Unity" : title)}"
+            _sessionMetaLabel.text = CoderSessionIdentity.IsValid(sessionId)
+                ? $"#{CoderSessionIdentity.Short(sessionId)} · {(string.IsNullOrEmpty(title) ? "sessão Unity" : title)}"
                     + (string.IsNullOrEmpty(model) ? "" : $" · {model}")
                 : "Nenhuma sessão · o envio criará uma automaticamente";
+            _sessionMetaLabel.tooltip = CoderSessionIdentity.IsValid(sessionId)
+                ? $"ID da sessão: {sessionId}"
+                : "";
 
             var permission = remote?.ToolPermissionMode;
             _permissionBadge.text = string.IsNullOrEmpty(permission) ? "PERMISSÃO —" : permission.ToUpperInvariant();
@@ -693,15 +699,16 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             var labels = new List<string>();
             foreach (var session in Bootstrap.CoderSessions ?? new List<CoderSessionInfo>())
             {
-                if (session == null || session.Id <= 0) continue;
-                var label = $"{(string.IsNullOrEmpty(session.Title) ? "Sessão" : session.Title)} · #{session.Id}";
+                if (session == null || !CoderSessionIdentity.IsValid(session.Id)) continue;
+                var label = $"{(string.IsNullOrEmpty(session.Title) ? "Sessão" : session.Title)} · #{CoderSessionIdentity.Short(session.Id)}";
                 if (_sessionByLabel.ContainsKey(label)) label += $" · {session.UpdatedAt:HH:mm}";
                 _sessionByLabel[label] = session;
                 labels.Add(label);
             }
             if (labels.Count == 0) labels.Add("Nenhuma sessão recente");
             _sessionField.choices = labels;
-            var selected = _sessionByLabel.FirstOrDefault(pair => pair.Value.Id == Settings.CoderSessionId);
+            var selected = _sessionByLabel.FirstOrDefault(pair =>
+                string.Equals(pair.Value.Id, Settings.CoderSessionId, StringComparison.Ordinal));
             _sessionField.SetValueWithoutNotify(string.IsNullOrEmpty(selected.Key) ? labels[0] : selected.Key);
         }
 

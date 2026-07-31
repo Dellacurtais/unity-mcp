@@ -5,6 +5,18 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.12] - 2026-07-30
+
+### Changed
+
+- Coder Chat now stores and displays CodeStudio session identifiers as opaque UUIDs, with a compact label and the full UUID available in the header tooltip and advanced settings.
+- The obsolete numeric session preference is intentionally ignored after upgrade so a stale legacy id cannot be sent to the UUID-only runtime.
+
+### Fixed
+
+- Creating, selecting, synchronizing, messaging, and answering interactions in Coder Chat now use the filesystem-session UUID contract required by the current CodeStudio API.
+- Session snapshot reconciliation now treats message record ids as UUIDs and uses their numeric `seq` for ordering, preventing format exceptions immediately after a session is created.
+
 ## [0.16.11] - 2026-07-30
 
 ### Changed
