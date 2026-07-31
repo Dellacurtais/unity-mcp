@@ -13,7 +13,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 {
     public static class SceneAnalyzerVersion
     {
-        public const string Fallback = "0.16.17";
+        public const string Fallback = "0.16.18";
         private static string _current;
         private static string _packageName;
 
@@ -182,6 +182,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     ["maxConcurrentRequests"] = Settings.MaxConcurrentRequests,
                     ["maxRequestBodyBytes"] = Settings.MaxRequestBodyBytes,
                     ["toolTimeoutSeconds"] = Settings.ToolTimeoutSeconds,
+                    ["autonomousEditorActivation"] = Settings.AutoActivateRequiredWindows,
+                    ["activeEditorActivityLeases"] = EditorActivityLease.ActiveCount,
+                    ["lastEditorActivationUtc"] = EditorActivityLease.LastActivationUtc?.ToString("O"),
+                    ["lastActivatedWindow"] = EditorActivityLease.LastActivatedWindow,
                 },
                 ["registry"] = new JObject
                 {

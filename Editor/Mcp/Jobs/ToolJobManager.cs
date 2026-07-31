@@ -134,6 +134,29 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
         public static bool TryGet(string jobId, out ToolJobRecord record) =>
             Jobs.TryGetValue(jobId ?? string.Empty, out record);
 
+        public static async Task<ToolJobRecord> WaitAsync(
+            string jobId,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(jobId)) return null;
+            if (timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+            var deadline = DateTimeOffset.UtcNow.Add(timeout);
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!TryGet(jobId, out var record)) return null;
+                lock (record.Sync)
+                    if (IsTerminal(record.Status)) return record;
+                var remaining = deadline - DateTimeOffset.UtcNow;
+                if (remaining <= TimeSpan.Zero) return record;
+                var delay = remaining < TimeSpan.FromMilliseconds(100)
+                    ? remaining
+                    : TimeSpan.FromMilliseconds(100);
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
+
         public static bool HasActive(string kind) => HasActivePrefix(kind, exact: true);
 
         public static bool HasActivePrefix(string kindPrefix, bool exact = false)

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -184,6 +185,17 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                         ["risk"] = descriptor.Risk.ToString(),
                         ["confirmationRequired"] = ToolAuthorization.RequiresConfirmation(descriptor),
                         ["editorMode"] = descriptor.EditorMode.ToString(),
+                        ["executionRequirements"] = new JArray(ExecutionRequirementNames(descriptor.ExecutionRequirements)),
+                        ["headlessSafe"] = descriptor.HeadlessSafe,
+                        ["jobLifecycle"] = (descriptor.ExecutionRequirements & McpExecutionRequirement.LongRunningJob) != 0
+                            ? new JObject
+                            {
+                                ["startsJob"] = true,
+                                ["waitTool"] = "wait_tool_job",
+                                ["cancelTool"] = "cancel_tool_job",
+                                ["autoWait"] = true,
+                            }
+                            : null,
                     },
                 };
                 var outputSchema = _registry.GetOutputSchema(tool.Name);
@@ -334,13 +346,15 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 RequestMeta = parameters["_meta"] as JObject,
             }))
             {
+                var activityLease = await EditorActivityLease.AcquireAsync(descriptor, lease.CancellationToken);
                 ToolResult result;
-                var preMutationScenes = (descriptor.Capabilities & McpCapability.SceneWrite) != 0
-                    ? await MainThreadDispatcher.RunAsync(
-                        () => MutationScope.CaptureLegacySceneHandles(executionArguments), lease.CancellationToken)
-                    : null;
+                System.Collections.Generic.HashSet<int> preMutationScenes = null;
                 try
                 {
+                    preMutationScenes = (descriptor.Capabilities & McpCapability.SceneWrite) != 0
+                        ? await MainThreadDispatcher.RunAsync(
+                            () => MutationScope.CaptureLegacySceneHandles(executionArguments), lease.CancellationToken)
+                        : null;
                     result = await tool.ExecuteAsync(executionArguments);
                     if (result == null) result = ToolResult.Error("NULL_RESULT", $"Tool '{name}' returned no result.");
                     if (!result.IsError && result.Json != null)
@@ -379,8 +393,21 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     result = ToolResult.Error("INTERNAL_ERROR", exception.Message,
                         new JObject { ["exceptionType"] = exception.GetType().FullName });
                 }
+                finally
+                {
+                    await activityLease.ReleaseAsync();
+                }
 
                 return OkResp(id, BuildToolResult(result, name));
+            }
+        }
+
+        private static IEnumerable<string> ExecutionRequirementNames(McpExecutionRequirement requirements)
+        {
+            foreach (McpExecutionRequirement value in Enum.GetValues(typeof(McpExecutionRequirement)))
+            {
+                if (value == McpExecutionRequirement.None || (requirements & value) == 0) continue;
+                yield return value.ToString();
             }
         }
 

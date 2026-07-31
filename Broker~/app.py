@@ -27,7 +27,12 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
             str(snapshot["registry_hash"]),
             snapshot["tools"],
         )
-    router = BridgeRouter(store, registry)
+    router = BridgeRouter(
+        store,
+        registry,
+        focus_assist_enabled=settings.focus_assist_enabled,
+        focus_assist_delay_seconds=settings.focus_assist_delay_seconds,
+    )
     broker = McpBroker(settings, store, registry, router)
 
     @asynccontextmanager
@@ -81,6 +86,9 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
             "routeError": None if route_ready else "no active Unity bridge is ready",
             "connectedProjects": len(router.connections),
             "registryCount": len(registry_snapshot.tools) if registry_snapshot else 0,
+            "focusAssistEnabled": settings.focus_assist_enabled,
+            "focusAssistDelaySeconds": settings.focus_assist_delay_seconds,
+            "autoWaitJobs": settings.auto_wait_jobs,
         }
 
     @app.post("/mcp/")

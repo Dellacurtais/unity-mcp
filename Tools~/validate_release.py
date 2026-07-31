@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "com.maicon.scene-analyzer"
-RELEASE_VERSION = "0.16.17"
+RELEASE_VERSION = "0.16.18"
 PINNED_REQUIREMENT = re.compile(r"^[A-Za-z0-9_.-]+==[^=<>!~]+$")
 
 

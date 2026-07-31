@@ -146,7 +146,11 @@ Managed setup from **Window → Unity MCP Transport**:
 
 Manual setup remains supported: install `Broker~/requirements.txt` in an external environment, set `UNITY_MCP_BROKER_TOKEN`, run `python Broker~/main.py`, then click **Connect** in Broker mode. A manually launched broker has no Unity owner and keeps the operator-controlled lifetime.
 
-The broker persists requests, registries, projects, lifecycle events, and refresh/compile jobs in SQLite. `broker_start_refresh_compile` returns a durable job immediately; use `broker_get_job` or `broker_wait_job` while Unity compiles/reloads. Read-only and explicitly idempotent calls may resume after reconnect; accepted non-idempotent writes are never blindly repeated and return `OUTCOME_UNKNOWN` when their result cannot be proven.
+The broker persists requests, registries, projects, lifecycle events, and Unity jobs in SQLite. Tools advertise whether they require main-thread execution, editor updates, Scene/Game View activation, or can reload the domain. Build, test, import, package, and Addressables starters are mirrored into the durable job ledger and waited automatically; set request `_meta.autoWaitJob` to `false` when an immediate job handle is preferred. `get_tool_job`, `wait_tool_job`, and `cancel_tool_job` operate on every Unity job kind, while `broker_get_job`, `broker_wait_job`, and `broker_cancel_job` remain available outside the Editor.
+
+With **Autonomous editor activation** enabled, Unity temporarily opens and focuses the required internal Scene/Game view and keeps editor updates flowing. If an attention-dependent request still does not reach Unity's main thread within two seconds, the managed Windows broker makes a best-effort activation of the Unity process and restores the previous foreground window only when Unity still owns it. Set `UNITY_MCP_BROKER_FOCUS_ASSIST=0` for a manually launched broker to disable the operating-system fallback.
+
+Read-only and explicitly idempotent calls may resume after reconnect; accepted non-idempotent writes are never blindly repeated and return `OUTCOME_UNKNOWN` when their result cannot be proven.
 
 To roll back, click **Stop** for a managed broker (or stop a manually launched process), disconnect Broker mode, select **Embedded**, and start the embedded server. Embedded remains the default and does not require Python.
 
@@ -179,7 +183,7 @@ For runtime gameplay handlers, see [`Runtime/Bridge/README.md`](Runtime/Bridge/R
 | Confirmation required | **Window → Unity MCP Transport → Safety** and tool error metadata | Disable **Confirm high-risk tools** for direct execution, or repeat the exact call with the returned `_confirmationToken` before it expires. |
 | Target no longer resolves | Refresh the read result | Prefer the returned `target.globalObjectId`; use `instanceId` only inside the current editor session. |
 | Changes are not on disk | Dirty scenes/assets | This is intentional. Call explicit save tools after review. |
-| Build/test/import job appears stuck | Health `jobs`, queue and compilation fields | Poll the matching `get_*_job`; cancel when supported; inspect compilation/update state. |
+| Build/test/import job appears stuck | Health `jobs`, `activeEditorActivityLeases`, and broker request state | The broker waits automatically; inspect `broker_get_job`, or use `wait_tool_job`/`cancel_tool_job` after opting out with `_meta.autoWaitJob=false`. |
 | Sidecar unavailable | `mesh_sidecar_health` | Start the configured localhost sidecar and verify its Python dependencies. |
 
 ## Release verification

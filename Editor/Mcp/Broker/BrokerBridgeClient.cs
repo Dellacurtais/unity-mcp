@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using UnityEditor;
 using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
@@ -344,6 +345,22 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             await SendCurrentAsync(BrokerProtocol.Envelope(
                 "accepted",
                 new JObject { ["requestId"] = requestId },
+                _projectKey,
+                _processId,
+                correlationId), cancellationToken);
+
+            var executionState = await MainThreadDispatcher.RunAsync(() => new JObject
+            {
+                ["requestId"] = requestId,
+                ["applicationFocused"] = Application.isFocused,
+                ["focusedWindow"] = EditorWindow.focusedWindow != null
+                    ? EditorWindow.focusedWindow.GetType().Name
+                    : null,
+                ["editorTimeSinceStartup"] = EditorApplication.timeSinceStartup,
+            }, cancellationToken);
+            await SendCurrentAsync(BrokerProtocol.Envelope(
+                "execution_started",
+                executionState,
                 _projectKey,
                 _processId,
                 correlationId), cancellationToken);

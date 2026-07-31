@@ -254,6 +254,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             startInfo.EnvironmentVariables["UNITY_MCP_BROKER_TIMEOUT"] = Settings.ToolTimeoutSeconds.ToString();
             startInfo.EnvironmentVariables["UNITY_MCP_BROKER_RECONNECT_GRACE"] = "45";
             startInfo.EnvironmentVariables["UNITY_MCP_BROKER_MAX_REQUEST_BYTES"] = Settings.MaxRequestBodyBytes.ToString();
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_FOCUS_ASSIST"] = Settings.AutoActivateRequiredWindows ? "1" : "0";
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_FOCUS_DELAY"] = "2";
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_AUTO_WAIT_JOBS"] = "1";
             startInfo.EnvironmentVariables["UNITY_MCP_BROKER_INSTANCE_ID"] = instanceId;
             startInfo.EnvironmentVariables["UNITY_MCP_BROKER_STATE"] = ProcessStatePath;
             startInfo.EnvironmentVariables["UNITY_MCP_BROKER_LOG"] = BrokerLogPath;

@@ -14,6 +14,8 @@ from store import BrokerStore
 
 SUPPORTED_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 TERMINAL_REQUEST_STATES = {"completed", "cancelled", "failed", "outcome_unknown"}
+UNITY_ACCEPTED_STATES = {"accepted_by_unity", "running_in_unity"}
+TERMINAL_JOB_STATES = {"completed", "failed", "cancelled"}
 
 
 def ok_response(request_id: Any, result: Any) -> dict[str, Any]:
@@ -157,11 +159,19 @@ class McpBroker:
             try:
                 remaining = max(0.1, deadline - asyncio.get_running_loop().time())
                 response = await self.router.dispatch(ledger_id, raw_request, timeout=remaining)
+                if self._should_auto_wait_job(descriptor, meta, response):
+                    response = await self._auto_wait_unity_job(
+                        response,
+                        descriptor,
+                        ledger_id,
+                        project_key,
+                        deadline,
+                    )
                 self.store.update_request(ledger_id, "completed", response=response)
                 return response
             except BridgeUnavailable as exception:
                 current = self.store.get_request(ledger_id) or {}
-                accepted = current.get("state") == "accepted_by_unity"
+                accepted = current.get("state") in UNITY_ACCEPTED_STATES
                 retry_safe = not accepted or read_only or idempotent
                 if not retry_safe:
                     self.store.update_request(ledger_id, "outcome_unknown", error=str(exception))
@@ -196,7 +206,7 @@ class McpBroker:
                 )
             except asyncio.TimeoutError:
                 current = self.store.get_request(ledger_id) or {}
-                accepted = current.get("state") == "accepted_by_unity"
+                accepted = current.get("state") in UNITY_ACCEPTED_STATES
                 state = "waiting_for_reconnect" if not accepted or read_only or idempotent else "outcome_unknown"
                 self.store.update_request(ledger_id, state, error="Unity tool timed out")
                 code = "UNITY_RECONNECT_REQUIRED" if state == "waiting_for_reconnect" else "OUTCOME_UNKNOWN"
@@ -206,6 +216,160 @@ class McpBroker:
                     "Unity tool timed out after dispatch",
                     {"requestId": ledger_id, "retrySafe": state != "outcome_unknown"},
                 )
+
+    def _should_auto_wait_job(
+        self,
+        descriptor: dict[str, Any],
+        request_meta: dict[str, Any],
+        response: dict[str, Any],
+    ) -> bool:
+        if not self.config.auto_wait_jobs or request_meta.get("autoWaitJob") is False:
+            return False
+        descriptor_meta = descriptor.get("_meta")
+        if not isinstance(descriptor_meta, dict):
+            return False
+        lifecycle = descriptor_meta.get("jobLifecycle")
+        if not isinstance(lifecycle, dict) or lifecycle.get("autoWait") is not True:
+            return False
+        result = response.get("result")
+        return isinstance(result, dict) and result.get("isError") is not True
+
+    @staticmethod
+    def _structured_content(response: dict[str, Any]) -> dict[str, Any] | None:
+        result = response.get("result")
+        if not isinstance(result, dict):
+            return None
+        structured = result.get("structuredContent")
+        return structured if isinstance(structured, dict) else None
+
+    @staticmethod
+    def _job_state(status: Any) -> str:
+        normalized = str(status or "queued").replace("_", "").lower()
+        return {
+            "queued": "queued",
+            "running": "running",
+            "completed": "completed",
+            "failed": "failed",
+            "cancelrequested": "cancel_requested",
+            "cancelled": "cancelled",
+        }.get(normalized, "running")
+
+    def _mirror_unity_job(self, project_key: str, record: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(record.get("jobId", ""))
+        kind = str(record.get("kind", "unity_tool"))
+        self.store.ensure_job(job_id, kind, project_key, str(record.get("message") or "queued"))
+        state = self._job_state(record.get("status"))
+        self.store.update_job(
+            job_id,
+            state,
+            progress=float(record.get("progress") or 0),
+            message=str(record.get("message") or state),
+            result=record,
+            error=str(record.get("error")) if record.get("error") else None,
+        )
+        self.router.notify_job_changed(job_id)
+        return self.store.get_job(job_id) or {}
+
+    @staticmethod
+    def _job_response(
+        response: dict[str, Any],
+        job: dict[str, Any],
+        *,
+        auto_wait_timed_out: bool = False,
+    ) -> dict[str, Any]:
+        result = response.get("result")
+        if not isinstance(result, dict):
+            return response
+        final = dict(response)
+        final_result = dict(result)
+        final["result"] = final_result
+        unity_record = job.get("result") if isinstance(job.get("result"), dict) else job
+        final_result["structuredContent"] = unity_record
+        final_result["content"] = [{
+            "type": "text",
+            "text": json.dumps(unity_record, separators=(",", ":")),
+        }]
+        final_result["isError"] = job.get("state") in {"failed", "cancelled"}
+        result_meta = final_result.get("_meta")
+        final_result["_meta"] = {
+            **(result_meta if isinstance(result_meta, dict) else {}),
+            "autoWaitedJob": True,
+            "brokerJobId": job.get("job_id"),
+            "autoWaitTimedOut": auto_wait_timed_out,
+        }
+        return final
+
+    async def _auto_wait_unity_job(
+        self,
+        response: dict[str, Any],
+        descriptor: dict[str, Any],
+        ledger_id: str,
+        project_key: str,
+        deadline: float,
+    ) -> dict[str, Any]:
+        record = self._structured_content(response)
+        if not record or not record.get("jobId"):
+            return response
+        job = self._mirror_unity_job(project_key, record)
+        if job.get("state") in TERMINAL_JOB_STATES:
+            return self._job_response(response, job)
+
+        descriptor_meta = descriptor.get("_meta") if isinstance(descriptor.get("_meta"), dict) else {}
+        lifecycle = descriptor_meta.get("jobLifecycle") if isinstance(descriptor_meta, dict) else {}
+        wait_tool = str(lifecycle.get("waitTool") or "wait_tool_job")
+        job_id = str(record["jobId"])
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return self._job_response(
+                    response,
+                    self.store.get_job(job_id) or job,
+                    auto_wait_timed_out=True,
+                )
+            poll_seconds = min(15.0, max(0.1, remaining - 0.1))
+            poll_request = {
+                "jsonrpc": "2.0",
+                "id": f"{ledger_id}:job",
+                "method": "tools/call",
+                "params": {
+                    "name": wait_tool,
+                    "arguments": {"jobId": job_id, "timeoutSeconds": poll_seconds},
+                },
+            }
+            try:
+                poll_response = await self.router.dispatch(
+                    f"{ledger_id}:job",
+                    poll_request,
+                    timeout=min(remaining, poll_seconds + 5.0),
+                )
+            except (BridgeUnavailable, asyncio.TimeoutError):
+                self.store.update_job(
+                    job_id,
+                    "waiting_for_reconnect",
+                    message="waiting for Unity bridge",
+                )
+                reconnected = await self.router.wait_for_connection(
+                    project_key,
+                    min(max(0.1, remaining), self.config.reconnect_grace_seconds),
+                )
+                if reconnected is None or self.router.active_project_key != project_key:
+                    continue
+                continue
+
+            poll_result = poll_response.get("result")
+            record = self._structured_content(poll_response)
+            if isinstance(poll_result, dict) and poll_result.get("isError") is True:
+                message = "Unity job could not be recovered after reconnect"
+                if record and record.get("message"):
+                    message = str(record["message"])
+                self.store.update_job(job_id, "failed", progress=1, message=message, error=message)
+                self.router.notify_job_changed(job_id)
+                return self._job_response(response, self.store.get_job(job_id) or job)
+            if not record or str(record.get("jobId", "")) != job_id:
+                continue
+            job = self._mirror_unity_job(project_key, record)
+            if job.get("state") in TERMINAL_JOB_STATES:
+                return self._job_response(response, job)
 
     async def _call_broker_tool(self, request_id: Any, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == "broker_get_status":
@@ -226,6 +390,9 @@ class McpBroker:
                 "generationId": connection.identity.generation_id if connection else None,
                 "registryHash": connection.identity.registry_hash if connection else None,
                 "connectedProjects": len(self.router.connections),
+                "focusAssistEnabled": self.config.focus_assist_enabled,
+                "focusAssistDelaySeconds": self.config.focus_assist_delay_seconds,
+                "autoWaitJobs": self.config.auto_wait_jobs,
             })
         if name == "broker_list_projects":
             return self._broker_result(request_id, {"projects": self.store.list_projects(), "activeProjectKey": self.router.active_project_key})
@@ -249,8 +416,31 @@ class McpBroker:
             job = self.store.get_job(job_id)
             if not job:
                 return tool_error(request_id, "JOB_NOT_FOUND", "job was not found")
-            self.store.update_job(job_id, "cancelled", progress=1, message="cancelled")
-            await self.router.dispatch_control("cancel_job", {"jobId": job_id})
+            if job.get("kind") == "refresh_compile":
+                self.store.update_job(job_id, "cancelled", progress=1, message="cancelled")
+                await self.router.dispatch_control("cancel_job", {"jobId": job_id})
+                return self._broker_result(request_id, self.store.get_job(job_id))
+            self.store.update_job(job_id, "cancel_requested", message="cancellation requested")
+            try:
+                cancel_response = await self.router.dispatch(
+                    f"cancel:{job_id}",
+                    {
+                        "jsonrpc": "2.0",
+                        "id": f"cancel:{job_id}",
+                        "method": "tools/call",
+                        "params": {"name": "cancel_tool_job", "arguments": {"jobId": job_id}},
+                    },
+                    timeout=min(60.0, self.config.request_timeout_seconds),
+                )
+            except (BridgeUnavailable, asyncio.TimeoutError) as exception:
+                return tool_error(request_id, "UNITY_OFFLINE", str(exception))
+            cancel_result = cancel_response.get("result")
+            record = self._structured_content(cancel_response)
+            if isinstance(cancel_result, dict) and cancel_result.get("isError") is True:
+                message = str((record or {}).get("message") or "Unity rejected job cancellation")
+                return tool_error(request_id, "JOB_CANCEL_REJECTED", message, record)
+            if record and record.get("jobId"):
+                self._mirror_unity_job(str(job.get("project_key") or ""), record)
             return self._broker_result(request_id, self.store.get_job(job_id))
         if name == "broker_start_refresh_compile":
             try:

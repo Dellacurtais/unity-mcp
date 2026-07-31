@@ -5,6 +5,20 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.18] - 2026-07-31
+
+### Added
+
+- Unity tools now advertise explicit main-thread, editor-update, Scene View, Game View, Domain Reload, and long-running-job execution requirements.
+- Broker mode now detects attention-dependent commands that have not reached Unity's main thread and performs a best-effort Windows focus assist, restoring the prior foreground window when safe.
+- Long-running Unity tool jobs now share generic get, wait, and cancel tools and are mirrored into the broker's durable job ledger.
+
+### Changed
+
+- Broker clients automatically wait for tool-started build, test, import, package, and Addressables jobs by default; callers can opt out per request with `_meta.autoWaitJob = false`.
+- Unity temporarily activates the required Scene or Game view, keeps editor/player updates flowing for the operation lifetime, and restores the previously focused Unity window when safe.
+- Bridge request telemetry now distinguishes broker acceptance from confirmed main-thread execution.
+
 ## [0.16.17] - 2026-07-31
 
 ### Fixed

@@ -5,6 +5,7 @@ using Maicon.SceneAnalyzer.Editor.Chat;
 using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Broker;
+using Maicon.SceneAnalyzer.Editor.Mcp.Jobs;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect;
@@ -143,6 +144,9 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new GetToolInventoryTool());
                 ToolRegistry.Register(new GetServerHealthTool());
                 ToolRegistry.Register(new SelfTestTool());
+                ToolRegistry.Register(new GetToolJobTool());
+                ToolRegistry.Register(new WaitToolJobTool());
+                ToolRegistry.Register(new CancelToolJobTool());
                 // Read
                 ToolRegistry.Register(new ReadHierarchyTool());
                 ToolRegistry.Register(new ReadSceneTool());

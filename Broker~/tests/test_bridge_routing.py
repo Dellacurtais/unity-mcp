@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from protocol import BridgeIdentity, envelope
+from focus_assist import FocusActivation
 from registry import RegistryCache
 from router import BridgeRouter
 from store import BrokerStore
@@ -16,6 +17,20 @@ class FakeWebSocket:
 
     async def send_json(self, message) -> None:
         self.sent.append(message)
+
+
+class FakeFocusAssist:
+    def __init__(self) -> None:
+        self.activations = []
+        self.restorations = []
+
+    def activate(self, process_id: int) -> FocusActivation:
+        self.activations.append(process_id)
+        return FocusActivation(True, True, 200, 100, "activated")
+
+    def restore(self, activation: FocusActivation) -> bool:
+        self.restorations.append(activation)
+        return True
 
 
 @pytest.fixture
@@ -50,6 +65,81 @@ async def test_dispatch_correlates_result_and_rejects_stale_generation(tmp_path,
     stale["generationId"] = "generation-old"
     with pytest.raises(ValueError, match="stale"):
         await router.handle(connection, stale)
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_attention_tool_activates_unity_after_main_thread_stalls(tmp_path, identity) -> None:
+    store = BrokerStore(tmp_path / "broker.sqlite3")
+    registry = RegistryCache()
+    assist = FakeFocusAssist()
+    router = BridgeRouter(
+        store,
+        registry,
+        focus_assist=assist,
+        focus_assist_delay_seconds=0.01,
+    )
+    socket = FakeWebSocket()
+    connection = await router.register(socket, identity, [{
+        "name": "screenshot_game_view",
+        "_meta": {"executionRequirements": ["MainThread", "GameView"], "headlessSafe": False},
+    }], "ready")
+
+    task = asyncio.create_task(router.dispatch(
+        "request", {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "screenshot_game_view", "arguments": {}},
+        }, timeout=1,
+    ))
+    await asyncio.sleep(0.03)
+    command = socket.sent[-1]
+    assert assist.activations == [identity.process_id]
+    await router.handle(connection, envelope(
+        "result", {"jsonRpc": {"jsonrpc": "2.0", "id": 1, "result": {}}},
+        identity=identity, correlation_id=command["correlationId"],
+    ))
+
+    await task
+    assert len(assist.restorations) == 1
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_execution_started_suppresses_unnecessary_focus_activation(tmp_path, identity) -> None:
+    store = BrokerStore(tmp_path / "broker.sqlite3")
+    registry = RegistryCache()
+    assist = FakeFocusAssist()
+    router = BridgeRouter(
+        store,
+        registry,
+        focus_assist=assist,
+        focus_assist_delay_seconds=0.02,
+    )
+    socket = FakeWebSocket()
+    connection = await router.register(socket, identity, [{
+        "name": "run_tests",
+        "_meta": {"executionRequirements": ["MainThread", "LongRunningJob"]},
+    }], "ready")
+
+    task = asyncio.create_task(router.dispatch(
+        "request", {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "run_tests", "arguments": {}},
+        }, timeout=1,
+    ))
+    await asyncio.sleep(0)
+    command = socket.sent[-1]
+    await router.handle(connection, envelope(
+        "execution_started", {"requestId": "request"}, identity=identity,
+        correlation_id=command["correlationId"],
+    ))
+    await asyncio.sleep(0.03)
+    assert assist.activations == []
+    await router.handle(connection, envelope(
+        "result", {"jsonRpc": {"jsonrpc": "2.0", "id": 1, "result": {}}},
+        identity=identity, correlation_id=command["correlationId"],
+    ))
+    await task
     store.close()
 
 

@@ -170,7 +170,7 @@ class BrokerStore:
                 "THEN 'waiting_for_reconnect' ELSE 'outcome_unknown' END, "
                 "error=CASE WHEN read_only=1 OR idempotent=1 THEN error "
                 "ELSE COALESCE(error, 'Broker restarted after Unity accepted the request') END, "
-                "updated_utc=? WHERE state='accepted_by_unity'",
+                "updated_utc=? WHERE state IN ('accepted_by_unity', 'running_in_unity')",
                 (now,),
             )
             self._connection.execute(
@@ -357,6 +357,22 @@ class BrokerStore:
         with self._lock:
             self._connection.execute(
                 "INSERT INTO jobs VALUES(?, ?, ?, 'queued', 0, ?, NULL, NULL, ?, ?)",
+                (job_id, kind, project_key, message, now, now),
+            )
+            self._connection.commit()
+        return self.get_job(job_id) or {}
+
+    def ensure_job(
+        self,
+        job_id: str,
+        kind: str,
+        project_key: str | None,
+        message: str = "queued",
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self._lock:
+            self._connection.execute(
+                "INSERT OR IGNORE INTO jobs VALUES(?, ?, ?, 'queued', 0, ?, NULL, NULL, ?, ?)",
                 (job_id, kind, project_key, message, now, now),
             )
             self._connection.commit()

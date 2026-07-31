@@ -23,6 +23,18 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
     public enum McpConfirmationPolicy { None, Required }
     public enum McpEditorMode { Any, EditModeOnly, PlayModeOnly }
 
+    [Flags]
+    public enum McpExecutionRequirement
+    {
+        None = 0,
+        MainThread = 1 << 0,
+        EditorUpdates = 1 << 1,
+        SceneView = 1 << 2,
+        GameView = 1 << 3,
+        MayReloadDomain = 1 << 4,
+        LongRunningJob = 1 << 5,
+    }
+
     public sealed class ToolDescriptor
     {
         public string Name { get; set; }
@@ -32,6 +44,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         public McpConfirmationPolicy ConfirmationPolicy { get; set; }
         public McpEditorMode EditorMode { get; set; }
         public bool IsIdempotent { get; set; }
+        public McpExecutionRequirement ExecutionRequirements { get; set; }
+        public bool HeadlessSafe { get; set; } = true;
         public JObject OutputSchema { get; set; }
 
         public bool IsWrite => (Capabilities & ~McpCapability.Read) != 0;
@@ -49,7 +63,27 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 ConfirmationPolicy = McpConfirmationPolicy.None,
                 EditorMode = tool.IsWrite ? McpEditorMode.EditModeOnly : McpEditorMode.Any,
                 IsIdempotent = !tool.IsWrite || IsSetLike(name),
+                ExecutionRequirements = McpExecutionRequirement.MainThread,
+                HeadlessSafe = true,
             };
+
+            if (NeedsEditorUpdates(name))
+                d.ExecutionRequirements |= McpExecutionRequirement.EditorUpdates;
+            if (name == "screenshot_scene_view" || name == "select_object")
+            {
+                d.ExecutionRequirements |= McpExecutionRequirement.SceneView | McpExecutionRequirement.EditorUpdates;
+                d.HeadlessSafe = false;
+            }
+            if (name == "screenshot_game_view")
+            {
+                d.ExecutionRequirements |= McpExecutionRequirement.GameView | McpExecutionRequirement.EditorUpdates;
+                d.HeadlessSafe = false;
+            }
+            if (name == "execute_menu_item") d.HeadlessSafe = false;
+            if (MayReloadDomain(name))
+                d.ExecutionRequirements |= McpExecutionRequirement.MayReloadDomain | McpExecutionRequirement.EditorUpdates;
+            if (StartsLongRunningJob(name))
+                d.ExecutionRequirements |= McpExecutionRequirement.LongRunningJob | McpExecutionRequirement.EditorUpdates;
 
             if (tool.IsWrite && IsAssetWrite(name)) d.Capabilities |= McpCapability.AssetWrite;
             if (IsPlayControl(name))
@@ -145,6 +179,22 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             name == "enter_play_mode" || name == "exit_play_mode" ||
             name == "set_play_paused" || name == "step_frame" || name == "set_time_scale" ||
             name == "run_tests" || name == "cancel_test_job";
+
+        private static bool NeedsEditorUpdates(string name) =>
+            IsPlayControl(name) ||
+            name == "screenshot_game_view" || name == "screenshot_scene_view" ||
+            name == "wait_for_compile_clean" || name == "refresh_assets" ||
+            name == "request_script_compilation" || name == "execute_menu_item";
+
+        private static bool MayReloadDomain(string name) =>
+            name == "refresh_assets" || name == "wait_for_compile_clean" ||
+            name == "request_script_compilation" ||
+            name == "confirm_add_package" || name == "confirm_remove_package";
+
+        private static bool StartsLongRunningJob(string name) =>
+            name == "run_tests" || name == "start_build" ||
+            name == "reimport_assets" || name == "confirm_add_package" ||
+            name == "confirm_remove_package" || name == "start_addressables_build";
 
         private static bool IsEditModeOnly(string name) =>
             name.StartsWith("create_", StringComparison.Ordinal) ||

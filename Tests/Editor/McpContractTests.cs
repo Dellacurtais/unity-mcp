@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Broker;
+using Maicon.SceneAnalyzer.Editor.Mcp.Jobs;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect;
@@ -606,6 +607,51 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(((JObject)performance.OutputSchema["properties"])["capturedFrameTimingCount"], Is.Not.Null);
             Assert.That(Bootstrap.ToolRegistry.TryGet("analyze_performance", out _), Is.False);
             Assert.That(Bootstrap.ToolRegistry.TryGet("validate_scene", out _), Is.False);
+        }
+
+        [Test]
+        public void ExecutionRequirements_DescribeViewsUpdatesAndBackgroundJobs()
+        {
+            var scene = ToolDescriptor.Infer(new StubTool("screenshot_scene_view"));
+            Assert.That(scene.ExecutionRequirements.HasFlag(McpExecutionRequirement.MainThread), Is.True);
+            Assert.That(scene.ExecutionRequirements.HasFlag(McpExecutionRequirement.EditorUpdates), Is.True);
+            Assert.That(scene.ExecutionRequirements.HasFlag(McpExecutionRequirement.SceneView), Is.True);
+            Assert.That(scene.HeadlessSafe, Is.False);
+
+            var game = ToolDescriptor.Infer(new StubTool("screenshot_game_view"));
+            Assert.That(game.ExecutionRequirements.HasFlag(McpExecutionRequirement.GameView), Is.True);
+            Assert.That(game.HeadlessSafe, Is.False);
+
+            var tests = ToolDescriptor.Infer(new StubTool("run_tests", true));
+            Assert.That(tests.ExecutionRequirements.HasFlag(McpExecutionRequirement.LongRunningJob), Is.True);
+            Assert.That(tests.ExecutionRequirements.HasFlag(McpExecutionRequirement.EditorUpdates), Is.True);
+        }
+
+        [Test]
+        public async Task GenericJobTools_CanWaitForAndCancelAnyJobKind()
+        {
+            var completed = ToolJobManager.Create("contract_test", canCancel: true);
+            ToolJobManager.Start(completed, (_, __) => Task.FromResult<JToken>(
+                new JObject { ["ok"] = true }));
+            var waited = await ToolJobManager.WaitAsync(
+                completed.Id, TimeSpan.FromSeconds(2), CancellationToken.None);
+            Assert.That(waited, Is.Not.Null);
+            Assert.That(waited.Status, Is.EqualTo(ToolJobStatus.Completed));
+
+            var cancellable = ToolJobManager.Create("contract_cancel", canCancel: true);
+            var cancelResult = new CancelToolJobTool().Execute(
+                new JObject { ["jobId"] = cancellable.Id });
+            Assert.That(cancelResult.IsError, Is.False);
+            Assert.That((string)cancelResult.Json["status"], Is.EqualTo("CancelRequested"));
+
+            IMcpTool[] tools = { new GetToolJobTool(), new WaitToolJobTool(), new CancelToolJobTool() };
+            foreach (var tool in tools)
+            {
+                Assert.That(ToolSchemaValidator.ValidateSchema(tool.InputSchema, out var inputError),
+                    Is.True, $"{tool.Name} input: {inputError}");
+                Assert.That(ToolSchemaValidator.ValidateSchema(tool.OutputSchema, out var outputError),
+                    Is.True, $"{tool.Name} output: {outputError}");
+            }
         }
 
         [TestCase("start_addressables_build")]

@@ -477,6 +477,11 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     "Confirm high-risk tools",
                     "When enabled, high-risk tools require a second call with a single-use confirmation token. Disabled by default so authorized agents can execute directly."),
                 Settings.RequireHighRiskConfirmation);
+            Settings.AutoActivateRequiredWindows = EditorGUILayout.Toggle(
+                new GUIContent(
+                    "Autonomous editor activation",
+                    "Automatically opens/focuses the Scene or Game view required by a tool, keeps editor updates flowing, and restores the previous Unity window afterwards."),
+                Settings.AutoActivateRequiredWindows);
 
             using (new EditorGUILayout.HorizontalScope())
             {

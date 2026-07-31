@@ -178,6 +178,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 descriptor?.ConfirmationPolicy.ToString() ?? string.Empty,
                 descriptor?.EditorMode.ToString() ?? string.Empty,
                 descriptor != null && descriptor.IsIdempotent ? "1" : "0",
+                descriptor?.ExecutionRequirements.ToString() ?? string.Empty,
+                descriptor != null && descriptor.HeadlessSafe ? "1" : "0",
             });
 
         public string VersionHash

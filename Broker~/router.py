@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 from uuid import uuid4
 
 from fastapi import WebSocket
 
+from focus_assist import FocusActivation, ProcessFocusAssist
 from protocol import BridgeIdentity, envelope, validate_envelope
 from registry import RegistryCache
 from store import BrokerStore
@@ -27,6 +28,7 @@ class BridgeConnection:
     state: str = "ready"
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
+    started: dict[str, asyncio.Event] = field(default_factory=dict)
 
     async def send(self, message: dict[str, Any]) -> None:
         async with self.send_lock:
@@ -34,9 +36,20 @@ class BridgeConnection:
 
 
 class BridgeRouter:
-    def __init__(self, store: BrokerStore, registry: RegistryCache) -> None:
+    def __init__(
+        self,
+        store: BrokerStore,
+        registry: RegistryCache,
+        *,
+        focus_assist: ProcessFocusAssist | None = None,
+        focus_assist_enabled: bool = True,
+        focus_assist_delay_seconds: float = 2.0,
+    ) -> None:
         self.store = store
         self.registry = registry
+        self.focus_assist = focus_assist or ProcessFocusAssist()
+        self.focus_assist_enabled = focus_assist_enabled
+        self.focus_assist_delay_seconds = focus_assist_delay_seconds
         self.connections: dict[str, BridgeConnection] = {}
         self._lock = asyncio.Lock()
         self._connection_events: dict[str, asyncio.Event] = {}
@@ -105,6 +118,9 @@ class BridgeRouter:
             if not future.done():
                 future.set_exception(BridgeUnavailable(reason))
         connection.pending.clear()
+        for event in list(connection.started.values()):
+            event.set()
+        connection.started.clear()
 
     def active_connection(self) -> BridgeConnection:
         project_key = self.active_project_key
@@ -161,17 +177,71 @@ class BridgeRouter:
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         correlation_id = uuid4().hex
         connection.pending[correlation_id] = future
+        started = asyncio.Event()
+        connection.started[correlation_id] = started
         message = envelope(
             "command",
             {"requestId": request_id, "jsonRpc": json_rpc},
             identity=connection.identity,
             correlation_id=correlation_id,
         )
+        activation: FocusActivation | None = None
+        started_task: asyncio.Task[bool] | None = None
+        started_at = asyncio.get_running_loop().time()
         try:
             await connection.send(message)
-            return await asyncio.wait_for(future, timeout=timeout)
+            if self.focus_assist_enabled and self._requires_editor_attention(json_rpc):
+                initial_wait = min(timeout, self.focus_assist_delay_seconds)
+                started_task = asyncio.create_task(started.wait())
+                done, _ = await asyncio.wait(
+                    {future, started_task},
+                    timeout=initial_wait,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if future in done:
+                    return future.result()
+                if not started.is_set():
+                    activation = await asyncio.to_thread(
+                        self.focus_assist.activate,
+                        connection.identity.process_id,
+                    )
+                    self.store.record_event(
+                        connection.identity.project_key,
+                        connection.identity.generation_id,
+                        "focus_assist",
+                        {"requestId": request_id, **asdict(activation)},
+                    )
+            remaining = max(0.1, timeout - (asyncio.get_running_loop().time() - started_at))
+            return await asyncio.wait_for(future, timeout=remaining)
         finally:
             connection.pending.pop(correlation_id, None)
+            connection.started.pop(correlation_id, None)
+            if started_task is not None and not started_task.done():
+                started_task.cancel()
+            if activation is not None:
+                await asyncio.to_thread(self.focus_assist.restore, activation)
+
+    def _requires_editor_attention(self, json_rpc: dict[str, Any]) -> bool:
+        if json_rpc.get("method") != "tools/call":
+            return False
+        params = json_rpc.get("params")
+        if not isinstance(params, dict):
+            return False
+        descriptor = self.registry.descriptor(
+            self.active_project_key,
+            str(params.get("name", "")),
+        )
+        if not descriptor:
+            return False
+        meta = descriptor.get("_meta")
+        if not isinstance(meta, dict):
+            return False
+        requirements = meta.get("executionRequirements")
+        attention = {"EditorUpdates", "SceneView", "GameView", "LongRunningJob"}
+        return (
+            isinstance(requirements, list)
+            and any(str(item) in attention for item in requirements)
+        ) or meta.get("headlessSafe") is False
 
     async def dispatch_control(self, control: str, payload: dict[str, Any]) -> None:
         connection = self.active_connection()
@@ -208,6 +278,22 @@ class BridgeRouter:
                 self.store.update_request(
                     request_id, "accepted_by_unity", generation_id=connection.identity.generation_id
                 )
+            return
+        if message_type == "execution_started":
+            request_id = str(payload.get("requestId", ""))
+            if request_id:
+                self.store.update_request(
+                    request_id, "running_in_unity", generation_id=connection.identity.generation_id
+                )
+                self.store.record_event(
+                    connection.identity.project_key,
+                    connection.identity.generation_id,
+                    "execution_started",
+                    payload,
+                )
+            started = connection.started.get(str(correlation_id))
+            if started:
+                started.set()
             return
         if message_type == "result":
             future = connection.pending.get(str(correlation_id))
@@ -272,3 +358,6 @@ class BridgeRouter:
             pass
         event.clear()
         return self.store.get_job(job_id)
+
+    def notify_job_changed(self, job_id: str) -> None:
+        self._job_events.setdefault(str(job_id), asyncio.Event()).set()
