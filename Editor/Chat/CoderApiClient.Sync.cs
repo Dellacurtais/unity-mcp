@@ -168,7 +168,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     failureCount = 0;
                     if (IsActiveSessionStatus(snapshot.Session?.Status))
                     {
-                        await AttachActiveRunAsync(serverUrl, token, sessionId, ct).ConfigureAwait(false);
+                        var terminal = await AttachActiveRunAsync(serverUrl, token, sessionId, ct)
+                            .ConfigureAwait(false);
+                        if (!terminal)
+                            await Task.Delay(1500, ct).ConfigureAwait(false);
                         continue;
                     }
                     var delay = 3000;
@@ -191,21 +194,25 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             => string.Equals(status, "in_progress", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(status, "running", StringComparison.OrdinalIgnoreCase);
 
-        private async Task AttachActiveRunAsync(
+        private async Task<bool> AttachActiveRunAsync(
             string serverUrl,
             string token,
             string sessionId,
             CancellationToken ct)
         {
-            if (Interlocked.CompareExchange(ref _attachedStreamActive, 1, 0) != 0) return;
+            if (Interlocked.CompareExchange(ref _attachedStreamActive, 1, 0) != 0) return false;
+            var streamStarted = false;
+            var terminalSeen = false;
             try
             {
                 var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/attach";
                 using var request = CreateRequest(HttpMethod.Get, url, token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+                if (!string.IsNullOrEmpty(_session.LastEventId))
+                    request.Headers.TryAddWithoutValidation("Last-Event-ID", _session.LastEventId);
                 using var response = await Http.SendAsync(
                     request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-                if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return;
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return false;
                 var responseBody = response.IsSuccessStatusCode
                     ? null
                     : await response.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -214,20 +221,31 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
                 await MainThreadDispatcher.RunAsync(() =>
                 {
-                    _session.PrepareForLiveReplay();
+                    if (string.IsNullOrEmpty(_session.LastEventId))
+                        _session.PrepareForLiveReplay();
                     _session.StartAssistant();
                 }, ct).ConfigureAwait(false);
+                streamStarted = true;
 
                 using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
                 using var reader = new System.IO.StreamReader(stream, Encoding.UTF8);
-                await ParseSseAsync(reader, ct).ConfigureAwait(false);
+                terminalSeen = await ParseSseAsync(reader, ct).ConfigureAwait(false);
             }
             finally
             {
                 Interlocked.Exchange(ref _attachedStreamActive, 0);
-                if (!ct.IsCancellationRequested)
-                    await MainThreadDispatcher.RunAsync(() => _session.FinishAssistant());
+                if (streamStarted)
+                {
+                    if (terminalSeen || ct.IsCancellationRequested)
+                        await MainThreadDispatcher.RunAsync(() => _session.FinishAssistant());
+                    else
+                        await MainThreadDispatcher.RunAsync(() =>
+                            _session.SetConnectionState(
+                                ChatConnectionState.Syncing,
+                                "Stream interrompido; reconectando do último evento"));
+                }
             }
+            return terminalSeen;
         }
 
         private async Task PostInteractionAsync(

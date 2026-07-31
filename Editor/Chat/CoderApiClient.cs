@@ -952,7 +952,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             }
         }
 
-        private async Task ParseSseAsync(StreamReader reader, CancellationToken ct)
+        private async Task<bool> ParseSseAsync(StreamReader reader, CancellationToken ct)
         {
             string eventType = null;
             var dataBuilder = new StringBuilder();
@@ -998,6 +998,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
             var drainTarget = Interlocked.Read(ref _enqueuedStreamEvents);
             await WaitForStreamDrainAsync(drainTarget, _lifetimeCts.Token);
+            return terminalSeen;
         }
 
         private void EnqueueStreamEvent(CoderStreamEvent streamEvent)
@@ -1256,7 +1257,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     _session.AddError(AsString(payload?["message"]) ?? data);
                     break;
                 case "message_complete":
-                    _session.FinishAssistant();
+                    ApplyCompletedMessage(payload?["message"]);
                     break;
                 case "done":
                     _session.FinishAssistant();
@@ -1271,6 +1272,43 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     // Unknown event types: store as system note so the dev can debug.
                     _session.AddSystemNote($"{type}: {data}");
                     break;
+            }
+        }
+
+        private void ApplyCompletedMessage(JToken message)
+        {
+            var content = message?["content"] as JArray;
+            if (content == null) return;
+            foreach (var block in content)
+            {
+                var type = AsString(block?["type"]);
+                if (type == "text")
+                {
+                    var text = AsString(block?["text"]);
+                    if (!string.IsNullOrWhiteSpace(text)
+                        && !string.Equals(_session.StreamingAssistant?.Text, text, StringComparison.Ordinal)
+                        && !(_session.StreamingAssistant?.Text?.EndsWith(text, StringComparison.Ordinal) ?? false))
+                        _session.AppendAssistantText(
+                            string.IsNullOrWhiteSpace(_session.StreamingAssistant?.Text) ? text : "\n\n" + text);
+                }
+                else if (type == "thinking")
+                {
+                    var thinking = AsString(block?["text"]);
+                    if (!string.IsNullOrWhiteSpace(thinking)
+                        && !string.Equals(_session.StreamingAssistant?.ThinkingText, thinking, StringComparison.Ordinal)
+                        && !(_session.StreamingAssistant?.ThinkingText?.EndsWith(thinking, StringComparison.Ordinal) ?? false))
+                        _session.AppendAssistantThinking(
+                            string.IsNullOrWhiteSpace(_session.StreamingAssistant?.ThinkingText)
+                                ? thinking
+                                : "\n\n" + thinking);
+                }
+                else if (type == "tool_use")
+                {
+                    _session.AddToolCall(
+                        AsString(block?["id"]) ?? "",
+                        AsString(block?["name"]) ?? "tool",
+                        block?["input"]?.ToString(FormattingNs.None) ?? "{}");
+                }
             }
         }
 

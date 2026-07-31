@@ -38,9 +38,66 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(events[1], Is.SameAs(toolEvent));
             Assert.That(events[2].TextDelta, Is.EqualTo("!"));
             Assert.That(CoderStreamEvent.Create("done", "{}", null).IsTerminal, Is.True);
-            Assert.That(CoderStreamEvent.Create("message_complete", "{}", null).IsTerminal, Is.True);
+            Assert.That(CoderStreamEvent.Create("message_complete", "{}", null).IsTerminal, Is.False);
             Assert.That(CoderStreamEvent.Create("error", "{}", null).IsTerminal, Is.True);
             Assert.That(CoderStreamEvent.Create("text", "{}", null).IsTerminal, Is.False);
+        }
+
+        [Test]
+        public void MessageComplete_IsProviderBoundaryAndDoneTerminatesRun()
+        {
+            var session = new ChatSession();
+            var client = new CoderApiClient(session);
+            var dispatch = typeof(CoderApiClient).GetMethod(
+                "DispatchEventInner", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(dispatch, Is.Not.Null);
+
+            session.StartAssistant();
+            dispatch.Invoke(client, new object[]
+            {
+                "message_complete",
+                "",
+                new JObject
+                {
+                    ["message"] = new JObject
+                    {
+                        ["role"] = "assistant",
+                        ["content"] = new JArray
+                        {
+                            new JObject { ["type"] = "text", ["text"] = "Vou usar uma tool." },
+                            new JObject
+                            {
+                                ["type"] = "tool_use",
+                                ["id"] = "tool-1",
+                                ["name"] = "run_command",
+                                ["input"] = new JObject { ["command"] = "dir" },
+                            },
+                        },
+                    },
+                },
+            });
+
+            Assert.That(session.IsRunning, Is.True);
+            Assert.That(session.StreamingAssistant, Is.Not.Null);
+            Assert.That(session.StreamingAssistant.Text, Is.EqualTo("Vou usar uma tool."));
+            Assert.That(session.StreamingAssistant.ToolCalls, Has.Count.EqualTo(1));
+
+            dispatch.Invoke(client, new object[] { "done", "", new JObject() });
+            Assert.That(session.IsRunning, Is.False);
+            Assert.That(session.StreamingAssistant, Is.Null);
+        }
+
+        [Test]
+        public void FinishAssistant_DiscardsEmptyStreamingCard()
+        {
+            var session = new ChatSession();
+            session.StartAssistant();
+            Assert.That(session.Messages, Has.Count.EqualTo(1));
+
+            session.FinishAssistant();
+
+            Assert.That(session.Messages, Is.Empty);
+            Assert.That(session.StreamingAssistant, Is.Null);
         }
 
         [Test]

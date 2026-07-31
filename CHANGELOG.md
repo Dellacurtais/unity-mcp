@@ -5,6 +5,14 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.15] - 2026-07-31
+
+### Fixed
+
+- Coder Chat no longer treats the per-provider `message_complete` event as the end of an agent run, preventing an active tool/approval turn from repeatedly reconnecting and creating empty assistant cards.
+- Active-run reattachment now resumes from the last SSE event, backs off after an unexpected EOF, preserves the in-progress assistant card, and removes empty transient cards left by interrupted streams.
+- Replayed `message_complete` payloads now restore assistant text, thinking, and tool calls while the run continues until its real `done` or `error` event.
+
 ## [0.16.14] - 2026-07-31
 
 ### Fixed

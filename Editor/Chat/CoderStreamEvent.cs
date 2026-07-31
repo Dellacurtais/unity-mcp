@@ -12,7 +12,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public JToken Payload;
 
         public bool IsText => Type == "text";
-        public bool IsTerminal => Type == "done" || Type == "message_complete" || Type == "error";
+        // message_complete closes one provider turn, not the whole agent run.
+        // Tool execution, approvals and automatic continuation can all follow it.
+        public bool IsTerminal => Type == "done" || Type == "error";
         public string TextDelta => IsText ? (string)Payload?["text"] ?? Data ?? "" : "";
 
         public static CoderStreamEvent Create(string type, string data, string lastEventId)

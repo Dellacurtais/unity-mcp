@@ -223,8 +223,13 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         {
             if (StreamingAssistant != null)
             {
-                StreamingAssistant.Streaming = false;
-                StreamingAssistant.Touch();
+                if (IsEmptyAssistant(StreamingAssistant))
+                    Messages.Remove(StreamingAssistant);
+                else
+                {
+                    StreamingAssistant.Streaming = false;
+                    StreamingAssistant.Touch();
+                }
             }
             StreamingAssistant = null;
             IsRunning = false;
@@ -271,6 +276,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         /// Unity window or after a Domain Reload.
         public void PrepareForLiveReplay()
         {
+            Messages.RemoveAll(message => !message.IsRemote && IsEmptyAssistant(message));
             var lastRemoteUser = -1;
             for (var index = Messages.Count - 1; index >= 0; index--)
             {
@@ -298,9 +304,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (snapshot == null) return;
             using (BeginBatch())
             {
+                var removedEmptyAssistants = Messages.RemoveAll(message =>
+                    !message.IsRemote && IsEmptyAssistant(message));
                 var changed = RemoteSession == null
                     ? snapshot.Session != null
                     : !RemoteSession.SemanticallyEquals(snapshot.Session);
+                changed |= removedEmptyAssistants > 0;
                 if (changed) RemoteSession = snapshot.Session;
 
                 var reconciled = replaceConversation
@@ -372,6 +381,13 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 if (changed) MarkChanged();
             }
         }
+
+        private static bool IsEmptyAssistant(ChatMessage message)
+            => message != null
+                && message.Role == ChatRole.Assistant
+                && string.IsNullOrWhiteSpace(message.Text)
+                && string.IsNullOrWhiteSpace(message.ThinkingText)
+                && message.ToolCalls.Count == 0;
 
         public void SetPendingQuestion(PendingQuestion question)
         {
