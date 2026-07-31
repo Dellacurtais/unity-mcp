@@ -5,6 +5,20 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.20] - 2026-07-31
+
+### Added
+
+- Coder Chat now presents pending plans, specifications, decision gates, questions, and task lists as dedicated action cards instead of exposing their raw tool JSON as the primary interaction.
+
+### Fixed
+
+- Streaming a tall assistant response no longer repeatedly aligns the current message to the top while the transcript is following the end, and manual scrolling remains under the user's control.
+- Plan review now sends the current CodeStudio `feedback` and `aborted` contract, while specification and decision prompts can be completed directly inside Unity.
+- Optional package assemblies are loaded and initialized after Domain Reload so their registered tools remain available to the broker.
+- Job state and MCP initialization no longer read Unity editor preferences from a broker worker thread, and Test Runner jobs start reliably on Unity's main thread.
+- NavMesh area discovery and loaded-scene checks use the Unity 6.3 APIs without colliding with the package's `NavMesh` namespace.
+
 ## [0.16.19] - 2026-07-31
 
 ### Fixed

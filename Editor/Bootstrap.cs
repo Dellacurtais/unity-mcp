@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Maicon.SceneAnalyzer.Editor.Chat;
 using Maicon.SceneAnalyzer.Editor.Core;
@@ -18,6 +20,7 @@ using Maicon.SceneAnalyzer.Editor.PackageTools;
 using Maicon.SceneAnalyzer.Editor.BuildTools;
 using Maicon.SceneAnalyzer.Editor.SystemTools;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor
@@ -111,6 +114,7 @@ namespace Maicon.SceneAnalyzer.Editor
             {
                 UnityProjectRoot = System.IO.Path.GetDirectoryName(UnityEngine.Application.dataPath);
                 SceneAnalyzerVersion.Initialize();
+                ToolJobManager.InitializeOnMainThread();
 
                 // Migration: v0.8.0 and earlier defaulted CoderProjectId to 1
                 // and never persisted the workdir of the matched project. Any
@@ -375,6 +379,14 @@ namespace Maicon.SceneAnalyzer.Editor
                 ChatSession = new ChatSession();
                 ChatClient = new CoderApiClient(ChatSession);
 
+                // Unity can compile secondary package assemblies without loading them
+                // when the project itself only contains asmdef-based code. Their
+                // [InitializeOnLoad] bootstraps then never run, leaving optional tools
+                // unavailable after a Domain Reload. Load the package's editor modules
+                // explicitly once the main registry is ready; running a type initializer
+                // is idempotent and each module already guards duplicate registration.
+                LoadModularInitializers();
+
                 AssemblyReloadEvents.beforeAssemblyReload += OnBeforeReload;
                 AssemblyReloadEvents.afterAssemblyReload += OnAfterReload;
                 EditorApplication.quitting += OnQuitting;
@@ -408,6 +420,46 @@ namespace Maicon.SceneAnalyzer.Editor
             catch (Exception e)
             {
                 Debug.LogException(e);
+            }
+        }
+
+        private static void LoadModularInitializers()
+        {
+            var assemblyPrefix = typeof(Bootstrap).Assembly.GetName().Name + ".";
+            foreach (var compiledAssembly in CompilationPipeline.GetAssemblies(AssembliesType.Editor)
+                         .Where(candidate => candidate.name.StartsWith(assemblyPrefix, StringComparison.Ordinal)))
+            {
+                System.Reflection.Assembly assembly;
+                try { assembly = System.Reflection.Assembly.Load(compiledAssembly.name); }
+                catch { continue; }
+
+                Type[] types;
+                try { types = assembly.GetTypes(); }
+                catch (System.Reflection.ReflectionTypeLoadException exception)
+                {
+                    types = exception.Types.Where(type => type != null).ToArray();
+                }
+                catch { continue; }
+
+                foreach (var type in types)
+                {
+                    if (!Attribute.IsDefined(type, typeof(InitializeOnLoadAttribute), false)) continue;
+                    try
+                    {
+                        RuntimeHelpers.RunClassConstructor(type.TypeHandle);
+                        var flags = System.Reflection.BindingFlags.Static
+                            | System.Reflection.BindingFlags.Public
+                            | System.Reflection.BindingFlags.NonPublic;
+                        var initializer = type.GetMethod("Initialize", flags, null, Type.EmptyTypes, null)
+                            ?? type.GetMethod("Init", flags, null, Type.EmptyTypes, null);
+                        if (initializer != null && initializer.ReturnType == typeof(void))
+                            initializer.Invoke(null, null);
+                    }
+                    catch (Exception exception)
+                    {
+                        Debug.LogWarning($"[unity-mcp] failed to initialize module type {type.FullName}: {exception.Message}");
+                    }
+                }
             }
         }
 

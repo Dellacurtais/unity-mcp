@@ -498,17 +498,69 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         }
 
         /// Approve / reject a plan submitted by the agent via `submit_plan`.
-        public void RespondToPlan(string serverUrl, string token, string sessionId, string planId, bool approved, string note)
+        public void RespondToPlan(
+            string serverUrl,
+            string token,
+            string sessionId,
+            string planId,
+            bool approved,
+            string feedback,
+            bool aborted = false)
         {
             var key = "plan:" + (planId ?? "");
+            var body = BuildPlanResponseBody(planId, approved, feedback, aborted);
+            _ = PostInteractionAsync(serverUrl, token, sessionId, "plan-response", key, body,
+                approved && !aborted
+                    ? "Plano aprovado"
+                    : aborted
+                        ? "Plano rejeitado"
+                        : "Alterações solicitadas no plano");
+        }
+
+        internal static JObject BuildPlanResponseBody(
+            string planId, bool approved, string feedback, bool aborted)
+        {
+            var body = new JObject
+            {
+                ["approved"] = approved && !aborted,
+                ["feedback"] = feedback ?? "",
+                ["aborted"] = aborted,
+            };
+            if (!string.IsNullOrEmpty(planId)) body["plan_id"] = planId;
+            return body;
+        }
+
+        public void RespondToSpec(
+            string serverUrl,
+            string token,
+            string sessionId,
+            string specId,
+            string specPath,
+            bool approved,
+            string requestedChanges)
+        {
+            var key = "spec:" + (specId ?? "");
             var body = new JObject
             {
                 ["approved"] = approved,
-                ["note"] = note ?? "",
+                ["requested_changes"] = requestedChanges ?? "",
+                ["spec_path"] = specPath ?? "",
             };
-            if (!string.IsNullOrEmpty(planId)) body["plan_id"] = planId;
-            _ = PostInteractionAsync(serverUrl, token, sessionId, "plan-response", key, body,
-                approved ? "Plano aprovado" : string.IsNullOrWhiteSpace(note) ? "Plano rejeitado" : "Alterações solicitadas no plano");
+            _ = PostInteractionAsync(serverUrl, token, sessionId, "spec-response", key, body,
+                approved ? "Especificação aprovada" : "Alterações solicitadas na especificação");
+        }
+
+        public void RespondToDecision(
+            string serverUrl,
+            string token,
+            string sessionId,
+            string decisionId,
+            JObject answers)
+        {
+            var key = "decision:" + (decisionId ?? "");
+            var body = new JObject { ["answers"] = answers ?? new JObject() };
+            _ = PostInteractionAsync(serverUrl, token, sessionId, "decide", key, body,
+                "Decisão enviada");
         }
 
         public void RespondToTasks(string serverUrl, string token, string sessionId, string toolUseId, bool approved)
@@ -1298,6 +1350,18 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     _session.SetPendingPlan(p);
                     break;
                 }
+                case "spec":
+                {
+                    var spec = new PendingSpec
+                    {
+                        Id = AsString(payload?["id"]),
+                        Name = AsString(payload?["name"]) ?? "Especificação",
+                        Body = AsString(payload?["body"]) ?? data,
+                        SpecPath = AsString(payload?["spec_path"]),
+                    };
+                    _session.SetPendingSpec(spec);
+                    break;
+                }
                 case "question":
                 {
                     var q = new PendingQuestion
@@ -1305,6 +1369,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                         Id = AsString(payload?["id"]),
                         Question = AsString(payload?["question"]) ?? data,
                         AllowFreeform = AsBool(payload?["allowFreeform"] ?? payload?["allow_freeform"]) ?? true,
+                        MultiSelect = AsBool(payload?["multiSelect"] ?? payload?["multi_select"]) ?? false,
                     };
                     if (payload?["options"] is JArray optsArr)
                     {
@@ -1320,6 +1385,39 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                         }
                     }
                     _session.SetPendingQuestion(q);
+                    break;
+                }
+                case "decision":
+                {
+                    var decision = new PendingDecision
+                    {
+                        Id = AsString(payload?["id"]),
+                        Header = AsString(payload?["header"]),
+                        AllowFreeform = AsBool(payload?["allowFreeform"] ?? payload?["allow_freeform"]) ?? false,
+                    };
+                    foreach (var questionToken in payload?["questions"] as JArray ?? new JArray())
+                    {
+                        var question = new PendingDecisionQuestion
+                        {
+                            Id = AsString(questionToken?["id"]) ?? Guid.NewGuid().ToString("N"),
+                            Header = AsString(questionToken?["header"]),
+                            Question = AsString(questionToken?["question"]) ?? "Escolha uma opção.",
+                            MultiSelect = AsBool(questionToken?["multiSelect"] ?? questionToken?["multi_select"]) ?? false,
+                        };
+                        foreach (var optionToken in questionToken?["options"] as JArray ?? new JArray())
+                        {
+                            var label = OptionLabel(optionToken);
+                            var value = OptionValue(optionToken);
+                            if (string.IsNullOrEmpty(label) && string.IsNullOrEmpty(value)) continue;
+                            question.Choices.Add(new PendingOption
+                            {
+                                Label = string.IsNullOrEmpty(label) ? value : label,
+                                Value = string.IsNullOrEmpty(value) ? label : value,
+                            });
+                        }
+                        decision.Questions.Add(question);
+                    }
+                    _session.SetPendingDecision(decision);
                     break;
                 }
                 case "tasks_posted":

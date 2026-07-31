@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Newtonsoft.Json.Linq;
 
 namespace Maicon.SceneAnalyzer.Editor.Chat
 {
@@ -15,6 +16,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
     {
         Question,
         Plan,
+        Spec,
+        Decision,
         Tasks,
         ToolApproval,
     }
@@ -35,6 +38,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public string Error;
         public string ResponseDraft;
         public DateTime CreatedAt = DateTime.Now;
+        public string SourceToolUseId;
+        public bool RecoveredFromToolCall;
     }
 
     public sealed class PendingQuestion : PendingInteraction
@@ -44,6 +49,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public readonly List<PendingOption> Choices = new();
         public List<string> Options = new();
         public bool AllowFreeform = true;
+        public bool MultiSelect;
+        public readonly HashSet<string> SelectedValues = new(StringComparer.Ordinal);
 
         public PendingQuestion() { Kind = PendingInteractionKind.Question; }
     }
@@ -54,6 +61,37 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public string Plan;
 
         public PendingPlan() { Kind = PendingInteractionKind.Plan; }
+    }
+
+    public sealed class PendingSpec : PendingInteraction
+    {
+        public string Id;
+        public string Name;
+        public string Body;
+        public string SpecPath;
+
+        public PendingSpec() { Kind = PendingInteractionKind.Spec; }
+    }
+
+    public sealed class PendingDecisionQuestion
+    {
+        public string Id;
+        public string Header;
+        public string Question;
+        public bool MultiSelect;
+        public readonly List<PendingOption> Choices = new();
+        public readonly HashSet<string> SelectedValues = new(StringComparer.Ordinal);
+        public string ResponseDraft;
+    }
+
+    public sealed class PendingDecision : PendingInteraction
+    {
+        public string Id;
+        public string Header;
+        public bool AllowFreeform;
+        public readonly List<PendingDecisionQuestion> Questions = new();
+
+        public PendingDecision() { Kind = PendingInteractionKind.Decision; }
     }
 
     public sealed class PendingTasks : PendingInteraction
@@ -106,6 +144,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
         public PendingQuestion CurrentQuestion => Interactions.OfType<PendingQuestion>().FirstOrDefault();
         public PendingPlan CurrentPlan => Interactions.OfType<PendingPlan>().FirstOrDefault();
+        public PendingSpec CurrentSpec => Interactions.OfType<PendingSpec>().FirstOrDefault();
+        public PendingDecision CurrentDecision => Interactions.OfType<PendingDecision>().FirstOrDefault();
         public PendingTasks CurrentTasks => Interactions.OfType<PendingTasks>().FirstOrDefault();
         public IEnumerable<PendingToolApproval> PendingToolApprovals => Interactions.OfType<PendingToolApproval>();
 
@@ -186,6 +226,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 existing.Name = name;
                 existing.InputJson = inputJson;
             }
+            RecoverInteractionFromToolCall(new ChatToolCall
+            {
+                Id = id,
+                Name = name,
+                InputJson = inputJson,
+            });
             StreamingAssistant.Touch();
             MarkChanged();
         }
@@ -198,6 +244,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             call.ResultText = resultText;
             call.DurationMs = durationMs;
             call.Completed = true;
+            ClearInteractionForCompletedTool(call);
             StreamingAssistant.Touch();
             MarkChanged();
         }
@@ -216,6 +263,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 call.ResultText = resultText;
                 call.DurationMs = durationMs;
                 call.Completed = true;
+                ClearInteractionForCompletedTool(call);
                 message.Touch();
                 MarkChanged();
                 return true;
@@ -332,6 +380,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             Messages.RemoveAll(message => !message.IsRemote && IsEmptyAssistant(message));
             StreamingAssistant = null;
             Interactions.Clear();
+            RecoverPendingInteractionsFromMessages();
             IsRunning = false;
             MarkChanged();
         }
@@ -401,6 +450,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     changed = true;
                 }
 
+                changed |= RecoverPendingInteractionsFromMessages();
+
                 if (!IsRunning)
                 {
                     var nextState = Interactions.Count > 0
@@ -432,7 +483,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (question.Choices.Count == 0 && question.Options != null)
                 foreach (var option in question.Options) question.Choices.Add(new PendingOption { Label = option, Value = option });
             question.Key = string.IsNullOrEmpty(question.Key) ? "question:" + (question.Id ?? Guid.NewGuid().ToString("N")) : question.Key;
-            UpsertInteraction(question);
+            UpsertSingleInteraction(question);
         }
 
         public void ClearPendingQuestion() => RemoveInteraction(CurrentQuestion?.Key);
@@ -441,16 +492,36 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         {
             if (plan == null) return;
             plan.Key = string.IsNullOrEmpty(plan.Key) ? "plan:" + (plan.Id ?? Guid.NewGuid().ToString("N")) : plan.Key;
-            UpsertInteraction(plan);
+            UpsertSingleInteraction(plan);
         }
 
         public void ClearPendingPlan() => RemoveInteraction(CurrentPlan?.Key);
+
+        public void SetPendingSpec(PendingSpec spec)
+        {
+            if (spec == null) return;
+            spec.Key = string.IsNullOrEmpty(spec.Key) ? "spec:" + (spec.Id ?? Guid.NewGuid().ToString("N")) : spec.Key;
+            UpsertSingleInteraction(spec);
+        }
+
+        public void ClearPendingSpec() => RemoveInteraction(CurrentSpec?.Key);
+
+        public void SetPendingDecision(PendingDecision decision)
+        {
+            if (decision == null) return;
+            decision.Key = string.IsNullOrEmpty(decision.Key)
+                ? "decision:" + (decision.Id ?? Guid.NewGuid().ToString("N"))
+                : decision.Key;
+            UpsertSingleInteraction(decision);
+        }
+
+        public void ClearPendingDecision() => RemoveInteraction(CurrentDecision?.Key);
 
         public void SetPendingTasks(PendingTasks tasks)
         {
             if (tasks == null) return;
             tasks.Key = string.IsNullOrEmpty(tasks.Key) ? "tasks:" + (tasks.ToolUseId ?? Guid.NewGuid().ToString("N")) : tasks.Key;
-            UpsertInteraction(tasks);
+            UpsertSingleInteraction(tasks);
         }
 
         public void ClearPendingTasks() => RemoveInteraction(CurrentTasks?.Key);
@@ -500,6 +571,183 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             ConnectionState = ChatConnectionState.WaitingForApproval;
             ConnectionDetail = "Aguardando sua resposta";
             MarkChanged();
+        }
+
+        private void UpsertSingleInteraction(PendingInteraction interaction)
+        {
+            Interactions.RemoveAll(item => item.Kind == interaction.Kind && item.Key != interaction.Key);
+            UpsertInteraction(interaction);
+        }
+
+        public bool RecoverPendingInteractionsFromMessages()
+        {
+            ChatToolCall pending = null;
+            for (var messageIndex = Messages.Count - 1; messageIndex >= 0; messageIndex--)
+            {
+                var calls = Messages[messageIndex]?.ToolCalls;
+                if (calls == null) continue;
+                for (var callIndex = calls.Count - 1; callIndex >= 0; callIndex--)
+                {
+                    var call = calls[callIndex];
+                    if (call == null || call.Completed || !IsInteractiveToolName(call.Name)) continue;
+                    pending = call;
+                    break;
+                }
+                if (pending != null) break;
+            }
+
+            if (pending == null)
+                return Interactions.RemoveAll(item => item.RecoveredFromToolCall) > 0;
+
+            var kind = InteractionKindForTool(pending.Name);
+            var changed = Interactions.RemoveAll(item => item.RecoveredFromToolCall
+                && (item.Kind != kind
+                    || !string.Equals(item.SourceToolUseId, pending.Id, StringComparison.Ordinal))) > 0;
+            if (Interactions.Any(item => item.Kind == kind
+                && (!item.RecoveredFromToolCall
+                    || string.Equals(item.SourceToolUseId, pending.Id, StringComparison.Ordinal))))
+                return changed;
+            return RecoverInteractionFromToolCall(pending) || changed;
+        }
+
+        public static bool IsInteractiveToolName(string name)
+        {
+            switch ((name ?? "").Trim())
+            {
+                case "ask_user":
+                case "decision_gate":
+                case "submit_plan":
+                case "submit_spec":
+                case "submit_specification_to_master":
+                case "submit_tasks":
+                case "task_list":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private bool RecoverInteractionFromToolCall(ChatToolCall call)
+        {
+            if (call == null || call.Completed || !IsInteractiveToolName(call.Name)) return false;
+            JObject input;
+            try { input = string.IsNullOrWhiteSpace(call.InputJson) ? new JObject() : JObject.Parse(call.InputJson); }
+            catch { input = new JObject(); }
+
+            PendingInteraction interaction;
+            switch (call.Name)
+            {
+                case "ask_user":
+                {
+                    var question = new PendingQuestion
+                    {
+                        Id = call.Id,
+                        Question = (string)input["question"] ?? "O agente precisa de uma resposta.",
+                        AllowFreeform = (bool?)input["allow_freeform"] ?? input["options"] == null,
+                        MultiSelect = (bool?)input["multi_select"] ?? false,
+                    };
+                    AddOptions(question.Choices, input["options"] as JArray);
+                    interaction = question;
+                    break;
+                }
+                case "decision_gate":
+                {
+                    var decision = new PendingDecision
+                    {
+                        Id = call.Id,
+                        Header = (string)input["header"],
+                        AllowFreeform = (bool?)input["allow_freeform"] ?? false,
+                    };
+                    foreach (var token in input["questions"] as JArray ?? new JArray())
+                    {
+                        var question = new PendingDecisionQuestion
+                        {
+                            Id = (string)token["id"] ?? Guid.NewGuid().ToString("N"),
+                            Header = (string)token["header"],
+                            Question = (string)token["question"] ?? "Escolha uma opção.",
+                            MultiSelect = (bool?)token["multi_select"] ?? false,
+                        };
+                        AddOptions(question.Choices, token["options"] as JArray);
+                        decision.Questions.Add(question);
+                    }
+                    interaction = decision;
+                    break;
+                }
+                case "submit_plan":
+                    interaction = new PendingPlan { Id = call.Id, Plan = (string)input["plan"] ?? call.InputJson };
+                    break;
+                case "submit_spec":
+                case "submit_specification_to_master":
+                    interaction = new PendingSpec
+                    {
+                        Id = call.Id,
+                        Name = (string)input["name"] ?? "Especificação",
+                        Body = (string)input["body"] ?? call.InputJson,
+                        SpecPath = (string)input["spec_path"] ?? "",
+                    };
+                    break;
+                default:
+                    interaction = new PendingTasks
+                    {
+                        ToolUseId = call.Id,
+                        Summary = (string)input["summary"] ?? "O agente publicou uma lista de tarefas.",
+                    };
+                    break;
+            }
+
+            if (Interactions.Any(item => item.Kind == interaction.Kind && !item.RecoveredFromToolCall)) return false;
+            interaction.SourceToolUseId = call.Id;
+            interaction.RecoveredFromToolCall = true;
+            switch (interaction)
+            {
+                case PendingQuestion question: SetPendingQuestion(question); break;
+                case PendingPlan plan: SetPendingPlan(plan); break;
+                case PendingSpec spec: SetPendingSpec(spec); break;
+                case PendingDecision decision: SetPendingDecision(decision); break;
+                case PendingTasks tasks: SetPendingTasks(tasks); break;
+            }
+            return true;
+        }
+
+        private static void AddOptions(ICollection<PendingOption> target, JArray options)
+        {
+            if (options == null) return;
+            foreach (var token in options)
+            {
+                var value = (string)token["value"] ?? (string)token["label"] ?? "";
+                target.Add(new PendingOption
+                {
+                    Label = (string)token["label"] ?? value,
+                    Value = value,
+                });
+            }
+        }
+
+        private void ClearInteractionForCompletedTool(ChatToolCall call)
+        {
+            if (call == null || !IsInteractiveToolName(call.Name)) return;
+            var removed = Interactions.RemoveAll(item =>
+                item.Kind == InteractionKindForTool(call.Name)
+                || string.Equals(item.SourceToolUseId, call.Id, StringComparison.Ordinal));
+            if (removed == 0) return;
+            if (Interactions.Count == 0 && !IsRunning)
+            {
+                ConnectionState = ChatConnectionState.Idle;
+                ConnectionDetail = "Pronto";
+            }
+        }
+
+        private static PendingInteractionKind InteractionKindForTool(string name)
+        {
+            switch (name)
+            {
+                case "ask_user": return PendingInteractionKind.Question;
+                case "decision_gate": return PendingInteractionKind.Decision;
+                case "submit_plan": return PendingInteractionKind.Plan;
+                case "submit_spec":
+                case "submit_specification_to_master": return PendingInteractionKind.Spec;
+                default: return PendingInteractionKind.Tasks;
+            }
         }
 
         private void RemoveInteraction(string key)

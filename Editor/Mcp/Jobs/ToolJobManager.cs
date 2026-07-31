@@ -80,12 +80,22 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
         private static readonly ConcurrentDictionary<string, ToolJobRecord> Jobs =
             new ConcurrentDictionary<string, ToolJobRecord>(StringComparer.Ordinal);
         private static readonly object CreateSync = new object();
+        private static int _initialized;
 
-        static ToolJobManager()
+        internal static void InitializeOnMainThread()
         {
-            RestorePersistedJobs();
-            AssemblyReloadEvents.beforeAssemblyReload -= PersistTrackedJobs;
-            AssemblyReloadEvents.beforeAssemblyReload += PersistTrackedJobs;
+            if (Interlocked.CompareExchange(ref _initialized, 1, 0) != 0) return;
+            try
+            {
+                RestorePersistedJobs();
+                AssemblyReloadEvents.beforeAssemblyReload -= PersistTrackedJobs;
+                AssemblyReloadEvents.beforeAssemblyReload += PersistTrackedJobs;
+            }
+            catch
+            {
+                Volatile.Write(ref _initialized, 0);
+                throw;
+            }
         }
 
         public static ToolJobRecord Create(string kind, JObject input = null, bool canCancel = true)

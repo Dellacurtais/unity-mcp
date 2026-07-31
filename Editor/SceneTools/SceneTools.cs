@@ -427,7 +427,7 @@ namespace Maicon.SceneAnalyzer.Editor.SceneTools
         {
             var scene = SceneToolSupport.Resolve(args, out var errorCode, out var error);
             if (!scene.IsValid()) return ToolResult.Error(errorCode ?? "SCENE_NOT_FOUND", error);
-            if (scene.isLoaded && EditorSceneManager.loadedSceneCount <= 1)
+            if (scene.isLoaded && SceneManager.loadedSceneCount <= 1)
                 return ToolResult.Error("LAST_LOADED_SCENE", "cannot close the last loaded scene; open or create another loaded scene first");
             if (scene.isLoaded && scene.isDirty && !((bool?)args["discardUnsaved"] ?? false))
                 return ToolResult.Error("SCENE_DIRTY", "scene has unsaved changes; save it or pass discardUnsaved=true");

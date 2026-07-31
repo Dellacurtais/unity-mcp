@@ -316,7 +316,7 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
             if (!ToolJobManager.TryCreateExclusive("test", args, canCancel: true, out var job))
                 return ToolResult.Error("TEST_RUN_ACTIVE", "another Unity test job is already active");
 
-            EditorApplication.delayCall += () => ToolJobManager.Start(job, async (record, token) =>
+            ToolJobManager.Start(job, async (record, token) =>
             {
                 TestRunnerApi api = null;
                 var callbacks = new TestRunCallbacks();

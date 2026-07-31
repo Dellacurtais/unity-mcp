@@ -134,6 +134,11 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 var call = calls[index];
                 if (call == null) continue;
+                // Interactive tools have a canonical, actionable card in the
+                // dedicated interaction area. Keeping their raw JSON inside
+                // the assistant bubble duplicates the prompt and can make a
+                // single virtualized row taller than the entire viewport.
+                if (!call.Completed && ChatSession.IsInteractiveToolName(call.Name)) continue;
                 var key = OccurrenceKey("tool", call.Id, index, occurrences, out var occurrence);
                 activeKeys.Add(key);
                 if (!_toolCards.TryGetValue(key, out var card))

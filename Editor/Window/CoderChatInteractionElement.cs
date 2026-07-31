@@ -1,4 +1,6 @@
+using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Chat;
+using Newtonsoft.Json.Linq;
 using UnityEngine.UIElements;
 
 namespace Maicon.SceneAnalyzer.Editor.Window
@@ -33,6 +35,12 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 case PendingPlan plan:
                     BuildPlan(plan);
                     break;
+                case PendingSpec spec:
+                    BuildSpec(spec);
+                    break;
+                case PendingDecision decision:
+                    BuildDecision(decision);
+                    break;
                 case PendingTasks tasks:
                     BuildTasks(tasks);
                     break;
@@ -60,25 +68,56 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 var choices = new VisualElement();
                 choices.AddToClassList("interaction-actions");
-                foreach (var option in question.Choices)
+                if (question.MultiSelect)
                 {
-                    var captured = option;
-                    var button = new Button(() => SubmitQuestion(question, captured.Value))
+                    choices.AddToClassList("interaction-choice-list");
+                    foreach (var option in question.Choices)
                     {
-                        text = captured.Label,
-                        tooltip = captured.Value,
-                    };
-                    choices.Add(button);
+                        var captured = option;
+                        var toggle = new Toggle(captured.Label)
+                        {
+                            value = question.SelectedValues.Contains(captured.Value),
+                            tooltip = captured.Value,
+                        };
+                        toggle.RegisterValueChangedCallback(evt =>
+                        {
+                            if (evt.newValue) question.SelectedValues.Add(captured.Value);
+                            else question.SelectedValues.Remove(captured.Value);
+                        });
+                        choices.Add(toggle);
+                    }
+                }
+                else
+                {
+                    foreach (var option in question.Choices)
+                    {
+                        var captured = option;
+                        var button = new Button(() => SubmitQuestion(question, captured.Value))
+                        {
+                            text = captured.Label,
+                            tooltip = captured.Value,
+                        };
+                        choices.Add(button);
+                    }
                 }
                 Add(choices);
             }
 
-            if (!question.AllowFreeform) return;
-            var input = CreateDraftField(question, "Resposta livre");
-            Add(input);
+            if (question.AllowFreeform)
+                Add(CreateDraftField(question, "Resposta livre"));
+            if (!question.AllowFreeform && !question.MultiSelect) return;
             var actions = new VisualElement();
             actions.AddToClassList("interaction-actions");
-            actions.Add(new Button(() => SubmitQuestion(question, question.ResponseDraft)) { text = "Responder" });
+            actions.Add(new Button(() =>
+            {
+                var selected = string.Join(", ", question.SelectedValues);
+                var answer = string.IsNullOrWhiteSpace(question.ResponseDraft)
+                    ? selected
+                    : string.IsNullOrWhiteSpace(selected)
+                        ? question.ResponseDraft
+                        : selected + " — " + question.ResponseDraft;
+                SubmitQuestion(question, answer);
+            }) { text = question.MultiSelect ? "Confirmar seleção" : "Responder" });
             Add(actions);
         }
 
@@ -96,7 +135,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
             var actions = new VisualElement();
             actions.AddToClassList("interaction-actions");
-            actions.Add(new Button(() => SubmitPlan(plan, true, plan.ResponseDraft)) { text = "Aprovar" });
+            actions.Add(new Button(() => SubmitPlan(plan, true, plan.ResponseDraft, false)) { text = "Aprovar" });
             actions.Add(new Button(() =>
             {
                 if (string.IsNullOrWhiteSpace(plan.ResponseDraft))
@@ -104,9 +143,107 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     ShowInlineError("Descreva as alterações solicitadas antes de enviar.");
                     return;
                 }
-                SubmitPlan(plan, false, plan.ResponseDraft);
+                SubmitPlan(plan, false, plan.ResponseDraft, false);
             }) { text = "Solicitar alterações" });
-            actions.Add(new Button(() => SubmitPlan(plan, false, plan.ResponseDraft)) { text = "Rejeitar" });
+            actions.Add(new Button(() => SubmitPlan(plan, false, plan.ResponseDraft, true)) { text = "Rejeitar" });
+            Add(actions);
+        }
+
+        private void BuildSpec(PendingSpec spec)
+        {
+            var summary = new Label(string.IsNullOrWhiteSpace(spec.Name)
+                ? "Especificação pronta para revisão"
+                : spec.Name);
+            summary.AddToClassList("interaction-copy");
+            Add(summary);
+
+            var scroll = new ScrollView(ScrollViewMode.Vertical);
+            scroll.AddToClassList("interaction-scroll");
+            var copy = new Label(spec.Body ?? "Especificação sem conteúdo.");
+            copy.AddToClassList("interaction-copy");
+            scroll.Add(copy);
+            Add(scroll);
+
+            Add(CreateDraftField(spec, "Alterações solicitadas"));
+            var actions = new VisualElement();
+            actions.AddToClassList("interaction-actions");
+            actions.Add(new Button(() => SubmitSpec(spec, true, "")) { text = "Aprovar" });
+            actions.Add(new Button(() =>
+            {
+                if (string.IsNullOrWhiteSpace(spec.ResponseDraft))
+                {
+                    ShowInlineError("Descreva as alterações solicitadas antes de enviar.");
+                    return;
+                }
+                SubmitSpec(spec, false, spec.ResponseDraft);
+            }) { text = "Solicitar alterações" });
+            Add(actions);
+        }
+
+        private void BuildDecision(PendingDecision decision)
+        {
+            if (!string.IsNullOrWhiteSpace(decision.Header))
+            {
+                var header = new Label(decision.Header);
+                header.AddToClassList("interaction-copy");
+                Add(header);
+            }
+
+            foreach (var question in decision.Questions)
+            {
+                var group = new VisualElement();
+                group.AddToClassList("interaction-decision-group");
+                var prompt = new Label(string.IsNullOrWhiteSpace(question.Header)
+                    ? question.Question
+                    : question.Header + "\n" + question.Question);
+                prompt.AddToClassList("interaction-copy");
+                group.Add(prompt);
+
+                var choices = new VisualElement();
+                choices.AddToClassList("interaction-choice-list");
+                foreach (var option in question.Choices)
+                {
+                    var captured = option;
+                    var toggle = new Toggle(captured.Label)
+                    {
+                        value = question.SelectedValues.Contains(captured.Value),
+                        tooltip = captured.Value,
+                    };
+                    toggle.RegisterValueChangedCallback(evt =>
+                    {
+                        if (evt.newValue)
+                        {
+                            if (!question.MultiSelect) question.SelectedValues.Clear();
+                            question.SelectedValues.Add(captured.Value);
+                            if (!question.MultiSelect)
+                            {
+                                foreach (var sibling in choices.Children().OfType<Toggle>())
+                                    if (!ReferenceEquals(sibling, toggle)) sibling.SetValueWithoutNotify(false);
+                            }
+                        }
+                        else question.SelectedValues.Remove(captured.Value);
+                    });
+                    choices.Add(toggle);
+                }
+                group.Add(choices);
+
+                if (decision.AllowFreeform)
+                {
+                    var input = new TextField
+                    {
+                        multiline = true,
+                        value = question.ResponseDraft ?? "",
+                    };
+                    input.AddToClassList("interaction-input");
+                    input.RegisterValueChangedCallback(evt => question.ResponseDraft = evt.newValue);
+                    group.Add(input);
+                }
+                Add(group);
+            }
+
+            var actions = new VisualElement();
+            actions.AddToClassList("interaction-actions");
+            actions.Add(new Button(() => SubmitDecision(decision)) { text = "Confirmar decisões" });
             Add(actions);
         }
 
@@ -206,10 +343,46 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 Settings.CoderUrl, Settings.CoderToken, Settings.CoderSessionId, question.Id, answer);
         }
 
-        private static void SubmitPlan(PendingPlan plan, bool approved, string note)
+        private static void SubmitPlan(PendingPlan plan, bool approved, string note, bool aborted)
         {
             Bootstrap.ChatClient?.RespondToPlan(
-                Settings.CoderUrl, Settings.CoderToken, Settings.CoderSessionId, plan.Id, approved, note);
+                Settings.CoderUrl, Settings.CoderToken, Settings.CoderSessionId, plan.Id, approved, note, aborted);
+        }
+
+        private static void SubmitSpec(PendingSpec spec, bool approved, string requestedChanges)
+        {
+            Bootstrap.ChatClient?.RespondToSpec(
+                Settings.CoderUrl,
+                Settings.CoderToken,
+                Settings.CoderSessionId,
+                spec.Id,
+                spec.SpecPath,
+                approved,
+                requestedChanges);
+        }
+
+        private void SubmitDecision(PendingDecision decision)
+        {
+            var answers = new JObject();
+            foreach (var question in decision.Questions)
+            {
+                if (question.SelectedValues.Count == 0 && string.IsNullOrWhiteSpace(question.ResponseDraft))
+                {
+                    ShowInlineError($"Responda: {question.Question}");
+                    return;
+                }
+                answers[question.Id] = new JObject
+                {
+                    ["selected"] = new JArray(question.SelectedValues),
+                    ["freeform"] = question.ResponseDraft ?? "",
+                };
+            }
+            Bootstrap.ChatClient?.RespondToDecision(
+                Settings.CoderUrl,
+                Settings.CoderToken,
+                Settings.CoderSessionId,
+                decision.Id,
+                answers);
         }
 
         private static void SubmitTasks(PendingTasks tasks, bool approved)
@@ -244,6 +417,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 case PendingInteractionKind.Question: return "Pergunta do agente";
                 case PendingInteractionKind.Plan: return "Plano aguardando aprovação";
+                case PendingInteractionKind.Spec: return "Especificação aguardando aprovação";
+                case PendingInteractionKind.Decision: return "Decisão necessária";
                 case PendingInteractionKind.Tasks: return "Tarefas aguardando aprovação";
                 case PendingInteractionKind.ToolApproval: return "Aprovação necessária";
                 default: return "Ação necessária";

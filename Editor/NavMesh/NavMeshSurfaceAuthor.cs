@@ -622,7 +622,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
 
         private static string AreaName(int index)
         {
-            foreach (var name in GameObjectUtility.GetNavMeshAreaNames())
+            foreach (var name in UnityEngine.AI.NavMesh.GetAreaNames())
                 if (UnityEngine.AI.NavMesh.GetAreaFromName(name) == index) return name;
             return $"#{index}";
         }

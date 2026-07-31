@@ -134,8 +134,20 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 var first = await coordinator.BeginAsync("first", false, CancellationToken.None, TimeSpan.FromSeconds(1));
                 try
                 {
-                    Assert.ThrowsAsync<OperationCanceledException>(async () =>
-                        await coordinator.BeginAsync("timed-out", false, CancellationToken.None, TimeSpan.FromMilliseconds(50)));
+                    try
+                    {
+                        await coordinator.BeginAsync(
+                            "timed-out",
+                            false,
+                            CancellationToken.None,
+                            TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
+                        Assert.Fail("the queued request should time out before acquiring a concurrency slot");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Expected: avoid NUnit's synchronous ThrowsAsync adapter,
+                        // which blocks Unity's editor loop around an already-async test.
+                    }
                     Assert.That(coordinator.InFlightCount, Is.EqualTo(1));
                 }
                 finally
@@ -443,14 +455,17 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
-        public async Task ToolList_DoesNotReevaluateSchemasOnWorkerThread()
+        public void ToolList_UsesSchemasCachedDuringRegistration()
         {
             var registry = new McpToolRegistry();
             var tool = new OneShotSchemaTool();
             registry.Register(tool);
             using var processor = new McpRequestProcessor(registry, 1, 10);
 
-            var list = await Task.Run(() => processor.ListTools());
+            // tools/list is intentionally dispatched to Unity's main thread by
+            // McpRequestProcessor because authorization reads EditorPrefs. The
+            // contract here is that listing reuses schemas captured at registration.
+            var list = processor.ListTools();
 
             Assert.That((string)list["tools"]?[0]?["name"], Is.EqualTo(tool.Name));
             Assert.That((string)list["tools"]?[0]?["inputSchema"]?["type"], Is.EqualTo("object"));

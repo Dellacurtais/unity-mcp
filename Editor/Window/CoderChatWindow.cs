@@ -47,6 +47,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private DropdownField _sessionField;
         private ScrollView _transcriptScroll;
         private IVisualElementScheduledItem _scheduledUiFlush;
+        private int _scrollCorrectionAttempts;
 
         private bool _sessionDirty = true;
         private bool _catalogDirty = true;
@@ -632,6 +633,11 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 PendingQuestion question => question.Question?.Length ?? 0,
                 PendingPlan plan => plan.Plan?.Length ?? 0,
+                PendingSpec spec => (spec.Name?.Length ?? 0) + (spec.Body?.Length ?? 0),
+                PendingDecision decision => decision.Questions.Sum(question =>
+                    (question.Header?.Length ?? 0)
+                    + (question.Question?.Length ?? 0)
+                    + question.Choices.Sum(choice => (choice.Label?.Length ?? 0) + (choice.Value?.Length ?? 0))),
                 PendingTasks tasks => tasks.Summary?.Length ?? 0,
                 PendingToolApproval approval =>
                     (approval.ToolName?.Length ?? 0)
@@ -883,22 +889,27 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
         private void RequestScrollTranscriptToEnd()
         {
-            if (_transcriptList == null || _visibleMessages.Count == 0 || !_scrollState.TryBeginCorrection()) return;
-            _transcriptList.schedule.Execute(() =>
-            {
-                if (_transcriptList == null
-                    || _visibleMessages.Count == 0
-                    || !_scrollState.IsFollowingEnd
-                    || !_scrollState.CorrectionPending)
-                {
-                    _scrollState.CancelCorrection();
-                    return;
-                }
-
-                _transcriptList.ScrollToItem(_visibleMessages.Count - 1);
-                _transcriptList.schedule.Execute(CompleteScrollCorrection);
-            });
+            if (_transcriptScroll == null || _visibleMessages.Count == 0 || !_scrollState.TryBeginCorrection()) return;
+            _scrollCorrectionAttempts = 0;
+            _transcriptScroll.schedule.Execute(ApplyScrollCorrection);
             SetDisplayed(_newMessagesButton, false);
+        }
+
+        private void ApplyScrollCorrection()
+        {
+            if (_transcriptScroll == null
+                || !_scrollState.IsFollowingEnd
+                || !_scrollState.CorrectionPending)
+            {
+                _scrollState.CancelCorrection();
+                return;
+            }
+
+            var scroller = _transcriptScroll.verticalScroller;
+            var end = scroller.highValue;
+            scroller.value = end;
+            _transcriptScroll.scrollOffset = new Vector2(_transcriptScroll.scrollOffset.x, end);
+            _transcriptScroll.schedule.Execute(CompleteScrollCorrection);
         }
 
         private void CompleteScrollCorrection()
@@ -910,7 +921,13 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 _scrollState.CancelCorrection();
                 return;
             }
-            _scrollState.CompleteCorrection();
+
+            var scroller = _transcriptScroll.verticalScroller;
+            if (_scrollState.CompleteCorrection(scroller.value, scroller.highValue)) return;
+            if (++_scrollCorrectionAttempts < 4)
+                _transcriptScroll.schedule.Execute(ApplyScrollCorrection);
+            else
+                _scrollState.CancelCorrection();
         }
 
         private void RefreshRemoteCatalogs()
@@ -1058,10 +1075,12 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             return true;
         }
 
-        public void CompleteCorrection()
+        public bool CompleteCorrection(float value, float highValue)
         {
+            if (DistanceFromEnd(value, highValue) > EndThreshold) return false;
             CorrectionPending = false;
             IsFollowingEnd = true;
+            return true;
         }
 
         public void CancelCorrection()

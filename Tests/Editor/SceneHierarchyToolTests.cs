@@ -242,7 +242,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(result.IsError, Is.True);
             Assert.That((string)result.Json?["code"], Is.EqualTo("LAST_LOADED_SCENE"));
             Assert.That(active.IsValid() && active.isLoaded, Is.True);
-            Assert.That(EditorSceneManager.loadedSceneCount, Is.EqualTo(1));
+            Assert.That(SceneManager.loadedSceneCount, Is.EqualTo(1));
         }
 
         [Test]

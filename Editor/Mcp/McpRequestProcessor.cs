@@ -88,7 +88,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     case "initialize":
                     {
                         var selected = McpProtocolNegotiator.Negotiate((string)parameters["protocolVersion"]);
-                        return ParseObject(OkResp(id, new JObject
+                        return await MainThreadDispatcher.RunAsync(() => ParseObject(OkResp(id, new JObject
                         {
                             ["protocolVersion"] = selected,
                             ["capabilities"] = new JObject
@@ -103,7 +103,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                             ["instructions"] = Settings.RequireHighRiskConfirmation
                                 ? "High-risk tools return CONFIRMATION_REQUIRED with a single-use token; retry the same arguments with _confirmationToken."
                                 : "High-risk confirmation is disabled; authorized tools execute directly subject to the configured capability switches.",
-                        }));
+                        })), cancellationToken);
                     }
                     case "notifications/initialized":
                         return notification ? null : ParseObject(OkResp(id, new JObject()));

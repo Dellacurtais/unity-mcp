@@ -174,6 +174,107 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void PendingInteractiveTool_UsesDedicatedActionCardInsteadOfRawJson()
+        {
+            var session = new ChatSession();
+            session.StartAssistant();
+            session.AddToolCall("tool-plan-1", "submit_plan", "{\"plan\":\"1. Corrigir scroll\"}");
+
+            Assert.That(session.CurrentPlan, Is.Not.Null);
+            Assert.That(session.CurrentPlan.Plan, Is.EqualTo("1. Corrigir scroll"));
+            Assert.That(session.CurrentPlan.RecoveredFromToolCall, Is.True);
+
+            var message = session.StreamingAssistant;
+            var elementType = typeof(CoderApiClient).Assembly.GetType(
+                "Maicon.SceneAnalyzer.Editor.Window.CoderChatMessageElement", true);
+            var element = (VisualElement)Activator.CreateInstance(elementType);
+            elementType.GetMethod("Bind", BindingFlags.Instance | BindingFlags.Public)
+                ?.Invoke(element, new object[] { message });
+
+            Assert.That(element.Q<VisualElement>("tool-card-tool-plan-1"), Is.Null,
+                "o JSON bruto da tool interativa não deve competir com o bloco acionável");
+
+            session.SetPendingPlan(new PendingPlan { Id = "plan-real", Plan = "Plano oficial" });
+            Assert.That(session.Interactions.OfType<PendingPlan>().Count(), Is.EqualTo(1));
+            Assert.That(session.CurrentPlan.Id, Is.EqualTo("plan-real"));
+            Assert.That(session.CurrentPlan.RecoveredFromToolCall, Is.False);
+
+            session.CompleteToolCall("tool-plan-1", "approved", 12);
+            Assert.That(session.CurrentPlan, Is.Null);
+            elementType.GetMethod("Bind", BindingFlags.Instance | BindingFlags.Public)
+                ?.Invoke(element, new object[] { message });
+            Assert.That(element.Q<VisualElement>("tool-card-tool-plan-1"), Is.Not.Null,
+                "a tool resolvida volta ao histórico como auditoria");
+        }
+
+        [Test]
+        public void DecisionAndSpecEvents_CreateDedicatedActionBlocks()
+        {
+            var session = new ChatSession();
+            var client = new CoderApiClient(session);
+            var dispatch = typeof(CoderApiClient).GetMethod(
+                "DispatchEventInner", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(dispatch, Is.Not.Null);
+
+            dispatch.Invoke(client, new object[]
+            {
+                "decision",
+                "",
+                new JObject
+                {
+                    ["id"] = "decision-1",
+                    ["header"] = "Estratégia",
+                    ["questions"] = new JArray
+                    {
+                        new JObject
+                        {
+                            ["id"] = "storage",
+                            ["question"] = "Onde persistir?",
+                            ["options"] = new JArray
+                            {
+                                new JObject { ["label"] = "Arquivo", ["value"] = "file" },
+                                new JObject { ["label"] = "Banco", ["value"] = "db" },
+                            },
+                        },
+                    },
+                },
+            });
+            dispatch.Invoke(client, new object[]
+            {
+                "spec",
+                "",
+                new JObject
+                {
+                    ["id"] = "spec-1",
+                    ["name"] = "Chat UX",
+                    ["body"] = "## Context",
+                    ["spec_path"] = ".mcp/specs/chat-ux.md",
+                },
+            });
+
+            Assert.That(session.CurrentDecision, Is.Not.Null);
+            Assert.That(session.CurrentDecision.Questions.Single().Choices, Has.Count.EqualTo(2));
+            Assert.That(session.CurrentSpec, Is.Not.Null);
+            Assert.That(new CoderChatInteractionElement(session.CurrentDecision)
+                .Query<Button>().ToList().Select(button => button.text),
+                Does.Contain("Confirmar decisões"));
+            Assert.That(new CoderChatInteractionElement(session.CurrentSpec)
+                .Query<Button>().ToList().Select(button => button.text),
+                Is.EquivalentTo(new[] { "Aprovar", "Solicitar alterações" }));
+        }
+
+        [Test]
+        public void PlanResponse_UsesBackendFeedbackAndAbortContract()
+        {
+            var body = CoderApiClient.BuildPlanResponseBody("plan-1", false, "mude o escopo", true);
+
+            Assert.That((bool)body["approved"], Is.False);
+            Assert.That((bool)body["aborted"], Is.True);
+            Assert.That((string)body["feedback"], Is.EqualTo("mude o escopo"));
+            Assert.That(body["note"], Is.Null);
+        }
+
+        [Test]
         public void SessionBatch_NotifiesOnceForMultipleMutations()
         {
             var session = new ChatSession();
@@ -739,9 +840,15 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(state.IsFollowingEnd, Is.True);
             Assert.That(state.TryBeginCorrection(), Is.True);
             Assert.That(state.TryBeginCorrection(), Is.False);
-            state.CompleteCorrection();
+            Assert.That(state.CompleteCorrection(1000f, 1000f), Is.True);
             Assert.That(state.IsFollowingEnd, Is.True);
             Assert.That(state.CorrectionPending, Is.False);
+
+            Assert.That(state.TryBeginCorrection(), Is.True);
+            Assert.That(state.CompleteCorrection(700f, 1000f), Is.False,
+                "o topo de uma mensagem maior que a viewport não é o fim do transcript");
+            Assert.That(state.CorrectionPending, Is.True);
+            Assert.That(state.CompleteCorrection(995f, 1000f), Is.True);
 
             state.ObserveUserPosition(700f, 1000f);
             Assert.That(state.IsFollowingEnd, Is.False);
