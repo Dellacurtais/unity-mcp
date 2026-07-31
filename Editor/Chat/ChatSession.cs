@@ -202,6 +202,27 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             MarkChanged();
         }
 
+        public bool CompletePersistedToolCall(string id, string resultText, double durationMs)
+        {
+            if (string.IsNullOrEmpty(id)) return false;
+            for (var messageIndex = Messages.Count - 1; messageIndex >= 0; messageIndex--)
+            {
+                var message = Messages[messageIndex];
+                if (!message.IsRemote) continue;
+                var call = message.ToolCalls.Find(candidate =>
+                    string.Equals(candidate.Id, id, StringComparison.Ordinal));
+                if (call == null) continue;
+                if (call.Completed) return true;
+                call.ResultText = resultText;
+                call.DurationMs = durationMs;
+                call.Completed = true;
+                message.Touch();
+                MarkChanged();
+                return true;
+            }
+            return false;
+        }
+
         public void AddSystemNote(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return;
@@ -302,29 +323,13 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             MarkChanged();
         }
 
-        /// A cursorless GET /attach replays the current live turn from its
-        /// beginning. Remove the persisted projection of that same turn first
-        /// so replayed text/tool calls do not appear twice after reopening the
-        /// Unity window or after a Domain Reload.
+        /// A cursorless GET /attach replays a bounded semantic window, not the
+        /// complete persisted turn. Keep the authoritative snapshot intact and
+        /// let CoderApiClient consume replayed message/tool identities while it
+        /// builds only the still-live suffix into StreamingAssistant.
         public void PrepareForLiveReplay()
         {
             Messages.RemoveAll(message => !message.IsRemote && IsEmptyAssistant(message));
-            var lastRemoteUser = -1;
-            for (var index = Messages.Count - 1; index >= 0; index--)
-            {
-                if (Messages[index].IsRemote && Messages[index].Role == ChatRole.User)
-                {
-                    lastRemoteUser = index;
-                    break;
-                }
-            }
-
-            if (lastRemoteUser >= 0)
-            {
-                for (var index = Messages.Count - 1; index > lastRemoteUser; index--)
-                    if (Messages[index].IsRemote) Messages.RemoveAt(index);
-            }
-
             StreamingAssistant = null;
             Interactions.Clear();
             IsRunning = false;

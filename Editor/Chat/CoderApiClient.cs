@@ -39,6 +39,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         private int _attachedStreamActive;
         private int _abortRequested;
         private CancellationTokenSource _activeAttachCts;
+        private readonly Dictionary<string, int> _cursorlessReplayAssistantSignatures =
+            new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly HashSet<string> _cursorlessReplayToolIds =
+            new HashSet<string>(StringComparer.Ordinal);
 
         private const int MaxEventsPerDrain = 96;
         private const double MaxDrainMilliseconds = 3.5;
@@ -1244,24 +1248,31 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             switch (type)
             {
                 case "text":
+                    EndCursorlessCompletionReplay();
                     _session.AppendAssistantText(AsString(payload?["text"]) ?? data ?? "");
                     break;
                 case "thinking":
+                    EndCursorlessCompletionReplay();
                     _session.AppendAssistantThinking(AsString(payload?["text"]) ?? data ?? "");
                     break;
                 case "tool_call_start":
+                {
+                    var id = AsString(payload?["id"]) ?? Guid.NewGuid().ToString("N");
+                    if (_cursorlessReplayToolIds.Contains(id)) break;
                     _session.AddToolCall(
-                        AsString(payload?["id"]) ?? Guid.NewGuid().ToString("N"),
+                        id,
                         AsString(payload?["name"]) ?? "?",
                         payload?["input"]?.ToString(FormattingNs.None) ?? "");
                     break;
+                }
                 case "tool_call_result":
                 {
+                    var id = AsString(payload?["id"]) ?? "";
                     var resultText = TruncateJson(payload?["result"], 800);
-                    _session.CompleteToolCall(
-                        AsString(payload?["id"]) ?? "",
-                        resultText,
-                        AsDouble(payload?["duration_ms"]) ?? 0.0);
+                    var durationMs = AsDouble(payload?["duration_ms"]) ?? 0.0;
+                    if (!_cursorlessReplayToolIds.Contains(id)
+                        || !_session.CompletePersistedToolCall(id, resultText, durationMs))
+                        _session.CompleteToolCall(id, resultText, durationMs);
 
                     // Surface a focused hint when the Unity MCP server timed
                     // out — most common cause is an assembly reload mid-call.
@@ -1351,13 +1362,16 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     if (!string.IsNullOrEmpty(sid)) Settings.CoderSessionId = sid;
                     break;
                 case "error":
+                    ClearCursorlessReplayBaseline();
                     Interlocked.Exchange(ref _abortRequested, 0);
                     _session.AddError(AsString(payload?["message"]) ?? data);
                     break;
                 case "message_complete":
-                    ApplyCompletedMessage(payload?["message"]);
+                    if (!ConsumeCursorlessReplayCompletion(payload?["message"]))
+                        ApplyCompletedMessage(payload?["message"]);
                     break;
                 case "done":
+                    ClearCursorlessReplayBaseline();
                     if (Interlocked.Exchange(ref _abortRequested, 0) != 0)
                         _session.AbortAssistant();
                     else
@@ -1374,6 +1388,120 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     _session.AddSystemNote($"{type}: {data}");
                     break;
             }
+        }
+
+        private void PrepareCursorlessReplay()
+        {
+            ClearCursorlessReplayBaseline();
+            var lastRemoteUser = -1;
+            for (var index = _session.Messages.Count - 1; index >= 0; index--)
+            {
+                var message = _session.Messages[index];
+                if (message.IsRemote && message.Role == ChatRole.User)
+                {
+                    lastRemoteUser = index;
+                    break;
+                }
+            }
+
+            for (var index = lastRemoteUser + 1; index < _session.Messages.Count; index++)
+            {
+                var message = _session.Messages[index];
+                if (!message.IsRemote || message.Role != ChatRole.Assistant) continue;
+                var signature = ReplaySignature(message);
+                if (!string.IsNullOrEmpty(signature))
+                {
+                    _cursorlessReplayAssistantSignatures.TryGetValue(signature, out var count);
+                    _cursorlessReplayAssistantSignatures[signature] = count + 1;
+                }
+                foreach (var call in message.ToolCalls)
+                    if (!string.IsNullOrEmpty(call?.Id)) _cursorlessReplayToolIds.Add(call.Id);
+            }
+
+            _session.PrepareForLiveReplay();
+        }
+
+        private bool ConsumeCursorlessReplayCompletion(JToken message)
+        {
+            if (_cursorlessReplayAssistantSignatures.Count == 0) return false;
+            var signature = ReplaySignature(message);
+            if (string.IsNullOrEmpty(signature)
+                || !_cursorlessReplayAssistantSignatures.TryGetValue(signature, out var count))
+                return false;
+            if (count <= 1) _cursorlessReplayAssistantSignatures.Remove(signature);
+            else _cursorlessReplayAssistantSignatures[signature] = count - 1;
+            return true;
+        }
+
+        private void EndCursorlessCompletionReplay()
+            => _cursorlessReplayAssistantSignatures.Clear();
+
+        private void ClearCursorlessReplayBaseline()
+        {
+            _cursorlessReplayAssistantSignatures.Clear();
+            _cursorlessReplayToolIds.Clear();
+        }
+
+        private static string ReplaySignature(ChatMessage message)
+        {
+            if (message == null) return "";
+            var tools = new JArray();
+            foreach (var call in message.ToolCalls)
+            {
+                tools.Add(new JObject
+                {
+                    ["id"] = call?.Id ?? "",
+                    ["name"] = call?.Name ?? "",
+                    ["input"] = NormalizeReplayInput(call?.InputJson),
+                });
+            }
+            return new JObject
+            {
+                ["text"] = message.Text ?? "",
+                ["thinking"] = message.ThinkingText ?? "",
+                ["tools"] = tools,
+            }.ToString(FormattingNs.None);
+        }
+
+        private static string ReplaySignature(JToken message)
+        {
+            var text = new StringBuilder();
+            var thinking = new StringBuilder();
+            var tools = new JArray();
+            foreach (var block in message?["content"] as JArray ?? new JArray())
+            {
+                switch (AsString(block?["type"]))
+                {
+                    case "text":
+                        text.Append(AsString(block?["text"]) ?? "");
+                        break;
+                    case "thinking":
+                        thinking.Append(AsString(block?["text"]) ?? "");
+                        break;
+                    case "tool_use":
+                        tools.Add(new JObject
+                        {
+                            ["id"] = AsString(block?["id"]) ?? "",
+                            ["name"] = AsString(block?["name"]) ?? "",
+                            ["input"] = block?["input"]?.ToString(FormattingNs.None) ?? "",
+                        });
+                        break;
+                }
+            }
+            if (text.Length == 0 && thinking.Length == 0 && tools.Count == 0) return "";
+            return new JObject
+            {
+                ["text"] = text.ToString(),
+                ["thinking"] = thinking.ToString(),
+                ["tools"] = tools,
+            }.ToString(FormattingNs.None);
+        }
+
+        private static string NormalizeReplayInput(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return "";
+            try { return JToken.Parse(input).ToString(FormattingNs.None); }
+            catch { return input; }
         }
 
         private void ApplyCompletedMessage(JToken message)

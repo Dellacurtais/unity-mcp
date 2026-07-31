@@ -120,6 +120,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public void AttachSession(string serverUrl, string token, string sessionId, bool replaceConversation = true)
         {
             StopSessionSync();
+            ClearCursorlessReplayBaseline();
             sessionId = CoderSessionIdentity.Normalize(sessionId);
             if (string.IsNullOrEmpty(sessionId))
             {
@@ -212,8 +213,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/attach";
                 using var request = CreateRequest(HttpMethod.Get, url, token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-                if (!string.IsNullOrEmpty(_session.LastEventId))
-                    request.Headers.TryAddWithoutValidation("Last-Event-ID", _session.LastEventId);
+                var lastEventId = _session.LastEventId;
+                if (!string.IsNullOrEmpty(lastEventId))
+                    request.Headers.TryAddWithoutValidation("Last-Event-ID", lastEventId);
                 using var response = await Http.SendAsync(
                     request, HttpCompletionOption.ResponseHeadersRead, streamCt).ConfigureAwait(false);
                 if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return false;
@@ -225,8 +227,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
                 await MainThreadDispatcher.RunAsync(() =>
                 {
-                    if (string.IsNullOrEmpty(_session.LastEventId))
-                        _session.PrepareForLiveReplay();
+                    if (string.IsNullOrEmpty(lastEventId))
+                        PrepareCursorlessReplay();
+                    else
+                        ClearCursorlessReplayBaseline();
                     _session.StartAssistant();
                 }, streamCt).ConfigureAwait(false);
                 streamStarted = true;

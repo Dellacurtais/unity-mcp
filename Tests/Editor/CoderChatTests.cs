@@ -263,7 +263,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
-        public void LiveReplay_DropsOnlyRemoteTailAfterLatestUserMessage()
+        public void LiveReplay_PreservesPersistedTailAfterLatestUserMessage()
         {
             var session = new ChatSession();
             var user = new ChatMessage { Role = ChatRole.User, Text = "Faça", IsRemote = true };
@@ -279,12 +279,113 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             session.PrepareForLiveReplay();
 
-            Assert.That(session.Messages, Has.Count.EqualTo(2));
+            Assert.That(session.Messages, Has.Count.EqualTo(3));
             Assert.That(session.Messages[0], Is.SameAs(user));
-            Assert.That(session.Messages[1].Role, Is.EqualTo(ChatRole.System));
+            Assert.That(session.Messages[1], Is.SameAs(staleAssistant));
+            Assert.That(session.Messages[2].Role, Is.EqualTo(ChatRole.System));
             Assert.That(session.Interactions, Is.Empty);
             Assert.That(CoderApiClient.IsActiveSessionStatus("in_progress"), Is.True);
             Assert.That(CoderApiClient.IsActiveSessionStatus("idle"), Is.False);
+        }
+
+        [Test]
+        public void CursorlessReplay_PreservesSnapshotAndConsumesPersistedAssistantEvents()
+        {
+            var session = new ChatSession();
+            var user = new ChatMessage
+            {
+                Role = ChatRole.User,
+                Text = "Analise",
+                IsRemote = true,
+                RemoteId = MessageA,
+                RemoteSessionId = SessionA,
+            };
+            var persistedAssistant = new ChatMessage
+            {
+                Role = ChatRole.Assistant,
+                Text = "Trecho já persistido",
+                IsRemote = true,
+                RemoteId = MessageB,
+                RemoteSessionId = SessionA,
+            };
+            persistedAssistant.ToolCalls.Add(new ChatToolCall
+            {
+                Id = "tool-old",
+                Name = "read_file",
+                InputJson = "{\"path\":\"Assets/Test.cs\"}",
+            });
+            session.Messages.Add(user);
+            session.Messages.Add(persistedAssistant);
+
+            var client = new CoderApiClient(session);
+            var prepareReplay = typeof(CoderApiClient).GetMethod(
+                "PrepareCursorlessReplay", BindingFlags.Instance | BindingFlags.NonPublic);
+            var dispatch = typeof(CoderApiClient).GetMethod(
+                "DispatchEventInner", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(prepareReplay, Is.Not.Null);
+            Assert.That(dispatch, Is.Not.Null);
+
+            prepareReplay.Invoke(client, null);
+            session.StartAssistant();
+            dispatch.Invoke(client, new object[]
+            {
+                "tool_call_start",
+                "",
+                new JObject
+                {
+                    ["id"] = "tool-old",
+                    ["name"] = "read_file",
+                    ["input"] = new JObject { ["path"] = "Assets/Test.cs" },
+                },
+            });
+            dispatch.Invoke(client, new object[]
+            {
+                "tool_call_result",
+                "",
+                new JObject
+                {
+                    ["id"] = "tool-old",
+                    ["result"] = "ok",
+                    ["duration_ms"] = 12,
+                },
+            });
+            dispatch.Invoke(client, new object[]
+            {
+                "message_complete",
+                "",
+                new JObject
+                {
+                    ["message"] = new JObject
+                    {
+                        ["content"] = new JArray
+                        {
+                            new JObject { ["type"] = "text", ["text"] = "Trecho já persistido" },
+                            new JObject
+                            {
+                                ["type"] = "tool_use",
+                                ["id"] = "tool-old",
+                                ["name"] = "read_file",
+                                ["input"] = new JObject { ["path"] = "Assets/Test.cs" },
+                            },
+                        },
+                    },
+                },
+            });
+            dispatch.Invoke(client, new object[]
+            {
+                "thinking",
+                "",
+                new JObject { ["text"] = "Trecho ainda vivo" },
+            });
+
+            Assert.That(session.Messages, Has.Count.EqualTo(3));
+            Assert.That(session.Messages[0], Is.SameAs(user));
+            Assert.That(session.Messages[1], Is.SameAs(persistedAssistant));
+            Assert.That(session.Messages[1].ToolCalls.Single().Completed, Is.True);
+            Assert.That(session.Messages[1].ToolCalls.Single().ResultText, Does.Contain("ok"));
+            Assert.That(session.StreamingAssistant, Is.SameAs(session.Messages[2]));
+            Assert.That(session.StreamingAssistant.ThinkingText, Is.EqualTo("Trecho ainda vivo"));
+            Assert.That(session.StreamingAssistant.ToolCalls, Is.Empty);
         }
 
         [Test]

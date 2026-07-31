@@ -5,6 +5,13 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.17] - 2026-07-31
+
+### Fixed
+
+- Reopening or switching back to an active Coder Chat session now preserves the authoritative persisted transcript instead of deleting every assistant message after the latest user message.
+- Cursorless SSE reattach now consumes assistant/tool events already represented by the snapshot and appends only the still-live suffix, preventing both missing history and duplicate replay cards.
+
 ## [0.16.16] - 2026-07-31
 
 ### Fixed
