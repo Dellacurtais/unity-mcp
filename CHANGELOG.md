@@ -5,6 +5,12 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.14] - 2026-07-31
+
+### Fixed
+
+- Advanced Coder Chat settings now live in a bounded vertical scroller and keep a minimum row height, preventing labels, fields, and action buttons from collapsing over one another in narrow docked panels.
+
 ## [0.16.13] - 2026-07-31
 
 ### Added

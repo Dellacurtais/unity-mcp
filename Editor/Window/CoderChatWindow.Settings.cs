@@ -45,9 +45,13 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _settingsFoldout.AddToClassList("settings-foldout");
             host.Add(_settingsFoldout);
 
+            var settingsScroll = new ScrollView(ScrollViewMode.Vertical);
+            settingsScroll.AddToClassList("settings-scroll");
+            _settingsFoldout.Add(settingsScroll);
+
             var grid = new VisualElement();
             grid.AddToClassList("settings-grid");
-            _settingsFoldout.Add(grid);
+            settingsScroll.Add(grid);
 
             _urlField = new TextField("URL do runtime") { value = Settings.CoderUrl };
             var urlRow = CreateSettingsRow(_urlField);
