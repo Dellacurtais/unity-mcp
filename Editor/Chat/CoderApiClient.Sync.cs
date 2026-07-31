@@ -166,9 +166,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                         .ConfigureAwait(false);
                     replace = false;
                     failureCount = 0;
-                    var delay = string.Equals(snapshot.Session?.Status, "running", StringComparison.OrdinalIgnoreCase)
-                        ? 1500
-                        : 3000;
+                    if (IsActiveSessionStatus(snapshot.Session?.Status))
+                    {
+                        await AttachActiveRunAsync(serverUrl, token, sessionId, ct).ConfigureAwait(false);
+                        continue;
+                    }
+                    var delay = 3000;
                     await Task.Delay(delay, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
@@ -181,6 +184,49 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                             $"Sync temporariamente indisponível; nova tentativa em {delay / 1000}s: {exception.Message}"));
                     await Task.Delay(delay, ct).ConfigureAwait(false);
                 }
+            }
+        }
+
+        internal static bool IsActiveSessionStatus(string status)
+            => string.Equals(status, "in_progress", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "running", StringComparison.OrdinalIgnoreCase);
+
+        private async Task AttachActiveRunAsync(
+            string serverUrl,
+            string token,
+            string sessionId,
+            CancellationToken ct)
+        {
+            if (Interlocked.CompareExchange(ref _attachedStreamActive, 1, 0) != 0) return;
+            try
+            {
+                var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/attach";
+                using var request = CreateRequest(HttpMethod.Get, url, token);
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+                using var response = await Http.SendAsync(
+                    request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return;
+                var responseBody = response.IsSuccessStatusCode
+                    ? null
+                    : await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                    throw new HttpRequestException($"HTTP {(int)response.StatusCode}: {responseBody}");
+
+                await MainThreadDispatcher.RunAsync(() =>
+                {
+                    _session.PrepareForLiveReplay();
+                    _session.StartAssistant();
+                }, ct).ConfigureAwait(false);
+
+                using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+                using var reader = new System.IO.StreamReader(stream, Encoding.UTF8);
+                await ParseSseAsync(reader, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _attachedStreamActive, 0);
+                if (!ct.IsCancellationRequested)
+                    await MainThreadDispatcher.RunAsync(() => _session.FinishAssistant());
             }
         }
 
@@ -240,6 +286,112 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 await MainThreadDispatcher.RunAsync(() =>
                     _session.SetInteractionFailed(key, exception.Message));
             }
+        }
+
+        private void MutateSession(
+            string serverUrl,
+            string token,
+            string sessionId,
+            HttpMethod method,
+            string endpoint,
+            JObject body,
+            string successMessage = null)
+        {
+            sessionId = CoderSessionIdentity.Normalize(sessionId);
+            if (string.IsNullOrEmpty(sessionId)) return;
+            _ = MutateSessionAsync(serverUrl, token, sessionId, method, endpoint, body, successMessage);
+        }
+
+        private async Task MutateSessionAsync(
+            string serverUrl,
+            string token,
+            string sessionId,
+            HttpMethod method,
+            string endpoint,
+            JObject body,
+            string successMessage)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+            timeout.CancelAfter(InteractionTimeout);
+            try
+            {
+                await SendJsonMutationAsync(
+                    serverUrl, token, sessionId, method, endpoint, body, timeout.Token).ConfigureAwait(false);
+                var snapshot = await GetSessionAsync(serverUrl, token, sessionId, timeout.Token).ConfigureAwait(false);
+                await MainThreadDispatcher.RunAsync(() =>
+                {
+                    _session.UpdateRemoteSession(snapshot.Session);
+                    Bootstrap.UpdateCoderSession(snapshot.Session);
+                    if (!string.IsNullOrEmpty(successMessage)) _session.AddSystemNote(successMessage);
+                }, _lifetimeCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!_lifetimeCts.IsCancellationRequested)
+            {
+                await MainThreadDispatcher.RunAsync(() =>
+                    _session.AddSystemNote($"Tempo limite ao aplicar `{endpoint}`."));
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception exception)
+            {
+                Debug.LogException(exception);
+                await MainThreadDispatcher.RunAsync(() =>
+                    _session.AddSystemNote($"Não foi possível aplicar `{endpoint}`: {exception.Message}"));
+            }
+        }
+
+        private async Task ApplyPostCreationSettingsAsync(
+            string serverUrl,
+            string token,
+            string sessionId,
+            CoderSessionOptions options,
+            CancellationToken ct)
+        {
+            await SendJsonMutationAsync(serverUrl, token, sessionId, new HttpMethod("PATCH"),
+                "plan-depth", new JObject { ["depth"] = options.PlanDepth ?? "normal" }, ct).ConfigureAwait(false);
+            await SendJsonMutationAsync(serverUrl, token, sessionId, new HttpMethod("PATCH"),
+                "tool-output-cap-level",
+                new JObject { ["level"] = options.ToolOutputCapLevel ?? "economic" }, ct).ConfigureAwait(false);
+            await SendJsonMutationAsync(serverUrl, token, sessionId, new HttpMethod("PATCH"),
+                "tool-permission-mode",
+                new JObject { ["mode"] = options.ToolPermissionMode ?? "auto" }, ct).ConfigureAwait(false);
+            await SendJsonMutationAsync(serverUrl, token, sessionId, new HttpMethod("PATCH"),
+                "response-language",
+                new JObject
+                {
+                    ["language"] = string.IsNullOrWhiteSpace(options.ResponseLanguage)
+                        ? JValue.CreateNull()
+                        : options.ResponseLanguage,
+                }, ct).ConfigureAwait(false);
+            await SendJsonMutationAsync(serverUrl, token, sessionId, new HttpMethod("PATCH"),
+                "output-style",
+                new JObject
+                {
+                    ["style"] = string.IsNullOrWhiteSpace(options.OutputStyle)
+                        ? JValue.CreateNull()
+                        : options.OutputStyle,
+                }, ct).ConfigureAwait(false);
+        }
+
+        private static async Task<JObject> SendJsonMutationAsync(
+            string serverUrl,
+            string token,
+            string sessionId,
+            HttpMethod method,
+            string endpoint,
+            JObject body,
+            CancellationToken ct)
+        {
+            var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/{endpoint}";
+            using var request = CreateRequest(method, url, token,
+                new StringContent((body ?? new JObject()).ToString(FormattingNs.None),
+                    Encoding.UTF8, "application/json"));
+            using var response = await Http.SendAsync(request, ct).ConfigureAwait(false);
+            var responseBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"HTTP {(int)response.StatusCode}: {responseBody}");
+            if (string.IsNullOrWhiteSpace(responseBody)) return new JObject();
+            try { return JObject.Parse(responseBody); }
+            catch { return new JObject(); }
         }
 
         private string ResolveInteractionKey(string requestedKey)

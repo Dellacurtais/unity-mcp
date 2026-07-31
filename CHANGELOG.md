@@ -5,6 +5,19 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.13] - 2026-07-31
+
+### Added
+
+- Coder Chat now renders native CodeStudio tool-approval cards with command details, optional feedback, approve/deny actions, and a per-session always-allow option.
+- The Unity composer now exposes reasoning effort, execution mode, thinking, plan depth, tool-output limits, permission mode, response language, output style, and run limits.
+
+### Fixed
+
+- Changing provider or model in Unity now switches the attached CodeStudio session immediately instead of changing only the next-session preference.
+- Reopening Coder Chat during an active run now attaches to its SSE stream, including approval requests, without duplicating the persisted current turn.
+- Active session metadata in Unity now reports the provider/model actually used by the runtime.
+
 ## [0.16.12] - 2026-07-30
 
 ### Changed

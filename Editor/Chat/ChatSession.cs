@@ -16,6 +16,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         Question,
         Plan,
         Tasks,
+        ToolApproval,
     }
 
     public sealed class PendingOption
@@ -63,6 +64,21 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public PendingTasks() { Kind = PendingInteractionKind.Tasks; }
     }
 
+    public sealed class PendingToolApproval : PendingInteraction
+    {
+        public string ToolUseId;
+        public string ParentToolUseId;
+        public string ToolName;
+        public string ArgsSummary;
+        public string InputJson;
+        public string RiskClass;
+        public string ApprovalKind;
+        public bool Nested;
+        public bool AlwaysAllow;
+
+        public PendingToolApproval() { Kind = PendingInteractionKind.ToolApproval; }
+    }
+
     public enum ChatConnectionState
     {
         Offline,
@@ -91,6 +107,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public PendingQuestion CurrentQuestion => Interactions.OfType<PendingQuestion>().FirstOrDefault();
         public PendingPlan CurrentPlan => Interactions.OfType<PendingPlan>().FirstOrDefault();
         public PendingTasks CurrentTasks => Interactions.OfType<PendingTasks>().FirstOrDefault();
+        public IEnumerable<PendingToolApproval> PendingToolApprovals => Interactions.OfType<PendingToolApproval>();
 
         public event Action OnChanged;
 
@@ -224,6 +241,14 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             MarkChanged();
         }
 
+        public void UpdateRemoteSession(CoderSessionInfo remote)
+        {
+            if (remote == null || !CoderSessionIdentity.IsValid(remote.Id)) return;
+            if (RemoteSession != null && RemoteSession.SemanticallyEquals(remote)) return;
+            RemoteSession = remote;
+            MarkChanged();
+        }
+
         public void Reset(bool keepSystemNotes = false)
         {
             if (keepSystemNotes) Messages.RemoveAll(message => message.Role != ChatRole.System && message.Role != ChatRole.Error);
@@ -237,6 +262,34 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             LastRemoteMessageId = 0;
             ConnectionState = ChatConnectionState.Offline;
             ConnectionDetail = null;
+            MarkChanged();
+        }
+
+        /// A cursorless GET /attach replays the current live turn from its
+        /// beginning. Remove the persisted projection of that same turn first
+        /// so replayed text/tool calls do not appear twice after reopening the
+        /// Unity window or after a Domain Reload.
+        public void PrepareForLiveReplay()
+        {
+            var lastRemoteUser = -1;
+            for (var index = Messages.Count - 1; index >= 0; index--)
+            {
+                if (Messages[index].IsRemote && Messages[index].Role == ChatRole.User)
+                {
+                    lastRemoteUser = index;
+                    break;
+                }
+            }
+
+            if (lastRemoteUser >= 0)
+            {
+                for (var index = Messages.Count - 1; index > lastRemoteUser; index--)
+                    if (Messages[index].IsRemote) Messages.RemoveAt(index);
+            }
+
+            StreamingAssistant = null;
+            Interactions.Clear();
+            IsRunning = false;
             MarkChanged();
         }
 
@@ -348,6 +401,18 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         }
 
         public void ClearPendingTasks() => RemoveInteraction(CurrentTasks?.Key);
+
+        public void SetPendingToolApproval(PendingToolApproval approval)
+        {
+            if (approval == null) return;
+            approval.Key = string.IsNullOrEmpty(approval.Key)
+                ? "approval:" + (approval.ToolUseId ?? Guid.NewGuid().ToString("N"))
+                : approval.Key;
+            UpsertInteraction(approval);
+        }
+
+        public void ClearPendingToolApproval(string toolUseId)
+            => RemoveInteraction("approval:" + (toolUseId ?? ""));
 
         public void SetInteractionSubmitting(string key)
         {

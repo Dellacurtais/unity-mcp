@@ -58,6 +58,15 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KCoderCustomPreamble = "Maicon.SceneAnalyzer.Coder.CustomPreamble";
         private const string KCoderThinking = "Maicon.SceneAnalyzer.Coder.Thinking";
         private const string KCoderShowSystem = "Maicon.SceneAnalyzer.Coder.ShowSystem";
+        private const string KCoderReasoningEffort = "Maicon.SceneAnalyzer.Coder.ReasoningEffort";
+        private const string KCoderExecutionMode = "Maicon.SceneAnalyzer.Coder.ExecutionMode";
+        private const string KCoderPlanDepth = "Maicon.SceneAnalyzer.Coder.PlanDepth";
+        private const string KCoderToolOutputCapLevel = "Maicon.SceneAnalyzer.Coder.ToolOutputCapLevel";
+        private const string KCoderToolPermissionMode = "Maicon.SceneAnalyzer.Coder.ToolPermissionMode";
+        private const string KCoderResponseLanguage = "Maicon.SceneAnalyzer.Coder.ResponseLanguage";
+        private const string KCoderOutputStyle = "Maicon.SceneAnalyzer.Coder.OutputStyle";
+        private const string KCoderMaxTurns = "Maicon.SceneAnalyzer.Coder.MaxTurns";
+        private const string KCoderMaxAutoContinues = "Maicon.SceneAnalyzer.Coder.MaxAutoContinues";
 
         public static bool AutoStartServer
         {
@@ -320,6 +329,90 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             get => EditorPrefs.GetBool(KCoderShowSystem, true);
             set => EditorPrefs.SetBool(KCoderShowSystem, value);
+        }
+
+        /// Native provider reasoning level. Empty means the model default.
+        public static string CoderReasoningEffort
+        {
+            get => EditorPrefs.GetString(KCoderReasoningEffort, "");
+            set => EditorPrefs.SetString(KCoderReasoningEffort, value ?? "");
+        }
+
+        /// Provider-independent orchestration mode: standard or ultra.
+        public static string CoderExecutionMode
+        {
+            get => EditorPrefs.GetString(KCoderExecutionMode, "standard");
+            set => EditorPrefs.SetString(KCoderExecutionMode, value == "ultra" ? "ultra" : "standard");
+        }
+
+        public static string CoderPlanDepth
+        {
+            get => EditorPrefs.GetString(KCoderPlanDepth, "normal");
+            set
+            {
+                var normalized = value == "simple" || value == "complex" ? value : "normal";
+                EditorPrefs.SetString(KCoderPlanDepth, normalized);
+            }
+        }
+
+        public static string CoderToolOutputCapLevel
+        {
+            get => EditorPrefs.GetString(KCoderToolOutputCapLevel, "economic");
+            set => EditorPrefs.SetString(KCoderToolOutputCapLevel, NormalizeToolOutputCap(value));
+        }
+
+        public static string CoderToolPermissionMode
+        {
+            get => EditorPrefs.GetString(KCoderToolPermissionMode, "auto");
+            set
+            {
+                var normalized = value == "ask" || value == "unrestricted" ? value : "auto";
+                EditorPrefs.SetString(KCoderToolPermissionMode, normalized);
+            }
+        }
+
+        public static string CoderResponseLanguage
+        {
+            get => EditorPrefs.GetString(KCoderResponseLanguage, "");
+            set => EditorPrefs.SetString(KCoderResponseLanguage, value ?? "");
+        }
+
+        public static string CoderOutputStyle
+        {
+            get => EditorPrefs.GetString(KCoderOutputStyle, "");
+            set
+            {
+                var normalized = value == "explanatory" || value == "learning" ? value : "";
+                EditorPrefs.SetString(KCoderOutputStyle, normalized);
+            }
+        }
+
+        /// Zero means unlimited, matching the runtime's null max_turns.
+        public static int CoderMaxTurns
+        {
+            get => Math.Max(0, EditorPrefs.GetInt(KCoderMaxTurns, 0));
+            set => EditorPrefs.SetInt(KCoderMaxTurns, Math.Max(0, value));
+        }
+
+        public static int CoderMaxAutoContinues
+        {
+            get => Math.Max(0, Math.Min(1000, EditorPrefs.GetInt(KCoderMaxAutoContinues, 15)));
+            set => EditorPrefs.SetInt(KCoderMaxAutoContinues, Math.Max(0, Math.Min(1000, value)));
+        }
+
+        private static string NormalizeToolOutputCap(string value)
+        {
+            switch (value)
+            {
+                case "medium":
+                case "high":
+                case "extra":
+                case "max":
+                case "ultra":
+                    return value;
+                default:
+                    return "economic";
+            }
         }
 
         public static string GenerateToken()

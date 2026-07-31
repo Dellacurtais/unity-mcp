@@ -36,6 +36,9 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 case PendingTasks tasks:
                     BuildTasks(tasks);
                     break;
+                case PendingToolApproval approval:
+                    BuildToolApproval(approval);
+                    break;
             }
 
             _inlineError = new Label(interaction.Error ?? "");
@@ -120,6 +123,58 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             Add(actions);
         }
 
+        private void BuildToolApproval(PendingToolApproval approval)
+        {
+            var summary = new Label(
+                $"{approval.ToolName ?? "ferramenta"} · risco: {RiskLabel(approval.RiskClass)}"
+                + (approval.Nested ? " · aninhada" : ""));
+            summary.AddToClassList("interaction-copy");
+            Add(summary);
+
+            var command = string.IsNullOrWhiteSpace(approval.InputJson)
+                ? approval.ArgsSummary
+                : approval.InputJson;
+            if (!string.IsNullOrWhiteSpace(command))
+            {
+                var scroll = new ScrollView(ScrollViewMode.Vertical);
+                scroll.AddToClassList("interaction-scroll");
+                var code = new Label(command);
+                code.AddToClassList("tool-code");
+                scroll.Add(code);
+                Add(scroll);
+            }
+
+            if (approval.ApprovalKind == "database_write")
+            {
+                var warning = new Label(
+                    "Esta operação grava no banco. Revise o comando antes de executar.");
+                warning.AddToClassList("interaction-warning");
+                Add(warning);
+            }
+
+            var note = CreateDraftField(approval, "Motivo opcional (enviado ao agente)");
+            Add(note);
+
+            var alwaysAllow = new Toggle(
+                approval.ApprovalKind == "database_write"
+                    ? "Sempre permitir esta gravação nesta sessão"
+                    : "Sempre permitir esta ferramenta nesta sessão")
+            {
+                value = approval.AlwaysAllow,
+            };
+            alwaysAllow.RegisterValueChangedCallback(evt => approval.AlwaysAllow = evt.newValue);
+            alwaysAllow.AddToClassList("interaction-always-allow");
+            Add(alwaysAllow);
+
+            var actions = new VisualElement();
+            actions.AddToClassList("interaction-actions");
+            actions.Add(new Button(() => SubmitToolApproval(
+                approval, true, approval.ResponseDraft, approval.AlwaysAllow)) { text = "Aprovar" });
+            actions.Add(new Button(() => SubmitToolApproval(
+                approval, false, approval.ResponseDraft, false)) { text = "Negar" });
+            Add(actions);
+        }
+
         private static TextField CreateDraftField(PendingInteraction interaction, string label)
         {
             var input = new TextField(label)
@@ -155,6 +210,19 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 Settings.CoderUrl, Settings.CoderToken, Settings.CoderSessionId, tasks.ToolUseId, approved);
         }
 
+        private static void SubmitToolApproval(
+            PendingToolApproval approval, bool approved, string note, bool alwaysAllow)
+        {
+            Bootstrap.ChatClient?.RespondToToolApproval(
+                Settings.CoderUrl,
+                Settings.CoderToken,
+                Settings.CoderSessionId,
+                approval.ToolUseId,
+                approved,
+                note,
+                alwaysAllow);
+        }
+
         private void ShowInlineError(string message)
         {
             if (_inlineError == null) return;
@@ -169,7 +237,18 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 case PendingInteractionKind.Question: return "Pergunta do agente";
                 case PendingInteractionKind.Plan: return "Plano aguardando aprovação";
                 case PendingInteractionKind.Tasks: return "Tarefas aguardando aprovação";
+                case PendingInteractionKind.ToolApproval: return "Aprovação necessária";
                 default: return "Ação necessária";
+            }
+        }
+
+        private static string RiskLabel(string risk)
+        {
+            switch (risk)
+            {
+                case "execute": return "execução";
+                case "admin": return "administrativo";
+                default: return "escrita";
             }
         }
 

@@ -6,6 +6,37 @@ using Newtonsoft.Json.Linq;
 
 namespace Maicon.SceneAnalyzer.Editor.Chat
 {
+    public sealed class CoderSessionOptions
+    {
+        public string ReasoningEffort;
+        public string ExecutionMode = "standard";
+        public bool ThinkingEnabled;
+        public string PlanDepth = "normal";
+        public string ToolOutputCapLevel = "economic";
+        public string ToolPermissionMode = "auto";
+        public string ResponseLanguage;
+        public string OutputStyle;
+        public int MaxTurns;
+        public int MaxAutoContinues = 15;
+
+        public static CoderSessionOptions CaptureCurrent()
+        {
+            return new CoderSessionOptions
+            {
+                ReasoningEffort = Settings.CoderReasoningEffort,
+                ExecutionMode = Settings.CoderExecutionMode,
+                ThinkingEnabled = Settings.CoderThinking,
+                PlanDepth = Settings.CoderPlanDepth,
+                ToolOutputCapLevel = Settings.CoderToolOutputCapLevel,
+                ToolPermissionMode = Settings.CoderToolPermissionMode,
+                ResponseLanguage = Settings.CoderResponseLanguage,
+                OutputStyle = Settings.CoderOutputStyle,
+                MaxTurns = Settings.CoderMaxTurns,
+                MaxAutoContinues = Settings.CoderMaxAutoContinues,
+            };
+        }
+    }
+
     internal static class CoderSessionIdentity
     {
         internal static string Normalize(string value)
@@ -39,7 +70,15 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public string Status;
         public string Agent;
         public string ToolPermissionMode;
+        public string ReasoningEffortOverride;
+        public string ExecutionModeOverride;
+        public string PlanDepthOverride;
+        public string ToolOutputCapLevel;
+        public string ResponseLanguageOverride;
+        public string OutputStyleOverride;
         public bool ThinkingEnabled;
+        public int? MaxTurns;
+        public int MaxAutoContinues;
         public DateTime? CreatedAt;
         public DateTime? UpdatedAt;
         public int TotalInputTokens;
@@ -58,7 +97,15 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 Status = (string)token["status"],
                 Agent = (string)token["agent"],
                 ToolPermissionMode = (string)token["tool_permission_mode"],
+                ReasoningEffortOverride = (string)token["reasoning_effort_override"],
+                ExecutionModeOverride = (string)token["execution_mode_override"],
+                PlanDepthOverride = (string)token["plan_depth_override"],
+                ToolOutputCapLevel = (string)token["tool_output_cap_level"],
+                ResponseLanguageOverride = (string)token["response_language_override"],
+                OutputStyleOverride = (string)token["output_style_override"],
                 ThinkingEnabled = (bool?)token["thinking_enabled"] ?? false,
+                MaxTurns = (int?)token["max_turns"],
+                MaxAutoContinues = (int?)token["max_auto_continues"] ?? 15,
                 CreatedAt = ParseDate((string)token["created_at"]),
                 UpdatedAt = ParseDate((string)token["updated_at"]),
                 TotalInputTokens = (int?)token["total_input_tokens"] ?? 0,
@@ -77,7 +124,15 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 && string.Equals(Status, other.Status, StringComparison.Ordinal)
                 && string.Equals(Agent, other.Agent, StringComparison.Ordinal)
                 && string.Equals(ToolPermissionMode, other.ToolPermissionMode, StringComparison.Ordinal)
+                && string.Equals(ReasoningEffortOverride, other.ReasoningEffortOverride, StringComparison.Ordinal)
+                && string.Equals(ExecutionModeOverride, other.ExecutionModeOverride, StringComparison.Ordinal)
+                && string.Equals(PlanDepthOverride, other.PlanDepthOverride, StringComparison.Ordinal)
+                && string.Equals(ToolOutputCapLevel, other.ToolOutputCapLevel, StringComparison.Ordinal)
+                && string.Equals(ResponseLanguageOverride, other.ResponseLanguageOverride, StringComparison.Ordinal)
+                && string.Equals(OutputStyleOverride, other.OutputStyleOverride, StringComparison.Ordinal)
                 && ThinkingEnabled == other.ThinkingEnabled
+                && MaxTurns == other.MaxTurns
+                && MaxAutoContinues == other.MaxAutoContinues
                 && Nullable.Equals(CreatedAt, other.CreatedAt)
                 && Nullable.Equals(UpdatedAt, other.UpdatedAt)
                 && TotalInputTokens == other.TotalInputTokens

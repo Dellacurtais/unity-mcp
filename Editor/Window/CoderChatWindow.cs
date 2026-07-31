@@ -43,6 +43,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private TextField _composerInput;
         private DropdownField _agentField;
         private DropdownField _effortField;
+        private DropdownField _planDepthField;
         private DropdownField _sessionField;
         private ScrollView _transcriptScroll;
         private IVisualElementScheduledItem _scheduledUiFlush;
@@ -199,6 +200,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private void BuildConnectionBar()
         {
             _connectionActions.Clear();
+            _permissionBadge.focusable = true;
+            _permissionBadge.RegisterCallback<ClickEvent>(_ => CyclePermissionMode());
 
             _sessionField = new DropdownField
             {
@@ -298,24 +301,49 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 if (!_agentByLabel.TryGetValue(evt.newValue, out var selected)) return;
                 Settings.CoderAgent = selected.Id;
                 _agentField.tooltip = selected.Description ?? selected.Label;
+                ApplyToActiveSession(client => client.SetSessionAgent(
+                    Settings.CoderUrl,
+                    Settings.CoderToken,
+                    Settings.CoderSessionId,
+                    Settings.CoderAgent));
+                RefreshPlanDepthControl();
             });
             _composerLeft.Add(_agentField);
 
-            _effortField = new DropdownField(new List<string> { "Padrão", "Pensar" }, 0);
+            _effortField = new DropdownField(new List<string> { "auto" }, 0);
             _effortField.AddToClassList("effort-field");
             _effortField.RegisterValueChangedCallback(evt =>
             {
                 if (!_effortField.enabledSelf) return;
-                Settings.CoderThinking = evt.newValue == "Pensar";
+                Settings.CoderReasoningEffort = evt.newValue == "auto" ? "" : evt.newValue;
+                ApplyToActiveSession(client => client.SetReasoningEffort(
+                    Settings.CoderUrl,
+                    Settings.CoderToken,
+                    Settings.CoderSessionId,
+                    Settings.CoderReasoningEffort));
             });
             _composerLeft.Add(_effortField);
+
+            _planDepthField = new DropdownField(new List<string> { "Simples", "Normal", "Complexo" }, 1);
+            _planDepthField.AddToClassList("plan-depth-field");
+            _planDepthField.RegisterValueChangedCallback(evt =>
+            {
+                Settings.CoderPlanDepth = PlanDepthValue(evt.newValue);
+                ApplyToActiveSession(client => client.SetPlanDepth(
+                    Settings.CoderUrl,
+                    Settings.CoderToken,
+                    Settings.CoderSessionId,
+                    Settings.CoderPlanDepth));
+                _planDepthSettingsField?.SetValueWithoutNotify(evt.newValue);
+            });
+            _composerLeft.Add(_planDepthField);
 
             _modelButton = new Button(() =>
             {
                 if (_settingsFoldout != null) _settingsFoldout.value = true;
                 _modelField?.Focus();
             });
-            _modelButton.tooltip = "Provider/modelo da nova sessão";
+            _modelButton.tooltip = "Provider/modelo ativo; clique para abrir as configurações";
             _composerLeft.Add(_modelButton);
 
             _sendButton = new Button(DoSend);
@@ -480,6 +508,9 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             RefreshTranscript();
             RefreshInteractions();
             RefreshEffortAvailability();
+            RefreshPlanDepthControl();
+            RefreshSessionSettingsControls();
+            UpdateModelButton();
         }
 
         private void TryAttachPendingSession()
@@ -597,6 +628,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 PendingQuestion question => question.Question?.Length ?? 0,
                 PendingPlan plan => plan.Plan?.Length ?? 0,
                 PendingTasks tasks => tasks.Summary?.Length ?? 0,
+                PendingToolApproval approval =>
+                    (approval.ToolName?.Length ?? 0)
+                    + (approval.ArgsSummary?.Length ?? 0)
+                    + (approval.InputJson?.Length ?? 0),
                 _ => 0,
             };
         }
@@ -614,20 +649,22 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             var remote = session.RemoteSession;
             var sessionId = remote?.Id ?? Settings.CoderSessionId;
             var title = remote?.Title;
+            var provider = remote?.Provider ?? Settings.CoderProvider;
             var model = remote?.Model ?? Settings.CoderModel;
             _sessionMetaLabel.text = CoderSessionIdentity.IsValid(sessionId)
                 ? $"#{CoderSessionIdentity.Short(sessionId)} · {(string.IsNullOrEmpty(title) ? "sessão Unity" : title)}"
-                    + (string.IsNullOrEmpty(model) ? "" : $" · {model}")
+                    + (string.IsNullOrEmpty(model) ? "" : $" · {provider}/{model}")
                 : "Nenhuma sessão · o envio criará uma automaticamente";
             _sessionMetaLabel.tooltip = CoderSessionIdentity.IsValid(sessionId)
                 ? $"ID da sessão: {sessionId}"
                 : "";
 
             var permission = remote?.ToolPermissionMode;
+            if (string.IsNullOrEmpty(permission)) permission = Settings.CoderToolPermissionMode;
             _permissionBadge.text = string.IsNullOrEmpty(permission) ? "PERMISSÃO —" : permission.ToUpperInvariant();
             _permissionBadge.tooltip = string.IsNullOrEmpty(permission)
                 ? "O runtime ainda não informou o modo de permissão desta sessão"
-                : $"Modo de permissão do runtime: {permission}";
+                : $"Modo de permissão do runtime: {permission}. Clique para alternar.";
         }
 
         private void SetStatusClass(ChatConnectionState state)
@@ -681,7 +718,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             }
 
             _agentField.choices = labels;
-            var selected = _agentByLabel.FirstOrDefault(pair => pair.Value.Id == Settings.CoderAgent);
+            var activeAgent = Bootstrap.ChatSession?.RemoteSession?.Agent ?? Settings.CoderAgent;
+            var selected = _agentByLabel.FirstOrDefault(pair => pair.Value.Id == activeAgent);
             if (string.IsNullOrEmpty(selected.Key) && labels.Count > 0) selected = new KeyValuePair<string, CoderAgentInfo>(labels[0], _agentByLabel[labels[0]]);
             if (!string.IsNullOrEmpty(selected.Key))
             {
@@ -719,11 +757,32 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             if (_effortField == null) return;
             var model = SelectedModelInfo();
             var canReason = model == null || model.CanReason;
-            _effortField.SetEnabled(canReason);
-            _effortField.SetValueWithoutNotify(canReason && Settings.CoderThinking ? "Pensar" : "Padrão");
+            var choices = new List<string> { "auto" };
+            if (model?.SupportedReasoningLevels != null)
+                choices.AddRange(model.SupportedReasoningLevels.Where(level => !string.IsNullOrWhiteSpace(level)));
+            _effortField.choices = choices.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+            var remote = Bootstrap.ChatSession?.RemoteSession;
+            var effort = remote?.ReasoningEffortOverride ?? Settings.CoderReasoningEffort;
+            if (string.IsNullOrWhiteSpace(effort) || !_effortField.choices.Contains(effort)) effort = "auto";
+            var executionMode = remote?.ExecutionModeOverride ?? Settings.CoderExecutionMode;
+            _effortField.SetEnabled(canReason && executionMode != "ultra");
+            _effortField.SetValueWithoutNotify(effort);
             _effortField.tooltip = canReason
-                ? "Padrão omite thinking; Pensar envia thinking=true"
+                ? executionMode == "ultra"
+                    ? "O modo Ultra escolhe o esforço compatível automaticamente"
+                    : $"Esforço nativo do modelo; auto usa o padrão ({model?.DefaultReasoningLevel ?? "runtime"})"
                 : "Este modelo informou can_reason=false";
+        }
+
+        private void RefreshPlanDepthControl()
+        {
+            if (_planDepthField == null) return;
+            var remote = Bootstrap.ChatSession?.RemoteSession;
+            var activeAgent = remote?.Agent ?? Settings.CoderAgent;
+            var depth = remote?.PlanDepthOverride ?? Settings.CoderPlanDepth;
+            _planDepthField.SetValueWithoutNotify(PlanDepthLabel(depth));
+            SetDisplayed(_planDepthField, activeAgent == "plan");
         }
 
         private CoderModelInfo SelectedModelInfo()
@@ -732,12 +791,35 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             return provider?.Models?.FirstOrDefault(item => item.Id == Settings.CoderModel);
         }
 
-        private void UpdateModelButton()
+        private void UpdateModelButton(bool applying = false)
         {
             if (_modelButton == null) return;
-            var provider = string.IsNullOrEmpty(Settings.CoderProvider) ? "provider" : Settings.CoderProvider;
-            var model = string.IsNullOrEmpty(Settings.CoderModel) ? "modelo padrão" : Settings.CoderModel;
-            _modelButton.text = $"{provider} · {model}";
+            var remote = Bootstrap.ChatSession?.RemoteSession;
+            var provider = remote?.Provider ?? Settings.CoderProvider;
+            var model = remote?.Model ?? Settings.CoderModel;
+            if (applying)
+            {
+                provider = Settings.CoderProvider;
+                model = Settings.CoderModel;
+            }
+            provider = string.IsNullOrEmpty(provider) ? "provider" : provider;
+            model = string.IsNullOrEmpty(model) ? "modelo padrão" : model;
+            _modelButton.text = $"{provider} · {model}" + (applying ? " …" : "");
+            _modelButton.tooltip = remote == null
+                ? "Provider/modelo da próxima sessão"
+                : $"Ativo: {remote.Provider} · {remote.Model}. Clique para configurar.";
+        }
+
+        private void CyclePermissionMode()
+        {
+            var current = Bootstrap.ChatSession?.RemoteSession?.ToolPermissionMode;
+            if (string.IsNullOrEmpty(current)) current = Settings.CoderToolPermissionMode;
+            var next = current == "ask" ? "auto" : current == "auto" ? "unrestricted" : "ask";
+            Settings.CoderToolPermissionMode = next;
+            _permissionModeSettingsField?.SetValueWithoutNotify(PermissionModeLabel(next));
+            _permissionBadge.text = next.ToUpperInvariant() + " …";
+            ApplyToActiveSession(client => client.SetToolPermissionMode(
+                Settings.CoderUrl, Settings.CoderToken, Settings.CoderSessionId, next));
         }
 
         private void InitializeTranscriptScroll()

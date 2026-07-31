@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using Maicon.SceneAnalyzer.Editor.Chat;
 using Maicon.SceneAnalyzer.Editor.Core;
@@ -91,6 +92,69 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             Assert.That(session.Interactions, Is.Empty);
             Assert.That(session.ConnectionState, Is.EqualTo(ChatConnectionState.Idle));
+        }
+
+        [Test]
+        public void ToolApprovalEvents_AreVisibleAndResolvableByToolUseId()
+        {
+            var session = new ChatSession();
+            var client = new CoderApiClient(session);
+            var dispatch = typeof(CoderApiClient).GetMethod(
+                "DispatchEventInner", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(dispatch, Is.Not.Null);
+
+            dispatch.Invoke(client, new object[]
+            {
+                "tool_approval_request",
+                "",
+                new JObject
+                {
+                    ["toolUseId"] = "tool-command-1",
+                    ["toolName"] = "run_command",
+                    ["argsSummary"] = "{\"command\":\"dir Assets\"}",
+                    ["riskClass"] = "execute",
+                    ["approvalKind"] = "standard",
+                },
+            });
+
+            var approval = session.PendingToolApprovals.Single();
+            Assert.That(approval.ToolUseId, Is.EqualTo("tool-command-1"));
+            Assert.That(approval.ToolName, Is.EqualTo("run_command"));
+            Assert.That(approval.ArgsSummary, Does.Contain("dir Assets"));
+            Assert.That(session.ConnectionState, Is.EqualTo(ChatConnectionState.WaitingForApproval));
+
+            dispatch.Invoke(client, new object[]
+            {
+                "tool_approval_resolved",
+                "",
+                new JObject { ["toolUseId"] = "tool-command-1" },
+            });
+            Assert.That(session.PendingToolApprovals, Is.Empty);
+        }
+
+        [Test]
+        public void LiveReplay_DropsOnlyRemoteTailAfterLatestUserMessage()
+        {
+            var session = new ChatSession();
+            var user = new ChatMessage { Role = ChatRole.User, Text = "Faça", IsRemote = true };
+            var staleAssistant = new ChatMessage { Role = ChatRole.Assistant, Text = "parcial", IsRemote = true };
+            session.Messages.Add(user);
+            session.Messages.Add(staleAssistant);
+            session.AddSystemNote("nota local");
+            session.SetPendingToolApproval(new PendingToolApproval
+            {
+                ToolUseId = "tool-1",
+                ToolName = "run_command",
+            });
+
+            session.PrepareForLiveReplay();
+
+            Assert.That(session.Messages, Has.Count.EqualTo(2));
+            Assert.That(session.Messages[0], Is.SameAs(user));
+            Assert.That(session.Messages[1].Role, Is.EqualTo(ChatRole.System));
+            Assert.That(session.Interactions, Is.Empty);
+            Assert.That(CoderApiClient.IsActiveSessionStatus("in_progress"), Is.True);
+            Assert.That(CoderApiClient.IsActiveSessionStatus("idle"), Is.False);
         }
 
         [Test]
@@ -494,6 +558,33 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void CreateSessionBody_CarriesComposerSettingsOnFirstTurn()
+        {
+            var body = CoderApiClient.BuildCreateSessionBody(
+                114,
+                "Unity",
+                "kimi-code",
+                "k3",
+                "plan",
+                new CoderSessionOptions
+                {
+                    ReasoningEffort = "high",
+                    ExecutionMode = "ultra",
+                    ThinkingEnabled = true,
+                    MaxTurns = 40,
+                    MaxAutoContinues = 9,
+                });
+
+            Assert.That((string)body["provider"], Is.EqualTo("kimi-code"));
+            Assert.That((string)body["model"], Is.EqualTo("k3"));
+            Assert.That((string)body["reasoning_effort"], Is.EqualTo("high"));
+            Assert.That((string)body["execution_mode"], Is.EqualTo("ultra"));
+            Assert.That((bool)body["thinking_enabled"], Is.True);
+            Assert.That((int)body["max_turns"], Is.EqualTo(40));
+            Assert.That((int)body["max_auto_continues"], Is.EqualTo(9));
+        }
+
+        [Test]
         public void SessionInfo_UsesCanonicalUuidAndRejectsLegacyNumericIdentity()
         {
             var current = CoderSessionInfo.FromJson(new JObject
@@ -511,6 +602,36 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(current.Id, Is.EqualTo(SessionA));
             Assert.That(current.ProjectId, Is.EqualTo(112));
             Assert.That(legacy.Id, Is.Empty);
+        }
+
+        [Test]
+        public void SessionInfo_ProjectsAdvancedComposerSettings()
+        {
+            var session = CoderSessionInfo.FromJson(new JObject
+            {
+                ["id"] = SessionA,
+                ["provider"] = "kimi-code",
+                ["model"] = "k3",
+                ["reasoning_effort_override"] = "max",
+                ["execution_mode_override"] = "ultra",
+                ["thinking_enabled"] = true,
+                ["plan_depth_override"] = "complex",
+                ["tool_output_cap_level"] = "high",
+                ["tool_permission_mode"] = "unrestricted",
+                ["response_language_override"] = "Português (Brasil)",
+                ["output_style_override"] = "explanatory",
+                ["max_turns"] = 80,
+                ["max_auto_continues"] = 12,
+            });
+
+            Assert.That(session.ReasoningEffortOverride, Is.EqualTo("max"));
+            Assert.That(session.ExecutionModeOverride, Is.EqualTo("ultra"));
+            Assert.That(session.ThinkingEnabled, Is.True);
+            Assert.That(session.PlanDepthOverride, Is.EqualTo("complex"));
+            Assert.That(session.ToolOutputCapLevel, Is.EqualTo("high"));
+            Assert.That(session.ToolPermissionMode, Is.EqualTo("unrestricted"));
+            Assert.That(session.MaxTurns, Is.EqualTo(80));
+            Assert.That(session.MaxAutoContinues, Is.EqualTo(12));
         }
 
         private static void AssertExpandedFoldouts(VisualElement element)

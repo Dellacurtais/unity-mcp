@@ -36,6 +36,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         private int _streamDrainScheduled;
         private long _enqueuedStreamEvents;
         private long _appliedStreamEvents;
+        private int _attachedStreamActive;
 
         private const int MaxEventsPerDrain = 96;
         private const double MaxDrainMilliseconds = 3.5;
@@ -91,7 +92,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             _session = session;
         }
 
-        public bool IsRunning => Volatile.Read(ref _cts) != null;
+        public bool IsRunning
+            => Volatile.Read(ref _cts) != null || Volatile.Read(ref _attachedStreamActive) != 0;
 
         public bool IsSyncing => _syncCts != null && !_syncCts.IsCancellationRequested;
 
@@ -142,6 +144,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             var snapProvider = Settings.CoderProvider;
             var snapModel = Settings.CoderModel;
             var snapThinking = Settings.CoderThinking;
+            var sessionOptions = CoderSessionOptions.CaptureCurrent();
 
             _ = Task.Run(async () =>
             {
@@ -168,7 +171,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                         effectiveSessionId = await CreateSessionAsync(
                             serverUrl, token, projectId,
                             $"Unity chat — {DateTime.Now:HH:mm:ss}",
-                            snapProvider, snapModel, agent, token2);
+                            snapProvider, snapModel, agent, sessionOptions, token2);
                         if (string.IsNullOrEmpty(effectiveSessionId))
                         {
                             await MainThreadDispatcher.RunAsync(() => _session.AddError(
@@ -323,6 +326,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             }
             var ct = operationCts.Token;
             var unityRoot = Bootstrap.UnityProjectRoot;
+            var sessionOptions = CoderSessionOptions.CaptureCurrent();
             _ = Task.Run(async () =>
             {
                 try
@@ -335,7 +339,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                         return;
                     }
 
-                    var id = await CreateSessionAsync(serverUrl, token, resolvedProjectId, title, provider, model, agent, ct);
+                    var id = await CreateSessionAsync(
+                        serverUrl, token, resolvedProjectId, title, provider, model, agent, sessionOptions, ct);
                     if (CoderSessionIdentity.IsValid(id))
                     {
                         // Mark the session as needing the preamble on its first
@@ -431,6 +436,76 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             _ = PostInteractionAsync(serverUrl, token, sessionId, "tasks-response", key, body,
                 approved ? "Tarefas aprovadas" : "Tarefas rejeitadas");
         }
+
+        public void RespondToToolApproval(string serverUrl, string token, string sessionId,
+            string toolUseId, bool approved, string note, bool alwaysAllow)
+        {
+            var key = "approval:" + (toolUseId ?? "");
+            var body = new JObject
+            {
+                ["tool_use_id"] = toolUseId ?? "",
+                ["approved"] = approved,
+                ["note"] = note ?? "",
+                ["always_allow"] = approved && alwaysAllow,
+            };
+            _ = PostInteractionAsync(serverUrl, token, sessionId, "tool-approval", key, body,
+                approved ? "Comando aprovado" : "Comando negado");
+        }
+
+        public void SwitchProvider(string serverUrl, string token, string sessionId, string provider, string model)
+            => MutateSession(serverUrl, token, sessionId, HttpMethod.Post, "switch",
+                new JObject { ["provider"] = provider ?? "", ["model"] = model ?? "" },
+                $"Modelo ativo alterado para {provider} · {model}");
+
+        public void SetSessionAgent(string serverUrl, string token, string sessionId, string agent)
+            => MutateSession(serverUrl, token, sessionId, new HttpMethod("PATCH"), "agent",
+                new JObject { ["agent"] = string.IsNullOrWhiteSpace(agent) ? JValue.CreateNull() : agent });
+
+        public void SetReasoningEffort(string serverUrl, string token, string sessionId, string effort)
+            => MutateSession(serverUrl, token, sessionId, new HttpMethod("PATCH"), "reasoning-effort",
+                new JObject
+                {
+                    ["effort"] = string.IsNullOrWhiteSpace(effort) ? JValue.CreateNull() : effort,
+                });
+
+        public void SetExecutionMode(string serverUrl, string token, string sessionId, string mode)
+            => MutateSession(serverUrl, token, sessionId, new HttpMethod("PATCH"), "execution-mode",
+                new JObject { ["mode"] = mode == "ultra" ? "ultra" : "standard" });
+
+        public void SetThinking(string serverUrl, string token, string sessionId, bool thinking)
+            => MutateSession(serverUrl, token, sessionId, new HttpMethod("PATCH"), "thinking",
+                new JObject { ["thinking"] = thinking });
+
+        public void SetPlanDepth(string serverUrl, string token, string sessionId, string depth)
+            => MutateSession(serverUrl, token, sessionId, new HttpMethod("PATCH"), "plan-depth",
+                new JObject { ["depth"] = string.IsNullOrWhiteSpace(depth) ? JValue.CreateNull() : depth });
+
+        public void SetToolOutputCapLevel(string serverUrl, string token, string sessionId, string level)
+            => MutateSession(serverUrl, token, sessionId, new HttpMethod("PATCH"), "tool-output-cap-level",
+                new JObject { ["level"] = string.IsNullOrWhiteSpace(level) ? JValue.CreateNull() : level });
+
+        public void SetToolPermissionMode(string serverUrl, string token, string sessionId, string mode)
+            => MutateSession(serverUrl, token, sessionId, new HttpMethod("PATCH"), "tool-permission-mode",
+                new JObject { ["mode"] = string.IsNullOrWhiteSpace(mode) ? JValue.CreateNull() : mode });
+
+        public void SetResponseLanguage(string serverUrl, string token, string sessionId, string language)
+            => MutateSession(serverUrl, token, sessionId, new HttpMethod("PATCH"), "response-language",
+                new JObject
+                {
+                    ["language"] = string.IsNullOrWhiteSpace(language) ? JValue.CreateNull() : language,
+                });
+
+        public void SetOutputStyle(string serverUrl, string token, string sessionId, string style)
+            => MutateSession(serverUrl, token, sessionId, new HttpMethod("PATCH"), "output-style",
+                new JObject { ["style"] = string.IsNullOrWhiteSpace(style) ? JValue.CreateNull() : style });
+
+        public void SetRunLimits(string serverUrl, string token, string sessionId, int maxTurns, int maxAutoContinues)
+            => MutateSession(serverUrl, token, sessionId, new HttpMethod("PATCH"), "run-limits",
+                new JObject
+                {
+                    ["max_turns"] = maxTurns > 0 ? new JValue(maxTurns) : JValue.CreateNull(),
+                    ["max_auto_continues"] = Math.Max(0, Math.Min(1000, maxAutoContinues)),
+                });
 
         /// Quick connectivity probe: GETs /api/projects and reports the HTTP
         /// status to the chat transcript. Useful when "I sent a message and
@@ -716,18 +791,16 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
         public async Task<string> CreateSessionAsync(string serverUrl, string token, int projectId,
             string title, string provider, string model, string agent, CancellationToken ct)
+            => await CreateSessionAsync(
+                serverUrl, token, projectId, title, provider, model, agent, null, ct);
+
+        public async Task<string> CreateSessionAsync(string serverUrl, string token, int projectId,
+            string title, string provider, string model, string agent, CoderSessionOptions options, CancellationToken ct)
         {
             try
             {
                 var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions";
-                var body = new JObject
-                {
-                    ["project_id"] = projectId,
-                    ["title"] = string.IsNullOrEmpty(title) ? $"Unity chat — {DateTime.Now:yyyy-MM-dd HH:mm}" : title,
-                    ["provider"] = string.IsNullOrEmpty(provider) ? "anthropic" : provider,
-                };
-                if (!string.IsNullOrEmpty(model)) body["model"] = model;
-                if (!string.IsNullOrEmpty(agent)) body["agent"] = agent;
+                var body = BuildCreateSessionBody(projectId, title, provider, model, agent, options);
 
                 using var req = new HttpRequestMessage(HttpMethod.Post, url)
                 {
@@ -753,6 +826,18 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     await MainThreadDispatcher.RunAsync(() => _session.AddError(
                         $"create session returned no id: {bodyText}"));
                 }
+                else if (options != null)
+                {
+                    try
+                    {
+                        await ApplyPostCreationSettingsAsync(serverUrl, token, id, options, ct);
+                    }
+                    catch (Exception settingsException)
+                    {
+                        await MainThreadDispatcher.RunAsync(() => _session.AddSystemNote(
+                            $"Sessão criada, mas uma configuração avançada não foi aplicada: {settingsException.Message}"));
+                    }
+                }
                 return id;
             }
             catch (OperationCanceledException) { return ""; }
@@ -762,6 +847,33 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 await MainThreadDispatcher.RunAsync(() => _session.AddError($"create session error: {e.Message}"));
                 return "";
             }
+        }
+
+        public static JObject BuildCreateSessionBody(int projectId, string title, string provider,
+            string model, string agent, CoderSessionOptions options)
+        {
+            var body = new JObject
+            {
+                ["project_id"] = projectId,
+                ["title"] = string.IsNullOrEmpty(title)
+                    ? $"Unity chat — {DateTime.Now:yyyy-MM-dd HH:mm}"
+                    : title,
+                ["provider"] = string.IsNullOrEmpty(provider) ? "anthropic" : provider,
+            };
+            if (!string.IsNullOrEmpty(model)) body["model"] = model;
+            if (!string.IsNullOrEmpty(agent)) body["agent"] = agent;
+            if (options == null) return body;
+
+            body["execution_mode"] = options.ExecutionMode == "ultra" ? "ultra" : "standard";
+            body["reasoning_effort"] = string.IsNullOrWhiteSpace(options.ReasoningEffort)
+                ? JValue.CreateNull()
+                : options.ReasoningEffort.Trim();
+            body["thinking_enabled"] = options.ThinkingEnabled;
+            body["max_turns"] = options.MaxTurns > 0
+                ? new JValue(options.MaxTurns)
+                : JValue.CreateNull();
+            body["max_auto_continues"] = Math.Max(0, Math.Min(1000, options.MaxAutoContinues));
+            return body;
         }
 
         public static JObject BuildMessageBody(string content, string profile, string agent, bool thinking)
@@ -1111,6 +1223,31 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     _session.SetPendingTasks(t);
                     break;
                 }
+                case "tool_approval_request":
+                {
+                    var approval = new PendingToolApproval
+                    {
+                        ToolUseId = AsString(payload?["toolUseId"] ?? payload?["tool_use_id"]),
+                        ParentToolUseId = AsString(payload?["parentToolUseId"] ?? payload?["parent_tool_use_id"]),
+                        ToolName = AsString(payload?["toolName"] ?? payload?["tool_name"]) ?? "ferramenta",
+                        ArgsSummary = AsString(payload?["argsSummary"] ?? payload?["args_summary"]) ?? "",
+                        InputJson = payload?["input"]?.ToString(FormattingNs.Indented) ?? "",
+                        RiskClass = AsString(payload?["riskClass"] ?? payload?["risk_class"]) ?? "write",
+                        ApprovalKind = AsString(payload?["approvalKind"] ?? payload?["approval_kind"]) ?? "standard",
+                        Nested = AsBool(payload?["nested"]) ?? false,
+                    };
+                    _session.SetPendingToolApproval(approval);
+                    break;
+                }
+                case "tool_approval_resolved":
+                    _session.ClearPendingToolApproval(
+                        AsString(payload?["toolUseId"] ?? payload?["tool_use_id"]));
+                    break;
+                case "provider_swapped":
+                    _session.AddSystemNote(
+                        $"Modelo ativo: {AsString(payload?["provider"]) ?? "provider"} · "
+                        + $"{AsString(payload?["model"]) ?? "modelo"}");
+                    break;
                 case "session":
                     var sid = CoderSessionIdentity.FromToken(payload?["id"]);
                     if (!string.IsNullOrEmpty(sid)) Settings.CoderSessionId = sid;
