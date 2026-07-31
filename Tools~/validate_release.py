@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "com.maicon.scene-analyzer"
-RELEASE_VERSION = "0.16.18"
+RELEASE_VERSION = "0.16.19"
 PINNED_REQUIREMENT = re.compile(r"^[A-Za-z0-9_.-]+==[^=<>!~]+$")
 
 
@@ -48,6 +48,13 @@ def main() -> int:
                 f"asmdef name drifted: {relative}",
                 failures,
             )
+
+    for source in (*ROOT.joinpath("Editor").rglob("*.cs"), *ROOT.joinpath("Runtime").rglob("*.cs")):
+        require(
+            source.with_suffix(source.suffix + ".meta").is_file(),
+            f"Unity C# source is missing its immutable-package meta file: {source.relative_to(ROOT)}",
+            failures,
+        )
 
     settings = read("Editor/Settings.cs")
     require("Embedded = 0" in settings, "Embedded must remain enum value zero", failures)

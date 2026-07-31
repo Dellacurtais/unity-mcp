@@ -5,6 +5,13 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.19] - 2026-07-31
+
+### Fixed
+
+- Added immutable-package metadata for the new editor activity and generic job tool sources so Unity imports them from Git dependencies instead of ignoring them.
+- Release validation now rejects any Editor or Runtime C# source without its Unity `.meta` file.
+
 ## [0.16.18] - 2026-07-31
 
 ### Added
