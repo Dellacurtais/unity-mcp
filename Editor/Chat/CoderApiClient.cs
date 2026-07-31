@@ -37,10 +37,14 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         private long _enqueuedStreamEvents;
         private long _appliedStreamEvents;
         private int _attachedStreamActive;
+        private int _abortRequested;
+        private CancellationTokenSource _activeAttachCts;
 
         private const int MaxEventsPerDrain = 96;
         private const double MaxDrainMilliseconds = 3.5;
         private static readonly TimeSpan InteractionTimeout = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan AbortRequestTimeout = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan AbortStreamGrace = TimeSpan.FromSeconds(2);
 
         // Sessions that haven't received their context preamble yet. A session
         // gets added here the moment it's created (either via auto-create on
@@ -95,6 +99,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public bool IsRunning
             => Volatile.Read(ref _cts) != null || Volatile.Read(ref _attachedStreamActive) != 0;
 
+        public bool IsStopping => Volatile.Read(ref _abortRequested) != 0;
+
         public bool IsSyncing => _syncCts != null && !_syncCts.IsCancellationRequested;
 
         public void Cancel()
@@ -102,6 +108,78 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             var cts = Volatile.Read(ref _cts);
             if (cts == null) return;
             try { cts.Cancel(); } catch { }
+        }
+
+        public void RequestAbort(string serverUrl, string token, string sessionId)
+        {
+            if (!IsRunning || IsStopping) return;
+            sessionId = CoderSessionIdentity.Normalize(sessionId);
+            if (!CoderSessionIdentity.IsValid(sessionId))
+            {
+                _session.SetConnectionState(
+                    ChatConnectionState.Error,
+                    "Não foi possível parar: sessão inválida.");
+                return;
+            }
+            if (Interlocked.CompareExchange(ref _abortRequested, 1, 0) != 0) return;
+
+            _session.SetConnectionState(ChatConnectionState.Running, "Parando execução…");
+            _ = Task.Run(async () =>
+            {
+                _ = CompleteAbortAfterGraceAsync();
+                try
+                {
+                    var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/abort";
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+                    timeout.CancelAfter(AbortRequestTimeout);
+                    using var request = CreateRequest(HttpMethod.Post, url, token);
+                    using var response = await Http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+                    var responseBody = response.IsSuccessStatusCode
+                        ? null
+                        : await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    if (!response.IsSuccessStatusCode)
+                        throw new HttpRequestException(
+                            $"HTTP {(int)response.StatusCode}: {responseBody}");
+                }
+                catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { }
+                catch (Exception e)
+                {
+                    if (Interlocked.Exchange(ref _abortRequested, 0) != 0)
+                    {
+                        await MainThreadDispatcher.RunAsync(() => _session.SetConnectionState(
+                            ChatConnectionState.Running,
+                            $"Falha ao parar: {e.Message}"));
+                    }
+                }
+            });
+        }
+
+        private async Task CompleteAbortAfterGraceAsync()
+        {
+            try
+            {
+                await Task.Delay(AbortStreamGrace, _lifetimeCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (!IsStopping) return;
+            CancelActiveStreams();
+            await MainThreadDispatcher.RunAsync(() =>
+            {
+                if (Interlocked.Exchange(ref _abortRequested, 0) != 0)
+                    _session.AbortAssistant();
+            });
+        }
+
+        private void CancelActiveStreams()
+        {
+            var foreground = Volatile.Read(ref _cts);
+            var attached = Volatile.Read(ref _activeAttachCts);
+            try { foreground?.Cancel(); } catch { }
+            try { attached?.Cancel(); } catch { }
         }
 
         public void StopSessionSync()
@@ -116,6 +194,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             Cancel();
+            CancelActiveStreams();
             StopSessionSync();
             try { _lifetimeCts.Cancel(); } catch { }
             while (_streamEvents.TryDequeue(out _)) { }
@@ -961,7 +1040,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 
             while (!ct.IsCancellationRequested)
             {
-                var line = await reader.ReadLineAsync();
+                var line = await ReadLineWithCancellationAsync(reader, ct);
                 if (line == null) break;
 
                 if (line.Length == 0)
@@ -999,6 +1078,24 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             var drainTarget = Interlocked.Read(ref _enqueuedStreamEvents);
             await WaitForStreamDrainAsync(drainTarget, _lifetimeCts.Token);
             return terminalSeen;
+        }
+
+        private static async Task<string> ReadLineWithCancellationAsync(
+            StreamReader reader,
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            var readTask = reader.ReadLineAsync();
+            if (readTask.IsCompleted) return await readTask;
+
+            var cancelled = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            using (ct.Register(() => cancelled.TrySetResult(true)))
+            {
+                if (await Task.WhenAny(readTask, cancelled.Task) != readTask)
+                    ct.ThrowIfCancellationRequested();
+            }
+            return await readTask;
         }
 
         private void EnqueueStreamEvent(CoderStreamEvent streamEvent)
@@ -1254,13 +1351,17 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     if (!string.IsNullOrEmpty(sid)) Settings.CoderSessionId = sid;
                     break;
                 case "error":
+                    Interlocked.Exchange(ref _abortRequested, 0);
                     _session.AddError(AsString(payload?["message"]) ?? data);
                     break;
                 case "message_complete":
                     ApplyCompletedMessage(payload?["message"]);
                     break;
                 case "done":
-                    _session.FinishAssistant();
+                    if (Interlocked.Exchange(ref _abortRequested, 0) != 0)
+                        _session.AbortAssistant();
+                    else
+                        _session.FinishAssistant();
                     break;
                 case "ping":
                 case "context_status":

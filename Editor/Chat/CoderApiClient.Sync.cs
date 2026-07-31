@@ -201,8 +201,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             CancellationToken ct)
         {
             if (Interlocked.CompareExchange(ref _attachedStreamActive, 1, 0) != 0) return false;
+            using var attachCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            Interlocked.Exchange(ref _activeAttachCts, attachCts);
+            var streamCt = attachCts.Token;
             var streamStarted = false;
             var terminalSeen = false;
+            var abortedLocally = false;
             try
             {
                 var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/attach";
@@ -211,7 +215,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 if (!string.IsNullOrEmpty(_session.LastEventId))
                     request.Headers.TryAddWithoutValidation("Last-Event-ID", _session.LastEventId);
                 using var response = await Http.SendAsync(
-                    request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                    request, HttpCompletionOption.ResponseHeadersRead, streamCt).ConfigureAwait(false);
                 if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return false;
                 var responseBody = response.IsSuccessStatusCode
                     ? null
@@ -224,19 +228,30 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     if (string.IsNullOrEmpty(_session.LastEventId))
                         _session.PrepareForLiveReplay();
                     _session.StartAssistant();
-                }, ct).ConfigureAwait(false);
+                }, streamCt).ConfigureAwait(false);
                 streamStarted = true;
 
                 using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
                 using var reader = new System.IO.StreamReader(stream, Encoding.UTF8);
-                terminalSeen = await ParseSseAsync(reader, ct).ConfigureAwait(false);
+                terminalSeen = await ParseSseAsync(reader, streamCt).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (attachCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                abortedLocally = true;
+                terminalSeen = true;
             }
             finally
             {
+                Interlocked.CompareExchange(ref _activeAttachCts, null, attachCts);
                 Interlocked.Exchange(ref _attachedStreamActive, 0);
                 if (streamStarted)
                 {
-                    if (terminalSeen || ct.IsCancellationRequested)
+                    if (abortedLocally)
+                    {
+                        // The bounded abort fallback owns the visible terminal
+                        // state and has already cleared any pending approval.
+                    }
+                    else if (terminalSeen || ct.IsCancellationRequested)
                         await MainThreadDispatcher.RunAsync(() => _session.FinishAssistant());
                     else
                         await MainThreadDispatcher.RunAsync(() =>

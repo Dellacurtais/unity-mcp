@@ -238,6 +238,38 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             MarkChanged();
         }
 
+        public void AbortAssistant()
+        {
+            using (BeginBatch())
+            {
+                if (StreamingAssistant != null)
+                {
+                    foreach (var call in StreamingAssistant.ToolCalls.Where(call => !call.Completed))
+                    {
+                        call.Completed = true;
+                        call.Failed = true;
+                        call.ResultText = "Interrompida pelo usuário.";
+                    }
+
+                    if (IsEmptyAssistant(StreamingAssistant))
+                        Messages.Remove(StreamingAssistant);
+                    else
+                    {
+                        StreamingAssistant.Streaming = false;
+                        StreamingAssistant.Touch();
+                    }
+                }
+
+                StreamingAssistant = null;
+                Interactions.Clear();
+                IsRunning = false;
+                LastError = null;
+                ConnectionState = ChatConnectionState.Idle;
+                ConnectionDetail = "Execução interrompida";
+                MarkChanged();
+            }
+        }
+
         public void SetConnectionState(ChatConnectionState state, string detail = null)
         {
             if (ConnectionState == state && ConnectionDetail == detail) return;

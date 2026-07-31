@@ -101,6 +101,79 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void AbortAssistant_ClearsApprovalAndMarksRunningToolsInterrupted()
+        {
+            var session = new ChatSession();
+            session.StartAssistant();
+            session.AddToolCall("tool-1", "run_command", "{}");
+            session.SetPendingToolApproval(new PendingToolApproval
+            {
+                ToolUseId = "tool-1",
+                ToolName = "run_command",
+            });
+
+            session.AbortAssistant();
+
+            Assert.That(session.IsRunning, Is.False);
+            Assert.That(session.StreamingAssistant, Is.Null);
+            Assert.That(session.Interactions, Is.Empty);
+            Assert.That(session.ConnectionState, Is.EqualTo(ChatConnectionState.Idle));
+            Assert.That(session.ConnectionDetail, Is.EqualTo("Execução interrompida"));
+            Assert.That(session.Messages.Single().ToolCalls.Single().Completed, Is.True);
+            Assert.That(session.Messages.Single().ToolCalls.Single().Failed, Is.True);
+        }
+
+        [Test]
+        public void DoneAfterAbortRequest_UsesInterruptedTerminalState()
+        {
+            var session = new ChatSession();
+            var client = new CoderApiClient(session);
+            var abortRequested = typeof(CoderApiClient).GetField(
+                "_abortRequested", BindingFlags.Instance | BindingFlags.NonPublic);
+            var dispatch = typeof(CoderApiClient).GetMethod(
+                "DispatchEventInner", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(abortRequested, Is.Not.Null);
+            Assert.That(dispatch, Is.Not.Null);
+
+            session.StartAssistant();
+            session.AddToolCall("tool-1", "run_command", "{}");
+            session.SetPendingToolApproval(new PendingToolApproval
+            {
+                ToolUseId = "tool-1",
+                ToolName = "run_command",
+            });
+            abortRequested.SetValue(client, 1);
+
+            dispatch.Invoke(client, new object[] { "done", "", new JObject() });
+
+            Assert.That(client.IsStopping, Is.False);
+            Assert.That(session.IsRunning, Is.False);
+            Assert.That(session.Interactions, Is.Empty);
+            Assert.That(session.ConnectionDetail, Is.EqualTo("Execução interrompida"));
+            Assert.That(session.Messages.Single().ToolCalls.Single().Failed, Is.True);
+        }
+
+        [Test]
+        public void ToolApprovalLayout_StacksLabelAndInputForNarrowDocks()
+        {
+            var element = new CoderChatInteractionElement(new PendingToolApproval
+            {
+                ToolUseId = "tool-1",
+                ToolName = "run_command",
+                InputJson = "{\"command\":\"dir\"}",
+                RiskClass = "execute",
+            });
+
+            var field = element.Q<VisualElement>(className: "interaction-field");
+            Assert.That(field, Is.Not.Null);
+            Assert.That(field.Q<Label>(className: "interaction-field-label")?.text,
+                Is.EqualTo("Motivo opcional (enviado ao agente)"));
+            Assert.That(field.Q<TextField>(className: "interaction-input"), Is.Not.Null);
+            Assert.That(element.Query<Button>().ToList().Select(button => button.text),
+                Is.EquivalentTo(new[] { "Aprovar", "Negar" }));
+        }
+
+        [Test]
         public void SessionBatch_NotifiesOnceForMultipleMutations()
         {
             var session = new ChatSession();

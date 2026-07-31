@@ -175,16 +175,24 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             Add(actions);
         }
 
-        private static TextField CreateDraftField(PendingInteraction interaction, string label)
+        private static VisualElement CreateDraftField(PendingInteraction interaction, string label)
         {
-            var input = new TextField(label)
+            var field = new VisualElement();
+            field.AddToClassList("interaction-field");
+
+            var fieldLabel = new Label(label);
+            fieldLabel.AddToClassList("interaction-field-label");
+            field.Add(fieldLabel);
+
+            var input = new TextField
             {
                 multiline = true,
                 value = interaction.ResponseDraft ?? "",
             };
             input.AddToClassList("interaction-input");
             input.RegisterValueChangedCallback(evt => interaction.ResponseDraft = evt.newValue);
-            return input;
+            field.Add(input);
+            return field;
         }
 
         private void SubmitQuestion(PendingQuestion question, string answer)

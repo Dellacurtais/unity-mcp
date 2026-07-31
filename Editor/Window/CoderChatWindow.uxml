@@ -21,7 +21,7 @@
             <ui:Button name="new-messages-button" text="Novas mensagens" class="new-messages-button hidden" />
         </ui:VisualElement>
 
-        <ui:VisualElement name="interactions-container" class="interactions-container" />
+        <ui:ScrollView name="interactions-container" mode="Vertical" class="interactions-container" />
 
         <ui:VisualElement name="composer-panel" class="composer-panel">
             <ui:VisualElement name="reference-chips" class="reference-chips" />

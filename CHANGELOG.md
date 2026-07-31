@@ -5,6 +5,14 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.16] - 2026-07-31
+
+### Fixed
+
+- Pending approval cards now keep their full height, scroll when necessary, stack field labels above inputs, and wrap actions cleanly in narrow Unity docks.
+- The composer Stop button now calls the CodeStudio session abort endpoint for both foreground and reattached runs, shows an immediate `Parando…` state, and applies a bounded local fallback when the terminal stream event does not arrive.
+- SSE line reads now observe cancellation so a stalled response stream cannot keep the Unity UI stuck in a running state.
+
 ## [0.16.15] - 2026-07-31
 
 ### Fixed

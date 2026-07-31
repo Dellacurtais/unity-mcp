@@ -13,7 +13,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 {
     public static class SceneAnalyzerVersion
     {
-        public const string Fallback = "0.16.15";
+        public const string Fallback = "0.16.16";
         private static string _current;
         private static string _packageName;
 

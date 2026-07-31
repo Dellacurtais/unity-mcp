@@ -403,9 +403,14 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 return;
             }
 
+            if (client.IsStopping) return;
             if (client.IsRunning)
             {
-                client.Cancel();
+                client.RequestAbort(
+                    Settings.CoderUrl,
+                    Settings.CoderToken,
+                    Settings.CoderSessionId);
+                UpdateSendButton();
                 return;
             }
 
@@ -686,10 +691,18 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private void UpdateSendButton()
         {
             if (_sendButton == null) return;
-            var running = Bootstrap.ChatClient?.IsRunning == true;
-            _sendButton.text = running ? "Parar" : "Enviar";
+            var client = Bootstrap.ChatClient;
+            var stopping = client?.IsStopping == true;
+            var running = client?.IsRunning == true;
+            _sendButton.text = stopping ? "Parando…" : running ? "Parar" : "Enviar";
+            _sendButton.SetEnabled(!stopping);
             _sendButton.EnableInClassList("stop", running);
-            _sendButton.tooltip = running ? "Cancelar a resposta atual" : "Enviar (Enter) · nova linha (Shift+Enter)";
+            _sendButton.EnableInClassList("stopping", stopping);
+            _sendButton.tooltip = stopping
+                ? "Solicitação de parada enviada ao CodeStudio"
+                : running
+                    ? "Interromper a execução atual no CodeStudio"
+                    : "Enviar (Enter) · nova linha (Shift+Enter)";
         }
 
         private void RefreshCatalogControls()
