@@ -4,6 +4,7 @@ using System.Text;
 using Maicon.SceneAnalyzer.Editor.Chat;
 using Maicon.SceneAnalyzer.Editor.Core;
 using UnityEditor;
+using UnityEngine;
 using UnityEngine.UIElements;
 
 namespace Maicon.SceneAnalyzer.Editor.Window
@@ -80,7 +81,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private readonly Label _thinkingText;
         private readonly VisualElement _tools;
         private readonly VisualElement _references;
-        private readonly Dictionary<string, ToolCardElement> _toolCards = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, ToolActivityElement> _toolActivities = new(StringComparer.Ordinal);
         private readonly Dictionary<string, ReferenceChipElement> _referenceChips = new(StringComparer.Ordinal);
 
         public ChatMessage BoundMessage { get; private set; }
@@ -187,7 +188,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _thinkingText.text = "";
             _tools.Clear();
             _references.Clear();
-            _toolCards.Clear();
+            _toolActivities.Clear();
             _referenceChips.Clear();
             RemoveFromClassList("compact-activity");
             SetDisplayed(_header, false);
@@ -214,18 +215,18 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 if (!call.Completed && ChatSession.IsInteractiveToolName(call.Name)) continue;
                 var key = OccurrenceKey("tool", call.Id, index, occurrences, out var occurrence);
                 activeKeys.Add(key);
-                if (!_toolCards.TryGetValue(key, out var card))
+                if (!_toolActivities.TryGetValue(key, out var activity))
                 {
-                    card = new ToolCardElement();
-                    card.name = ElementName("tool-card-", call.Id, index, occurrence);
-                    _toolCards.Add(key, card);
+                    activity = new ToolActivityElement();
+                    activity.name = ElementName("tool-card-", call.Id, index, occurrence);
+                    _toolActivities.Add(key, activity);
                 }
-                card.UpdateFrom(call);
-                EnsureChildOrder(_tools, card, visualIndex++);
+                activity.UpdateFrom(call);
+                EnsureChildOrder(_tools, activity, visualIndex++);
             }
 
-            RemoveMissing(_toolCards, activeKeys, _tools);
-            SetDisplayed(_tools, _toolCards.Count > 0);
+            RemoveMissing(_toolActivities, activeKeys, _tools);
+            SetDisplayed(_tools, _toolActivities.Count > 0);
         }
 
         private void ReconcileReferenceChips(IReadOnlyList<ChatReference> references)
@@ -358,53 +359,84 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             return value.Substring(0, max) + "\n… conteúdo truncado";
         }
 
-        private sealed class ToolCardElement : Foldout
+        private sealed class ToolActivityElement : VisualElement
         {
-            private readonly Label _meta;
+            private readonly VisualElement _header;
+            private readonly Label _chevron;
+            private readonly Label _status;
+            private readonly Label _title;
+            private readonly Label _duration;
+            private readonly VisualElement _details;
             private readonly Label _inputCaption;
             private readonly Label _input;
             private readonly Label _resultCaption;
             private readonly Label _result;
             private ChatToolCall _call;
 
-            public ToolCardElement()
+            public ToolActivityElement()
             {
-                AddToClassList("tool-card");
-                RegisterCallback<ChangeEvent<bool>>(evt =>
-                {
-                    if (_call == null) return;
-                    _call.Expanded = evt.newValue;
-                    RenderDetails(evt.newValue);
-                }, TrickleDown.TrickleDown);
+                AddToClassList("tool-activity");
 
-                _meta = CreateLabel("tool-meta");
-                Add(_meta);
+                _header = new VisualElement { focusable = true, tabIndex = 0 };
+                _header.AddToClassList("tool-activity-header");
+                _header.AddManipulator(new Clickable(ToggleExpanded));
+                _header.RegisterCallback<KeyDownEvent>(evt =>
+                {
+                    if (evt.keyCode != KeyCode.Return
+                        && evt.keyCode != KeyCode.KeypadEnter
+                        && evt.keyCode != KeyCode.Space) return;
+                    ToggleExpanded();
+                    evt.StopPropagation();
+                });
+                Add(_header);
+
+                _chevron = CreateLabel("tool-activity-chevron");
+                _header.Add(_chevron);
+                _status = CreateLabel("tool-activity-status");
+                _header.Add(_status);
+                _title = CreateLabel("tool-activity-title");
+                _header.Add(_title);
+                _duration = CreateLabel("tool-activity-duration");
+                _header.Add(_duration);
+
+                _details = new VisualElement();
+                _details.AddToClassList("tool-activity-details");
+                Add(_details);
                 _inputCaption = CreateLabel("tool-meta", "Entrada");
-                Add(_inputCaption);
+                _details.Add(_inputCaption);
                 _input = CreateLabel("tool-code");
-                Add(_input);
+                _details.Add(_input);
                 _resultCaption = CreateLabel("tool-meta", "Resultado");
-                Add(_resultCaption);
+                _details.Add(_resultCaption);
                 _result = CreateLabel("tool-code");
-                Add(_result);
+                _details.Add(_result);
             }
 
             public void UpdateFrom(ChatToolCall call)
             {
                 _call = call;
-                text = ChatMessagePresentation.ToolName(call.Name);
-                SetValueWithoutNotify(call.Expanded);
+                SetTextIfChanged(_title, ChatMessagePresentation.ToolName(call.Name));
+                SetTextIfChanged(_status, call.Completed ? call.Failed ? "×" : "✓" : "◌");
+                SetTextIfChanged(_duration, call.DurationMs > 0 ? $"{call.DurationMs:F0}ms" : "");
                 EnableInClassList("failed", call.Failed);
-
-                var status = call.Completed ? call.Failed ? "falhou" : "concluída" : "executando";
-                var duration = call.DurationMs > 0 ? $" • {call.DurationMs:F0} ms" : "";
-                SetTextIfChanged(_meta, status + duration);
+                EnableInClassList("running", !call.Completed);
+                EnableInClassList("completed", call.Completed && !call.Failed);
+                _header.tooltip = call.Completed ? call.Failed ? "Ferramenta falhou" : "Ferramenta concluída" : "Ferramenta executando";
 
                 RenderDetails(call.Expanded);
             }
 
+            private void ToggleExpanded()
+            {
+                if (_call == null || !HasDetails(_call)) return;
+                _call.Expanded = !_call.Expanded;
+                RenderDetails(_call.Expanded);
+            }
+
             private void RenderDetails(bool expanded)
             {
+                var hasDetails = HasDetails(_call);
+                SetTextIfChanged(_chevron, hasDetails ? expanded ? "⌄" : "›" : "");
                 var hasInput = expanded && !string.IsNullOrEmpty(_call?.InputJson);
                 SetTextIfChanged(_input, hasInput ? Truncate(_call.InputJson, 4000) : "");
                 SetDisplayed(_inputCaption, hasInput);
@@ -414,7 +446,12 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 SetTextIfChanged(_result, hasResult ? Truncate(_call.ResultText, 8000) : "");
                 SetDisplayed(_resultCaption, hasResult);
                 SetDisplayed(_result, hasResult);
+                SetDisplayed(_details, hasInput || hasResult);
             }
+
+            private static bool HasDetails(ChatToolCall call)
+                => call != null
+                    && (!string.IsNullOrEmpty(call.InputJson) || !string.IsNullOrEmpty(call.ResultText));
         }
 
         private sealed class ReferenceChipElement : Button

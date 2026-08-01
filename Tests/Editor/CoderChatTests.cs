@@ -771,7 +771,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             });
 
             bind.Invoke(element, new object[] { message });
-            AssertExpandedFoldouts(element);
+            AssertExpandedToolActivity(element);
             var originalToolCard = element.Q<VisualElement>("tool-card-tool-1");
             var originalReferenceChip = element.Q<VisualElement>("reference-chip-path:Assets/Player.prefab");
             Assert.That(originalToolCard, Is.Not.Null);
@@ -809,7 +809,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(message.ToolCalls[0].Expanded, Is.True);
 
             bind.Invoke(element, new object[] { message });
-            AssertExpandedFoldouts(element);
+            AssertExpandedToolActivity(element);
             Assert.That(element.Q<VisualElement>("tool-card-tool-1"), Is.SameAs(originalToolCard));
             Assert.That(element.Q<VisualElement>("reference-chip-path:Assets/Player.prefab"), Is.SameAs(originalReferenceChip));
         }
@@ -972,6 +972,34 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(element.ClassListContains("compact-activity"), Is.True);
         }
 
+        [Test]
+        public void UnityPresentation_RendersToolsAsSubtleActivityRows()
+        {
+            var message = new ChatMessage { Role = ChatRole.Assistant };
+            message.ToolCalls.Add(new ChatToolCall
+            {
+                Id = "tool-subtle",
+                Name = "ext_unity__query_scene",
+                Completed = true,
+                DurationMs = 19,
+                InputJson = "{}",
+            });
+
+            var element = new CoderChatMessageElement();
+            element.Bind(message);
+
+            var activity = element.Q<VisualElement>("tool-card-tool-subtle");
+            Assert.That(activity, Is.Not.Null);
+            Assert.That(activity.ClassListContains("tool-activity"), Is.True);
+            Assert.That(activity.ClassListContains("tool-card"), Is.False);
+            Assert.That(activity.Q<Label>(className: "tool-activity-title").text,
+                Is.EqualTo("Unity · query scene"));
+            Assert.That(activity.Q<Label>(className: "tool-activity-status").text, Is.EqualTo("✓"));
+            Assert.That(activity.Q<Label>(className: "tool-activity-duration").text, Is.EqualTo("19ms"));
+            Assert.That(activity.Q<VisualElement>(className: "tool-activity-details").style.display.value,
+                Is.EqualTo(DisplayStyle.None));
+        }
+
         private static JObject MessageRow(
             string id, long sequence, string sessionId, string role, string text)
         {
@@ -1117,13 +1145,14 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(session.MaxAutoContinues, Is.EqualTo(12));
         }
 
-        private static void AssertExpandedFoldouts(VisualElement element)
+        private static void AssertExpandedToolActivity(VisualElement element)
         {
             var foldouts = new List<Foldout>();
             element.Query<Foldout>().ForEach(foldouts.Add);
-            Assert.That(foldouts, Has.Count.EqualTo(2));
+            Assert.That(foldouts, Has.Count.EqualTo(1));
             Assert.That(foldouts[0].value, Is.True);
-            Assert.That(foldouts[1].value, Is.True);
+            Assert.That(element.Q<VisualElement>(className: "tool-activity-details").style.display.value,
+                Is.EqualTo(DisplayStyle.Flex));
         }
 
         [Test]

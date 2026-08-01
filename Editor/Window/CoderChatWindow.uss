@@ -137,6 +137,7 @@
 .history-label { margin-left: 7px; color: var(--text-muted); font-size: 9px; }
 .transcript-list { flex-grow: 1; background-color: var(--chat-bg); border-width: 0; }
 .transcript-list .unity-collection-view__item { padding: 0; }
+.transcript-list .unity-collection-view__item:hover { background-color: rgba(0, 0, 0, 0); }
 .new-messages-button {
     position: absolute;
     right: 16px;
@@ -179,17 +180,29 @@
 .message-thinking { margin-top: 6px; color: var(--text-muted); }
 .message-thinking .unity-foldout__content { padding-left: 8px; }
 
-.tool-list { margin-top: 7px; }
-.tool-card {
-    margin-top: 3px;
-    padding: 3px 6px;
-    border-left-width: 2px;
-    border-left-color: var(--accent);
-    background-color: #1b1e23;
-    border-radius: 3px;
+.tool-list { margin-top: 2px; }
+.tool-activity { margin-top: 0; }
+.tool-activity-header {
+    min-height: 20px;
+    padding: 1px 0;
+    flex-direction: row;
+    align-items: center;
+    color: var(--text-muted);
 }
-.tool-card.failed { border-left-color: var(--danger); }
-.tool-title { flex-grow: 1; font-size: 10px; -unity-font-style: bold; }
+.tool-activity-header:hover { color: var(--text); }
+.tool-activity-chevron { width: 11px; min-width: 11px; color: var(--text-muted); font-size: 11px; }
+.tool-activity-status { width: 13px; min-width: 13px; color: var(--text-muted); font-size: 10px; }
+.tool-activity.completed .tool-activity-status { color: #8fa5b5; }
+.tool-activity.running .tool-activity-status { color: var(--warning); }
+.tool-activity.failed .tool-activity-status { color: var(--danger); }
+.tool-activity-title { flex-grow: 1; min-width: 0; font-size: 11px; color: #aebccc; }
+.tool-activity-duration { margin-left: 8px; color: var(--text-muted); font-size: 9px; }
+.tool-activity-details {
+    margin-left: 23px;
+    padding: 3px 0 5px 8px;
+    border-left-width: 1px;
+    border-left-color: var(--border);
+}
 .tool-meta { font-size: 9px; color: var(--text-muted); }
 .tool-code { margin-top: 4px; padding: 5px; background-color: #121418; color: #c8d0dc; font-size: 10px; white-space: normal; }
 
