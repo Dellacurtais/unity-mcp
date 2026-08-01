@@ -8,10 +8,12 @@ using UnityEngine.Rendering;
 
 namespace Maicon.SceneAnalyzer.Editor.Play
 {
-    /// Centralised game-view capture. Two paths:
-    ///   - Play mode: pick a target Camera, optionally defer until the current
-    ///     frame ends, then render into a temporary RenderTexture. Supported
-    ///     SRPs use StandardRequest; Built-in/unsupported SRPs use Camera.Render.
+    /// Centralised game-view capture. Three paths:
+    ///   - Play mode, no explicit camera: capture the completed Game View frame.
+    ///     This includes every camera plus Screen Space - Overlay UI.
+    ///   - Play mode, explicit camera: render that camera into a temporary
+    ///     RenderTexture. Supported SRPs use StandardRequest;
+    ///     Built-in/unsupported SRPs use Camera.Render.
     ///   - Edit mode: reflect over UnityEditor.GameView to grab its internal
     ///     m_TargetTexture. Post-fx may be absent (URP doesn't always render to
     ///     it outside play). If reflection fails, returns null and caller emits
@@ -26,6 +28,50 @@ namespace Maicon.SceneAnalyzer.Editor.Play
             public int Width;
             public int Height;
             public string RenderPath;
+        }
+
+        public static async Task<CaptureResult> CaptureCompositedPlayModeAsync(
+            int width, int height, bool waitForEndOfFrame,
+            string encoding, int jpgQuality)
+        {
+            var cancellationToken = ToolExecutionContext.Current?.CancellationToken ?? default;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (waitForEndOfFrame)
+            {
+                try
+                {
+                    // ScreenCapture must execute inside the end-of-frame phase.
+                    // Dispatching it in the next Editor update can lose late
+                    // rendering, most visibly Screen Space - Overlay canvases.
+                    return await EndOfFrameAwaiter.RunAtEndOfFrame(
+                        () => CaptureCompletedGameViewFrame(width, height, encoding, jpgQuality),
+                        cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[unity-mcp] End-of-frame Game View capture failed; trying the current Game View target: {e}");
+                }
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var reflected = await MainThreadDispatcher.RunAsync(() =>
+                CaptureFromGameViewReflection(width, height, encoding, jpgQuality,
+                    "Game view completed frame (all cameras + overlay UI)"),
+                cancellationToken);
+            if (reflected != null) return reflected;
+
+            // On Unity versions where the internal GameView target moved, keep
+            // correctness over the caller's latency preference: wait once and
+            // use the public ScreenCapture API instead of returning a camera-only
+            // image that silently omits overlay UI.
+            return await EndOfFrameAwaiter.RunAtEndOfFrame(
+                () => CaptureCompletedGameViewFrame(width, height, encoding, jpgQuality),
+                cancellationToken);
         }
 
         public static async Task<CaptureResult> CapturePlayModeAsync(
@@ -61,11 +107,12 @@ namespace Maicon.SceneAnalyzer.Editor.Play
         }
 
         public static CaptureResult CaptureFromGameViewReflection(int width, int height,
-            string encoding, int jpgQuality)
+            string encoding, int jpgQuality, string sourceDescription = null)
         {
-            // GameView is an internal EditorWindow type. Field name "m_TargetTexture"
-            // has been stable across Unity 2020+ but we tolerate failure since
-            // internal API drift is the rule, not the exception.
+            // GameView is an internal EditorWindow type. Unity 6 keeps the
+            // rendered frame in GameView.m_RenderTexture while older versions
+            // expose PlayModeView.m_TargetTexture. Search the inheritance chain
+            // because GetField does not return private fields from base types.
             try
             {
                 var asm = typeof(EditorWindow).Assembly;
@@ -79,20 +126,38 @@ namespace Maicon.SceneAnalyzer.Editor.Play
                 var gv = EditorWindow.GetWindow(gvType, utility: false, title: null, focus: false);
                 if (gv == null) return null;
 
-                var field = gvType.GetField("m_TargetTexture",
-                    BindingFlags.Instance | BindingFlags.NonPublic);
-                if (field == null) return null;
-                var rt = field.GetValue(gv) as RenderTexture;
+                var rt = FindGameViewRenderTexture(gvType, gv);
                 if (rt == null) return null;
 
+                // GameView's internal target is stored in device orientation;
+                // drawing it in the Editor applies a vertical flip. Mirror that
+                // presentation transform before encoding the MCP image.
                 return ReadRenderTexture(rt, width, height, encoding, jpgQuality,
-                    sourceDescription: "Game view (via reflection, edit-mode fallback)");
+                    sourceDescription ?? "Game view (via reflection, edit-mode fallback)",
+                    flipY: SystemInfo.graphicsUVStartsAtTop);
             }
             catch (Exception e)
             {
                 Debug.LogWarning($"[unity-mcp] GameView reflection failed: {e.Message}");
                 return null;
             }
+        }
+
+        private static RenderTexture FindGameViewRenderTexture(Type gameViewType, object gameView)
+        {
+            string[] candidates = { "m_RenderTexture", "m_TargetTexture" };
+            foreach (var candidate in candidates)
+            {
+                for (var type = gameViewType; type != null; type = type.BaseType)
+                {
+                    var field = type.GetField(candidate,
+                        BindingFlags.Instance | BindingFlags.NonPublic |
+                        BindingFlags.Public | BindingFlags.DeclaredOnly);
+                    if (field?.GetValue(gameView) is RenderTexture rt && rt.IsCreated())
+                        return rt;
+                }
+            }
+            return null;
         }
 
         public static Camera PickGameViewCamera(int? instanceId, string tag)
@@ -161,8 +226,41 @@ namespace Maicon.SceneAnalyzer.Editor.Play
             }
         }
 
+        private static CaptureResult CaptureCompletedGameViewFrame(int width, int height,
+            string encoding, int jpgQuality)
+        {
+            Texture2D source = null;
+            RenderTexture resized = null;
+            try
+            {
+                source = ScreenCapture.CaptureScreenshotAsTexture(1);
+                if (source == null || source.width <= 0 || source.height <= 0)
+                    throw new InvalidOperationException("ScreenCapture returned no Game View texture");
+
+                if (source.width == width && source.height == height)
+                {
+                    var direct = Encode(source, width, height, encoding, jpgQuality,
+                        "Game view completed frame (all cameras + overlay UI)");
+                    direct.RenderPath = "screen-capture-end-of-frame";
+                    return direct;
+                }
+
+                resized = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32);
+                Graphics.Blit(source, resized);
+                var result = ReadRenderTexture(resized, width, height, encoding, jpgQuality,
+                    "Game view completed frame (all cameras + overlay UI)");
+                result.RenderPath = "screen-capture-end-of-frame";
+                return result;
+            }
+            finally
+            {
+                if (source != null) UnityEngine.Object.DestroyImmediate(source);
+                if (resized != null) RenderTexture.ReleaseTemporary(resized);
+            }
+        }
+
         private static CaptureResult ReadRenderTexture(RenderTexture rt, int targetW, int targetH,
-            string encoding, int jpgQuality, string sourceDescription)
+            string encoding, int jpgQuality, string sourceDescription, bool flipY = false)
         {
             var previousActive = RenderTexture.active;
             Texture2D tex = null;
@@ -174,10 +272,13 @@ namespace Maicon.SceneAnalyzer.Editor.Play
                 // so the agent's `width/height` params remain authoritative.
                 bool resize = rt.width != targetW || rt.height != targetH;
                 RenderTexture sourceRt = rt;
-                if (resize)
+                if (resize || flipY)
                 {
                     downsized = RenderTexture.GetTemporary(targetW, targetH, 0, rt.format);
-                    Graphics.Blit(rt, downsized);
+                    if (flipY)
+                        Graphics.Blit(rt, downsized, new Vector2(1f, -1f), new Vector2(0f, 1f));
+                    else
+                        Graphics.Blit(rt, downsized);
                     sourceRt = downsized;
                 }
                 RenderTexture.active = sourceRt;

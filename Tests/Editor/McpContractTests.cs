@@ -615,6 +615,9 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             Assert.That(Bootstrap.ToolRegistry.TryGet("screenshot_scene_view", out var sceneView), Is.True);
             Assert.That(sceneView.OutputSchema, Is.Null, "image content blocks must not advertise structuredContent");
+            Assert.That(Bootstrap.ToolRegistry.TryGet("screenshot_game_view", out var gameView), Is.True);
+            Assert.That(gameView.Description, Does.Contain("Screen Space - Overlay"));
+            Assert.That(gameView.Description, Does.Contain("cameraInstanceId"));
             Assert.That(Bootstrap.ToolRegistry.TryGet("get_performance_snapshot", out var performance), Is.True);
             Assert.That(performance.OutputSchema, Is.Not.Null);
             Assert.That(ToolSchemaValidator.ValidateSchema(performance.OutputSchema, out var error), Is.True, error);
@@ -640,6 +643,21 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var tests = ToolDescriptor.Infer(new StubTool("run_tests", true));
             Assert.That(tests.ExecutionRequirements.HasFlag(McpExecutionRequirement.LongRunningJob), Is.True);
             Assert.That(tests.ExecutionRequirements.HasFlag(McpExecutionRequirement.EditorUpdates), Is.True);
+        }
+
+        [Test]
+        public void EndOfFrameCapture_UsesRuntimeMonoBehaviourHost()
+        {
+            var awaiter = Type.GetType(
+                "Maicon.SceneAnalyzer.Editor.Play.EndOfFrameAwaiter, com.maicon.scene-analyzer.Editor.Play",
+                throwOnError: true);
+            var runtimeHost = Type.GetType(
+                "Maicon.SceneAnalyzer.EndOfFrameOperationHost, com.maicon.scene-analyzer",
+                throwOnError: true);
+
+            Assert.That(typeof(UnityEngine.MonoBehaviour).IsAssignableFrom(awaiter), Is.False,
+                "Editor-only MonoBehaviours cannot be attached to a runtime GameObject");
+            Assert.That(typeof(UnityEngine.MonoBehaviour).IsAssignableFrom(runtimeHost), Is.True);
         }
 
         [Test]

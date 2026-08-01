@@ -11,9 +11,10 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
     {
         public string Name => "screenshot_game_view";
         public string Description =>
-            "Captures what the player sees — renders the active Game-view camera into a PNG/JPG and returns it as an MCP image content block. " +
-            "In play mode, waits for end-of-frame so URP/HDRP post-fx is included. In edit mode, falls back to a reflection over UnityEditor.GameView.m_TargetTexture (post-fx may be absent on some pipelines). " +
-            "Use cameraInstanceId or cameraTag to target a specific camera; otherwise picks Camera.main, then the highest-depth enabled camera.";
+            "Captures what the player sees in the final Game View as PNG/JPG, including all cameras, post-fx, IMGUI, and Screen Space - Overlay canvases. " +
+            "In play mode, the default capture runs at end-of-frame; waitForEndOfFrame=false reads the latest completed Game View frame without waiting. " +
+            "Use cameraInstanceId or cameraTag only when you intentionally want one camera rendered in isolation (overlay UI is then outside that camera render). " +
+            "Edit mode reads UnityEditor.GameView's current target texture.";
 
         public JObject InputSchema => new JObject
         {
@@ -53,6 +54,15 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
 
             if (isPlaying)
             {
+                bool explicitCamera = (cameraInstanceId.HasValue && cameraInstanceId.Value != 0)
+                                      || !string.IsNullOrWhiteSpace(cameraTag);
+                if (!explicitCamera)
+                {
+                    var composited = await GameViewCapture.CaptureCompositedPlayModeAsync(
+                        width, height, waitForEndOfFrame, encoding, jpgQuality);
+                    return BuildImageResult(composited);
+                }
+
                 var cam = await MainThreadDispatcher.RunAsync(() =>
                     GameViewCapture.PickGameViewCamera(cameraInstanceId, cameraTag));
                 if (ReferenceEquals(cam, null))

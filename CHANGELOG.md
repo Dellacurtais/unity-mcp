@@ -5,6 +5,14 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.21] - 2026-07-31
+
+### Fixed
+
+- `screenshot_game_view` now captures the final composited Game View, including Screen Space - Overlay canvases, IMGUI, multiple cameras, and post-processing, while explicit camera targeting remains available for isolated camera renders.
+- Game View screenshots without an end-of-frame wait and screenshots in Edit Mode now resolve Unity 6's current render texture across the `GameView`/`PlayModeView` inheritance chain and preserve the displayed vertical orientation.
+- End-of-frame operations now use a runtime coroutine host instead of trying to attach an Editor-only `MonoBehaviour`, so the default screenshot path reaches the actual end of the rendered frame.
+
 ## [0.16.20] - 2026-07-31
 
 ### Added
