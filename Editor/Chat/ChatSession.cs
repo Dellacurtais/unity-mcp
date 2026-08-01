@@ -128,6 +128,17 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         Error,
     }
 
+    [Flags]
+    public enum ChatSessionInvalidation
+    {
+        None = 0,
+        Header = 1 << 0,
+        Transcript = 1 << 1,
+        Interactions = 1 << 2,
+        SessionControls = 1 << 3,
+        All = Header | Transcript | Interactions | SessionControls,
+    }
+
     public sealed class ChatSession
     {
         public readonly List<ChatMessage> Messages = new();
@@ -140,6 +151,11 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public string ConnectionDetail;
         public CoderSessionInfo RemoteSession;
         public long LastRemoteMessageId;
+        public long EarliestRemoteMessageId;
+        public long? NextHistoryBeforeSequence;
+        public int TotalRemoteMessages;
+        public int ArchivedRemoteMessages;
+        public bool HasEarlierMessages;
         public int Revision { get; private set; }
 
         public PendingQuestion CurrentQuestion => Interactions.OfType<PendingQuestion>().FirstOrDefault();
@@ -150,9 +166,11 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public IEnumerable<PendingToolApproval> PendingToolApprovals => Interactions.OfType<PendingToolApproval>();
 
         public event Action OnChanged;
+        public event Action<ChatSessionInvalidation> OnInvalidated;
 
         private int _batchDepth;
-        private bool _changedInBatch;
+        private ChatSessionInvalidation _invalidatedInBatch;
+        private bool _historyExpanded;
 
         public IDisposable BeginBatch()
         {
@@ -170,7 +188,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             var message = new ChatMessage { Role = ChatRole.User, Text = text ?? "" };
             if (references != null) message.References.AddRange(references.Where(reference => reference != null));
             Messages.Add(message);
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Transcript);
         }
 
         public void StartAssistant()
@@ -187,7 +205,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             LastError = null;
             ConnectionState = ChatConnectionState.Running;
             ConnectionDetail = "Recebendo resposta";
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Transcript | ChatSessionInvalidation.Header);
         }
 
         public void AppendAssistantText(string delta)
@@ -196,7 +214,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (StreamingAssistant == null) StartAssistant();
             StreamingAssistant.Text += delta;
             StreamingAssistant.Touch();
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Transcript);
         }
 
         public void AppendAssistantThinking(string delta)
@@ -205,7 +223,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (StreamingAssistant == null) StartAssistant();
             StreamingAssistant.ThinkingText += delta;
             StreamingAssistant.Touch();
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Transcript);
         }
 
         public void AddToolCall(string id, string name, string inputJson)
@@ -233,7 +251,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 InputJson = inputJson,
             });
             StreamingAssistant.Touch();
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Transcript
+                | ChatSessionInvalidation.Header
+                | ChatSessionInvalidation.Interactions);
         }
 
         public void CompleteToolCall(string id, string resultText, double durationMs)
@@ -246,7 +266,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             call.Completed = true;
             ClearInteractionForCompletedTool(call);
             StreamingAssistant.Touch();
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Transcript
+                | ChatSessionInvalidation.Header
+                | ChatSessionInvalidation.Interactions);
         }
 
         public bool CompletePersistedToolCall(string id, string resultText, double durationMs)
@@ -265,7 +287,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 call.Completed = true;
                 ClearInteractionForCompletedTool(call);
                 message.Touch();
-                MarkChanged();
+                MarkChanged(ChatSessionInvalidation.Transcript
+                    | ChatSessionInvalidation.Header
+                    | ChatSessionInvalidation.Interactions);
                 return true;
             }
             return false;
@@ -275,7 +299,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         {
             if (string.IsNullOrWhiteSpace(text)) return;
             Messages.Add(new ChatMessage { Role = ChatRole.System, Text = text });
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Transcript);
         }
 
         public void AddError(string text)
@@ -285,7 +309,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             IsRunning = false;
             ConnectionState = ChatConnectionState.Error;
             ConnectionDetail = text;
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Transcript | ChatSessionInvalidation.Header);
         }
 
         public void FinishAssistant()
@@ -304,7 +328,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             IsRunning = false;
             ConnectionState = Interactions.Count > 0 ? ChatConnectionState.WaitingForApproval : ChatConnectionState.Idle;
             ConnectionDetail = Interactions.Count > 0 ? "Aguardando sua resposta" : "Pronto";
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Transcript
+                | ChatSessionInvalidation.Header
+                | ChatSessionInvalidation.Interactions);
         }
 
         public void AbortAssistant()
@@ -335,7 +361,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 LastError = null;
                 ConnectionState = ChatConnectionState.Idle;
                 ConnectionDetail = "Execução interrompida";
-                MarkChanged();
+                MarkChanged(ChatSessionInvalidation.Transcript
+                    | ChatSessionInvalidation.Header
+                    | ChatSessionInvalidation.Interactions);
             }
         }
 
@@ -344,7 +372,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (ConnectionState == state && ConnectionDetail == detail) return;
             ConnectionState = state;
             ConnectionDetail = detail;
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Header);
         }
 
         public void UpdateRemoteSession(CoderSessionInfo remote)
@@ -352,7 +380,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (remote == null || !CoderSessionIdentity.IsValid(remote.Id)) return;
             if (RemoteSession != null && RemoteSession.SemanticallyEquals(remote)) return;
             RemoteSession = remote;
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Header | ChatSessionInvalidation.SessionControls);
         }
 
         public void Reset(bool keepSystemNotes = false)
@@ -366,9 +394,15 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             Interactions.Clear();
             RemoteSession = null;
             LastRemoteMessageId = 0;
+            EarliestRemoteMessageId = 0;
+            NextHistoryBeforeSequence = null;
+            TotalRemoteMessages = 0;
+            ArchivedRemoteMessages = 0;
+            HasEarlierMessages = false;
+            _historyExpanded = false;
             ConnectionState = ChatConnectionState.Offline;
             ConnectionDetail = null;
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.All);
         }
 
         /// A cursorless GET /attach replays a bounded semantic window, not the
@@ -382,7 +416,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             Interactions.Clear();
             RecoverPendingInteractionsFromMessages();
             IsRunning = false;
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Transcript
+                | ChatSessionInvalidation.Header
+                | ChatSessionInvalidation.Interactions);
         }
 
         public void MergeRemoteSnapshot(CoderSessionSnapshot snapshot, bool replaceConversation = false)
@@ -401,16 +437,20 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 var reconciled = replaceConversation
                     ? new List<ChatMessage>(snapshot.Messages.Count)
                     : null;
+                var reconciledSet = reconciled == null ? null : new HashSet<ChatMessage>();
+                var remoteMessagesById = Messages
+                    .Where(message => !string.IsNullOrEmpty(message.RemoteId))
+                    .GroupBy(RemoteMessageKey, StringComparer.Ordinal)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
                 foreach (var remote in snapshot.Messages)
                 {
                     foreach (var reference in remote.References) reference?.Validate();
                     var existing = !string.IsNullOrEmpty(remote.RemoteId)
-                        ? Messages.Find(message =>
-                            string.Equals(message.RemoteId, remote.RemoteId, StringComparison.Ordinal)
-                            && string.Equals(message.RemoteSessionId, remote.RemoteSessionId, StringComparison.Ordinal))
+                        && remoteMessagesById.TryGetValue(RemoteMessageKey(remote), out var indexed)
+                        ? indexed
                         : null;
                     if (existing == null) existing = FindEquivalentLocal(remote);
-                    if (existing != null && reconciled != null && reconciled.Contains(existing)) existing = null;
+                    if (existing != null && reconciledSet != null && !reconciledSet.Add(existing)) existing = null;
                     if (existing != null)
                     {
                         changed |= existing.CopyRemoteContentFrom(remote);
@@ -424,6 +464,43 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     else
                     {
                         Messages.Add(remote);
+                        changed = true;
+                    }
+                }
+
+                if (replaceConversation) _historyExpanded = false;
+                var nextEarliest = snapshot.EarliestMessageId;
+                if (!replaceConversation && EarliestRemoteMessageId > 0 && nextEarliest > 0)
+                    nextEarliest = Math.Min(EarliestRemoteMessageId, nextEarliest);
+                if (EarliestRemoteMessageId != nextEarliest)
+                {
+                    EarliestRemoteMessageId = nextEarliest;
+                    changed = true;
+                }
+                var nextTotal = Math.Max(TotalRemoteMessages, snapshot.TotalMessages);
+                if (TotalRemoteMessages != nextTotal)
+                {
+                    TotalRemoteMessages = nextTotal;
+                    changed = true;
+                }
+                if (ArchivedRemoteMessages != snapshot.ArchivedCount)
+                {
+                    ArchivedRemoteMessages = snapshot.ArchivedCount;
+                    changed = true;
+                }
+                if (!_historyExpanded)
+                {
+                    if (HasEarlierMessages != snapshot.HasEarlierMessages)
+                    {
+                        HasEarlierMessages = snapshot.HasEarlierMessages;
+                        changed = true;
+                    }
+                    var nextCursor = snapshot.HasEarlierMessages && snapshot.EarliestMessageId > 0
+                        ? snapshot.EarliestMessageId
+                        : (long?)null;
+                    if (NextHistoryBeforeSequence != nextCursor)
+                    {
+                        NextHistoryBeforeSequence = nextCursor;
                         changed = true;
                     }
                 }
@@ -466,7 +543,51 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     }
                 }
 
-                if (changed) MarkChanged();
+                if (changed) MarkChanged(ChatSessionInvalidation.All);
+            }
+        }
+
+        public void MergeEarlierMessages(CoderMessagePage page)
+        {
+            if (page == null) return;
+            using (BeginBatch())
+            {
+                _historyExpanded = true;
+                var existingById = Messages
+                    .Where(message => !string.IsNullOrEmpty(message.RemoteId))
+                    .GroupBy(RemoteMessageKey, StringComparer.Ordinal)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+                var earlier = new List<ChatMessage>();
+                foreach (var remote in page.Messages)
+                {
+                    foreach (var reference in remote.References) reference?.Validate();
+                    if (!string.IsNullOrEmpty(remote.RemoteId)
+                        && existingById.TryGetValue(RemoteMessageKey(remote), out var existing))
+                    {
+                        existing.CopyRemoteContentFrom(remote);
+                        continue;
+                    }
+                    earlier.Add(remote);
+                    if (!string.IsNullOrEmpty(remote.RemoteId))
+                        existingById[RemoteMessageKey(remote)] = remote;
+                }
+
+                if (earlier.Count > 0)
+                {
+                    var insertionIndex = Messages.FindIndex(message => message.IsRemote);
+                    if (insertionIndex < 0) insertionIndex = Messages.Count;
+                    Messages.InsertRange(insertionIndex, earlier);
+                    var earliest = earlier
+                        .Select(message => ParseRemoteSequence(message.RemoteId))
+                        .Where(sequence => sequence > 0)
+                        .DefaultIfEmpty(EarliestRemoteMessageId)
+                        .Min();
+                    if (earliest > 0) EarliestRemoteMessageId = earliest;
+                }
+
+                NextHistoryBeforeSequence = page.NextBeforeSequence;
+                HasEarlierMessages = page.HasMore;
+                MarkChanged(ChatSessionInvalidation.Transcript | ChatSessionInvalidation.Header);
             }
         }
 
@@ -544,7 +665,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (interaction == null) return;
             interaction.State = PendingInteractionState.Submitting;
             interaction.Error = null;
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Header | ChatSessionInvalidation.Interactions);
         }
 
         public void SetInteractionFailed(string key, string error)
@@ -553,7 +674,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             if (interaction == null) return;
             interaction.State = PendingInteractionState.Failed;
             interaction.Error = error;
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Header | ChatSessionInvalidation.Interactions);
         }
 
         public void CompleteInteraction(string key) => RemoveInteraction(key);
@@ -570,7 +691,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             else Interactions.Add(interaction);
             ConnectionState = ChatConnectionState.WaitingForApproval;
             ConnectionDetail = "Aguardando sua resposta";
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Header | ChatSessionInvalidation.Interactions);
         }
 
         private void UpsertSingleInteraction(PendingInteraction interaction)
@@ -759,7 +880,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 ConnectionState = ChatConnectionState.Idle;
                 ConnectionDetail = "Pronto";
             }
-            MarkChanged();
+            MarkChanged(ChatSessionInvalidation.Header | ChatSessionInvalidation.Interactions);
         }
 
         private ChatMessage FindEquivalentLocal(ChatMessage remote)
@@ -772,6 +893,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             }
             return null;
         }
+
+        private static string RemoteMessageKey(ChatMessage message)
+            => (message?.RemoteSessionId ?? "") + "\u001f" + (message?.RemoteId ?? "");
+
+        private static long ParseRemoteSequence(string remoteId)
+            => long.TryParse(remoteId, out var sequence) && sequence > 0 ? sequence : 0;
 
         private static bool EquivalentText(string local, string remote)
         {
@@ -790,28 +917,31 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             return true;
         }
 
-        private void MarkChanged()
+        private void MarkChanged(ChatSessionInvalidation invalidation = ChatSessionInvalidation.All)
         {
             Revision++;
             if (_batchDepth > 0)
             {
-                _changedInBatch = true;
+                _invalidatedInBatch |= invalidation;
                 return;
             }
-            Notify();
+            Notify(invalidation);
         }
 
         private void EndBatch()
         {
             if (_batchDepth == 0) return;
             _batchDepth--;
-            if (_batchDepth != 0 || !_changedInBatch) return;
-            _changedInBatch = false;
-            Notify();
+            if (_batchDepth != 0 || _invalidatedInBatch == ChatSessionInvalidation.None) return;
+            var invalidation = _invalidatedInBatch;
+            _invalidatedInBatch = ChatSessionInvalidation.None;
+            Notify(invalidation);
         }
 
-        private void Notify()
+        private void Notify(ChatSessionInvalidation invalidation)
         {
+            try { OnInvalidated?.Invoke(invalidation); }
+            catch (Exception exception) { UnityEngine.Debug.LogException(exception); }
             try { OnChanged?.Invoke(); }
             catch (Exception exception) { UnityEngine.Debug.LogException(exception); }
         }

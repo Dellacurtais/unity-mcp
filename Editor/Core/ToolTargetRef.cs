@@ -28,19 +28,19 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             var json = new JObject
             {
                 ["kind"] = Kind,
-                ["instanceId"] = InstanceId != 0 ? (JToken)InstanceId : null,
-                ["globalObjectId"] = EmptyToNull(GlobalObjectId),
-                ["assetGuid"] = EmptyToNull(AssetGuid),
-                ["localFileId"] = LocalFileId != 0 ? (JToken)LocalFileId : null,
-                ["assetPath"] = EmptyToNull(AssetPath),
-                ["sceneGuid"] = EmptyToNull(SceneGuid),
-                ["scenePath"] = EmptyToNull(ScenePath),
-                ["sceneHandle"] = SceneHandle != 0 ? (JToken)SceneHandle : null,
-                ["hierarchyPath"] = EmptyToNull(HierarchyPath),
-                ["componentType"] = EmptyToNull(ComponentType),
-                ["componentOrdinal"] = ComponentOrdinal >= 0 ? (JToken)ComponentOrdinal : null,
                 ["isPrefabStage"] = IsPrefabStage,
             };
+            AddWhenPresent(json, "instanceId", InstanceId != 0 ? (JToken)InstanceId : null);
+            AddWhenPresent(json, "globalObjectId", StringToken(GlobalObjectId));
+            AddWhenPresent(json, "assetGuid", StringToken(AssetGuid));
+            AddWhenPresent(json, "localFileId", LocalFileId != 0 ? (JToken)LocalFileId : null);
+            AddWhenPresent(json, "assetPath", StringToken(AssetPath));
+            AddWhenPresent(json, "sceneGuid", StringToken(SceneGuid));
+            AddWhenPresent(json, "scenePath", StringToken(ScenePath));
+            AddWhenPresent(json, "sceneHandle", SceneHandle != 0 ? (JToken)SceneHandle : null);
+            AddWhenPresent(json, "hierarchyPath", StringToken(HierarchyPath));
+            AddWhenPresent(json, "componentType", StringToken(ComponentType));
+            AddWhenPresent(json, "componentOrdinal", ComponentOrdinal >= 0 ? (JToken)ComponentOrdinal : null);
             return json;
         }
 
@@ -134,6 +134,15 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             return string.Join("/", parts);
         }
 
-        private static JToken EmptyToNull(string value) => string.IsNullOrEmpty(value) ? JValue.CreateNull() : new JValue(value);
+        private static JToken StringToken(string value) => string.IsNullOrEmpty(value) ? null : new JValue(value);
+
+        private static void AddWhenPresent(JObject json, string name, JToken value)
+        {
+            // TargetRefSchema intentionally models these fields as optional,
+            // non-null values. Emitting explicit JSON null made otherwise valid
+            // direct tool results fail MCP structured-output validation and
+            // caused the external Unity server to be evicted from the live pool.
+            if (value != null) json[name] = value;
+        }
     }
 }

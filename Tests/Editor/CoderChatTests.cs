@@ -294,6 +294,32 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void SessionInvalidation_SeparatesStreamingFromChromeAndInteractions()
+        {
+            var session = new ChatSession();
+            var invalidations = new List<ChatSessionInvalidation>();
+            session.OnInvalidated += invalidations.Add;
+            session.StartAssistant();
+            invalidations.Clear();
+
+            session.AppendAssistantText("delta");
+
+            Assert.That(invalidations, Is.EqualTo(new[] { ChatSessionInvalidation.Transcript }));
+
+            invalidations.Clear();
+            session.ApplyBatch(() =>
+            {
+                session.AddSystemNote("nota");
+                session.SetPendingPlan(new PendingPlan { Id = "plan-2", Plan = "Plano" });
+            });
+            Assert.That(invalidations, Has.Count.EqualTo(1));
+            Assert.That(invalidations[0], Is.EqualTo(
+                ChatSessionInvalidation.Transcript
+                | ChatSessionInvalidation.Header
+                | ChatSessionInvalidation.Interactions));
+        }
+
+        [Test]
         public void PendingInteractions_UpsertAndRetryStateRemainDeterministic()
         {
             var session = new ChatSession();
@@ -601,6 +627,43 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void SessionHistory_UsesTailMetadataAndPrependsPagesWithoutDuplicates()
+        {
+            var snapshot = CoderSessionSnapshot.FromJson(new JObject
+            {
+                ["session"] = new JObject { ["id"] = SessionA },
+                ["total_messages"] = 3,
+                ["archived_count"] = 0,
+                ["preceding_user_seq"] = 2,
+                ["message_rows"] = new JArray
+                {
+                    MessageRow(MessageB, 3, SessionA, "assistant", "recente"),
+                },
+            });
+            Assert.That(snapshot.HasEarlierMessages, Is.True);
+            Assert.That(snapshot.EarliestMessageId, Is.EqualTo(3));
+
+            var page = CoderMessagePage.FromJson(new JObject
+            {
+                ["next_before_seq"] = null,
+                ["has_more"] = false,
+                ["message_rows"] = new JArray
+                {
+                    MessageRow(MessageA, 1, SessionA, "user", "antiga"),
+                    MessageRow(MessageB, 3, SessionA, "assistant", "recente"),
+                },
+            }, SessionA);
+            var session = new ChatSession();
+            session.MergeRemoteSnapshot(snapshot, true);
+            session.MergeEarlierMessages(page);
+
+            Assert.That(session.Messages.Select(message => message.Text),
+                Is.EqualTo(new[] { "antiga", "recente" }));
+            Assert.That(session.HasEarlierMessages, Is.False);
+            Assert.That(session.NextHistoryBeforeSequence, Is.Null);
+        }
+
+        [Test]
         public void SessionSnapshot_RepeatedEquivalentMergeDoesNotNotifyOrRevise()
         {
             var root = new JObject
@@ -881,6 +944,51 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void UnityPresentation_CleansMarkdownAndDefersCollapsedToolPayloads()
+        {
+            Assert.That(ChatMessagePresentation.CleanMarkdown("## Validação\n- **Cena:** `Arena`"),
+                Is.EqualTo("Validação\n• Cena: Arena"));
+            Assert.That(ChatMessagePresentation.ToolName("ext_unity__query_scene"),
+                Is.EqualTo("Unity · query scene"));
+
+            var message = new ChatMessage { Role = ChatRole.Assistant };
+            message.ToolCalls.Add(new ChatToolCall
+            {
+                Id = "tool-lazy",
+                Name = "ext_unity__query_scene",
+                InputJson = "PAYLOAD_NAO_RENDERIZAR_FECHADO",
+            });
+            var element = new CoderChatMessageElement();
+            element.Bind(message);
+
+            Assert.That(element.Query<Label>().ToList().Select(label => label.text),
+                Does.Not.Contain("PAYLOAD_NAO_RENDERIZAR_FECHADO"));
+            message.ToolCalls[0].Expanded = true;
+            message.Touch();
+            element.Bind(message);
+            Assert.That(element.Query<Label>(className: "tool-code").ToList()
+                    .Select(label => label.text),
+                Does.Contain("PAYLOAD_NAO_RENDERIZAR_FECHADO"));
+            Assert.That(element.ClassListContains("compact-activity"), Is.True);
+        }
+
+        private static JObject MessageRow(
+            string id, long sequence, string sessionId, string role, string text)
+        {
+            return new JObject
+            {
+                ["id"] = id,
+                ["seq"] = sequence,
+                ["session_id"] = sessionId,
+                ["role"] = role,
+                ["content_json"] = new JArray
+                {
+                    new JObject { ["type"] = "text", ["text"] = text },
+                }.ToString(Formatting.None),
+            };
+        }
+
+        [Test]
         public void MessageBody_AgentOwnsProfileAndLegacyFallbackIsNormalized()
         {
             var agentBody = CoderApiClient.BuildMessageBody("Olá", "bootstrap", "plan", true);
@@ -920,6 +1028,43 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That((bool)body["thinking_enabled"], Is.True);
             Assert.That((int)body["max_turns"], Is.EqualTo(40));
             Assert.That((int)body["max_auto_continues"], Is.EqualTo(9));
+        }
+
+        [Test]
+        public void UnityBuildAgentManifest_IsPluginManagedAndKeepsNativeBuildTools()
+        {
+            var manifest = UnityBuildAgentManifest.Build();
+
+            Assert.That(UnityBuildAgentManifest.AgentId, Is.EqualTo("unity-build"));
+            Assert.That(UnityBuildAgentManifest.SelectionId, Is.EqualTo("custom:unity-build"));
+            Assert.That((string)manifest["managedBy"], Is.EqualTo("com.maicon.scene-analyzer"));
+            Assert.That((string)manifest["managedVersion"], Is.EqualTo("0.16.24"));
+            Assert.That((string)manifest["baseAgentId"], Is.EqualTo("build"));
+            Assert.That(manifest["toolNames"].Type, Is.EqualTo(JTokenType.Null),
+                "null inherits the native build tool registry instead of replacing it");
+            CollectionAssert.Contains(manifest["requiredToolTiers"].Values<string>().ToArray(), "unity");
+            Assert.That((int)manifest["visibleToolCap"], Is.EqualTo(64));
+            Assert.That(manifest["skillIds"], Is.Empty,
+                "routine Unity runs should not inject overlapping skill bodies before acting");
+            var pins = manifest["pinnedToolNames"].Values<string>().ToArray();
+            CollectionAssert.Contains(pins, "ext_unity__get_server_health");
+            CollectionAssert.Contains(pins, "ext_unity__create_scene");
+            CollectionAssert.Contains(pins, "ext_unity__save_scene");
+            StringAssert.Contains("real `ext_unity__*` round-trip", (string)manifest["prompt"]);
+        }
+
+        [Test]
+        public void CreateSessionBody_PreservesPluginManagedUnityAgentSelection()
+        {
+            var body = CoderApiClient.BuildCreateSessionBody(
+                114,
+                "Unity Build benchmark",
+                "openai-chatgpt",
+                "gpt-5.6-sol",
+                UnityBuildAgentManifest.SelectionId,
+                new CoderSessionOptions());
+
+            Assert.That((string)body["agent"], Is.EqualTo(UnityBuildAgentManifest.SelectionId));
         }
 
         [Test]
@@ -987,6 +1132,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var preamble = CoderApiClient.BuildDefaultPreamble("C:/UnityProject");
 
             StringAssert.Contains("ext_unity__", preamble);
+            StringAssert.Contains("ext_unity__get_server_health", preamble);
+            StringAssert.Contains(UnityBuildAgentManifest.SelectionId, preamble);
             StringAssert.DoesNotContain("ext_unity_editor__", preamble);
         }
 

@@ -17,6 +17,10 @@
         <ui:VisualElement name="settings-host" class="settings-host" />
 
         <ui:VisualElement name="transcript-shell" class="transcript-shell">
+            <ui:VisualElement name="history-bar" class="history-bar hidden">
+                <ui:Button name="history-button" text="Carregar conversa anterior" class="history-button" />
+                <ui:Label name="history-label" class="history-label" />
+            </ui:VisualElement>
             <ui:ListView name="transcript-list" class="transcript-list" />
             <ui:Button name="new-messages-button" text="Novas mensagens" class="new-messages-button hidden" />
         </ui:VisualElement>

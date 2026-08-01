@@ -15,6 +15,12 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
 {
     public sealed partial class CoderApiClient
     {
+        // The backend expands each semantic tail unit to the persisted rows
+        // needed to keep a user/assistant turn intact. Twelve turns keep the
+        // Unity window useful while avoiding repeated multi-hundred-KB polls.
+        private const int UnitySessionTailSize = 12;
+        private const int UnityHistoryPageSize = 60;
+
         public void RefreshAgents(string serverUrl, string token)
         {
             _ = Task.Run(async () =>
@@ -25,6 +31,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                     await MainThreadDispatcher.RunAsync(() =>
                     {
                         Bootstrap.CoderAgents = agents;
+                        if (agents.Any(agent => agent.Id == UnityBuildAgentManifest.SelectionId)
+                            && (string.IsNullOrEmpty(Settings.CoderAgent)
+                                || string.Equals(Settings.CoderAgent, "build", StringComparison.Ordinal)))
+                            Settings.CoderAgent = UnityBuildAgentManifest.SelectionId;
                         Bootstrap.NotifyCoderAgentsChanged();
                     }, _lifetimeCts.Token).ConfigureAwait(false);
                 }
@@ -41,6 +51,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public async Task<List<CoderAgentInfo>> GetAgentsAsync(
             string serverUrl, string token, CancellationToken ct)
         {
+            await InstallOrUpdateUnityAgentAsync(serverUrl, token, ct).ConfigureAwait(false);
             var url = $"{serverUrl.TrimEnd('/')}/api/coder/agents";
             using var request = CreateRequest(HttpMethod.Get, url, token);
             using var response = await Http.SendAsync(request, ct).ConfigureAwait(false);
@@ -56,6 +67,32 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 if (agent != null && !string.IsNullOrEmpty(agent.Id)) agents.Add(agent);
             }
             return agents;
+        }
+
+        public async Task InstallOrUpdateUnityAgentAsync(
+            string serverUrl, string token, CancellationToken ct)
+        {
+            var url = $"{serverUrl.TrimEnd('/')}/api/admin/custom-agents/managed/{UnityBuildAgentManifest.AgentId}";
+            using var request = CreateRequest(
+                HttpMethod.Put,
+                url,
+                token,
+                new StringContent(
+                    UnityBuildAgentManifest.Build().ToString(FormattingNs.None),
+                    Encoding.UTF8,
+                    "application/json"));
+            using var response = await Http.SendAsync(request, ct).ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException(
+                    $"CodeStudio não suporta a instalação do agente Unity {UnityBuildAgentManifest.ManagedVersion} " +
+                    $"(HTTP {(int)response.StatusCode}: {body}). Atualize o CodeStudio.");
+            }
+            var installed = JObject.Parse(body);
+            if (!string.Equals((string)installed["selectionId"], UnityBuildAgentManifest.SelectionId,
+                    StringComparison.Ordinal))
+                throw new HttpRequestException("CodeStudio instalou um identificador inesperado para o agente Unity.");
         }
 
         public void RefreshSessions(string serverUrl, string token, int projectId)
@@ -108,13 +145,36 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             sessionId = CoderSessionIdentity.Normalize(sessionId);
             if (string.IsNullOrEmpty(sessionId))
                 throw new ArgumentException("Session id must be a canonical UUID.", nameof(sessionId));
-            var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}";
+            var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}?tail={UnitySessionTailSize}&detail=preview";
             using var request = CreateRequest(HttpMethod.Get, url, token);
             using var response = await Http.SendAsync(request, ct).ConfigureAwait(false);
             var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"HTTP {(int)response.StatusCode}: {body}");
             return CoderSessionSnapshot.FromJson(JObject.Parse(body));
+        }
+
+        public async Task<CoderMessagePage> GetEarlierMessagesAsync(
+            string serverUrl,
+            string token,
+            string sessionId,
+            long beforeSequence,
+            bool includeArchived,
+            CancellationToken ct)
+        {
+            sessionId = CoderSessionIdentity.Normalize(sessionId);
+            if (string.IsNullOrEmpty(sessionId))
+                throw new ArgumentException("Session id must be a canonical UUID.", nameof(sessionId));
+            var cursor = beforeSequence > 0 ? $"&before_seq={beforeSequence}" : "";
+            var archived = includeArchived ? "&include_archived=1" : "";
+            var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions/{sessionId}/messages"
+                + $"?limit={UnityHistoryPageSize}&detail=preview{cursor}{archived}";
+            using var request = CreateRequest(HttpMethod.Get, url, token);
+            using var response = await Http.SendAsync(request, ct).ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"HTTP {(int)response.StatusCode}: {body}");
+            return CoderMessagePage.FromJson(JObject.Parse(body), sessionId);
         }
 
         public void AttachSession(string serverUrl, string token, string sessionId, bool replaceConversation = true)

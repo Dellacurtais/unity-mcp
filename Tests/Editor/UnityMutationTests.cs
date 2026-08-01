@@ -42,6 +42,11 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 Assert.That(gameObjectRef.AssetGuid, Is.Null.Or.Empty);
                 Assert.That(componentRef.AssetGuid, Is.Null.Or.Empty);
                 Assert.That(componentRef.ComponentOrdinal, Is.EqualTo(1));
+                var gameObjectJson = gameObjectRef.ToJson();
+                Assert.That(gameObjectJson["assetGuid"], Is.Null, "optional string fields must be omitted instead of serialized as null");
+                Assert.That(gameObjectJson["localFileId"], Is.Null, "optional integer fields must be omitted instead of serialized as null");
+                Assert.That(gameObjectJson["componentType"], Is.Null, "non-component targets must not emit a null component type");
+                Assert.That(gameObjectJson["componentOrdinal"], Is.Null, "non-component targets must not emit a null component ordinal");
                 Assert.That(ToolTargetResolver.Resolve(gameObjectRef, out var goError), Is.SameAs(child), goError);
                 Assert.That(ToolTargetResolver.Resolve(componentRef, out var componentError), Is.SameAs(secondCollider), componentError);
                 componentRef.InstanceId = firstCollider.GetInstanceID();

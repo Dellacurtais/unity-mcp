@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Chat;
+using Maicon.SceneAnalyzer.Editor.Mcp;
 using UnityEditor;
 using UnityEditor.PackageManager;
 using UnityEngine;
@@ -14,6 +17,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
     {
         private const string WindowTitle = "Coder Chat";
         private const string UxmlRelativePath = "Editor/Window/CoderChatWindow.uxml";
+        private const long StreamingUiIntervalMs = 75;
 
         private readonly List<ChatMessage> _visibleMessages = new();
         private readonly Dictionary<ChatMessage, int> _renderedRevisions = new();
@@ -38,6 +42,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private Label _composerFeedback;
         private VisualElement _statusDot;
         private Button _newMessagesButton;
+        private Button _historyButton;
         private Button _sendButton;
         private Button _modelButton;
         private TextField _composerInput;
@@ -46,11 +51,17 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private DropdownField _planDepthField;
         private DropdownField _sessionField;
         private ScrollView _transcriptScroll;
+        private VisualElement _historyBar;
+        private Label _historyLabel;
         private IVisualElementScheduledItem _scheduledUiFlush;
         private int _scrollCorrectionAttempts;
 
-        private bool _sessionDirty = true;
+        private bool _headerDirty = true;
+        private bool _transcriptDirty = true;
+        private bool _interactionsDirty = true;
+        private bool _sessionControlsDirty = true;
         private bool _catalogDirty = true;
+        private bool _historyLoading;
         private bool _composerFocused;
         private bool _showSystemMessages;
         private bool _eventsSubscribed;
@@ -58,6 +69,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private string _interactionSignature = "";
         private string _pendingAttachSessionId = "";
         private string _attachedSessionId = "";
+        private string _historyAnchorId = "";
 
         [MenuItem("Window/Coder Chat (Unity MCP)")]
         public static void Open()
@@ -111,7 +123,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             RegisterComposerDragAndDrop();
             WireNewMessagesButton();
 
-            _sessionDirty = true;
+            MarkAllUiDirty();
             _catalogDirty = true;
             rootVisualElement.schedule.Execute(InitializeTranscriptScroll);
             RefreshRemoteCatalogs();
@@ -123,7 +135,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             if (_eventsSubscribed) return;
             _eventsSubscribed = true;
             if (Bootstrap.ChatSession != null)
-                Bootstrap.ChatSession.OnChanged += OnSessionChanged;
+                Bootstrap.ChatSession.OnInvalidated += OnSessionInvalidated;
             Bootstrap.OnCoderProvidersChanged += OnCatalogChanged;
             Bootstrap.OnCoderAgentsChanged += OnCatalogChanged;
             Bootstrap.OnCoderSessionsChanged += OnCatalogChanged;
@@ -135,25 +147,30 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             if (!_eventsSubscribed) return;
             _eventsSubscribed = false;
             if (Bootstrap.ChatSession != null)
-                Bootstrap.ChatSession.OnChanged -= OnSessionChanged;
+                Bootstrap.ChatSession.OnInvalidated -= OnSessionInvalidated;
             Bootstrap.OnCoderProvidersChanged -= OnCatalogChanged;
             Bootstrap.OnCoderAgentsChanged -= OnCatalogChanged;
             Bootstrap.OnCoderSessionsChanged -= OnCatalogChanged;
             Bootstrap.OnServerStateChanged -= OnServerStateChanged;
         }
 
-        private void OnSessionChanged()
+        private void OnSessionInvalidated(ChatSessionInvalidation invalidation)
         {
-            _sessionDirty = true;
+            _headerDirty |= (invalidation & ChatSessionInvalidation.Header) != 0;
+            _transcriptDirty |= (invalidation & ChatSessionInvalidation.Transcript) != 0;
+            _interactionsDirty |= (invalidation & ChatSessionInvalidation.Interactions) != 0;
+            _sessionControlsDirty |= (invalidation & ChatSessionInvalidation.SessionControls) != 0;
             _pendingAttachSessionId = Settings.CoderSessionId;
-            ScheduleUiFlush();
+            var transcriptOnly = invalidation == ChatSessionInvalidation.Transcript;
+            ScheduleUiFlush(!transcriptOnly || Bootstrap.ChatSession?.IsRunning != true);
         }
 
         private void OnCatalogChanged()
         {
             _catalogDirty = true;
-            _sessionDirty = true;
-            ScheduleUiFlush();
+            _headerDirty = true;
+            _sessionControlsDirty = true;
+            ScheduleUiFlush(true);
         }
 
         private static void OnServerStateChanged(string state)
@@ -170,6 +187,9 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _connectionActions = rootVisualElement.Q<VisualElement>("connection-actions");
             _transcriptList = rootVisualElement.Q<ListView>("transcript-list");
             _newMessagesButton = rootVisualElement.Q<Button>("new-messages-button");
+            _historyBar = rootVisualElement.Q<VisualElement>("history-bar");
+            _historyButton = rootVisualElement.Q<Button>("history-button");
+            _historyLabel = rootVisualElement.Q<Label>("history-label");
             _interactionsContainer = rootVisualElement.Q<VisualElement>("interactions-container");
             _referenceChips = rootVisualElement.Q<VisualElement>("reference-chips");
             _composerPanel = rootVisualElement.Q<VisualElement>("composer-panel");
@@ -187,6 +207,9 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 && _connectionActions != null
                 && _transcriptList != null
                 && _newMessagesButton != null
+                && _historyBar != null
+                && _historyButton != null
+                && _historyLabel != null
                 && _interactionsContainer != null
                 && _referenceChips != null
                 && _composerPanel != null
@@ -209,7 +232,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 name = "session-field",
                 tooltip = "Sessões recentes deste projeto",
             };
-            _sessionField.AddToClassList("agent-field");
+            _sessionField.AddToClassList("session-field");
             _sessionField.RegisterValueChangedCallback(evt =>
             {
                 if (string.IsNullOrEmpty(evt.newValue)
@@ -223,18 +246,20 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 var sessionId = Settings.CoderSessionId;
                 if (CoderSessionIdentity.IsValid(sessionId)) AttachSession(sessionId, false);
                 RefreshRemoteCatalogs();
-            }) { text = "Sincronizar", tooltip = "Atualizar sessão, agentes, modelos e lista de sessões" });
+            }) { text = "↻", tooltip = "Sincronizar sessão, agentes, modelos e lista de sessões" });
 
             _connectionActions.Add(new Button(CreateNewSession)
             {
-                text = "Nova",
+                text = "+",
                 tooltip = "Criar uma sessão para este projeto Unity",
             });
 
             _connectionActions.Add(new Button(() =>
             {
                 if (_settingsFoldout != null) _settingsFoldout.value = !_settingsFoldout.value;
-            }) { text = "Configurações" });
+            }) { text = "⋯", tooltip = "Abrir sessão e modelo" });
+
+            _historyButton.clicked += LoadEarlierMessages;
         }
 
         private void BuildTranscript()
@@ -244,7 +269,12 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _transcriptList.bindItem = (element, index) =>
             {
                 var messageElement = (CoderChatMessageElement)element;
-                messageElement.Bind(index >= 0 && index < _visibleMessages.Count ? _visibleMessages[index] : null);
+                var message = index >= 0 && index < _visibleMessages.Count ? _visibleMessages[index] : null;
+                var showHeader = message != null && (index == 0
+                    || _visibleMessages[index - 1].Role != message.Role
+                    || message.Role != ChatRole.Assistant
+                    || (message.Timestamp - _visibleMessages[index - 1].Timestamp).TotalMinutes >= 2);
+                messageElement.BindForTranscript(message, showHeader);
             };
             _transcriptList.unbindItem = (element, _) => ((CoderChatMessageElement)element).Bind(null);
             _transcriptList.virtualizationMethod = CollectionVirtualizationMethod.DynamicHeight;
@@ -283,16 +313,18 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
             var attachButton = new Button(OpenReferencePicker)
             {
-                text = "Anexar",
+                text = "+",
                 tooltip = "Adicionar GameObjects, Components, assets ou pastas",
             };
+            attachButton.AddToClassList("square-button");
             _composerLeft.Add(attachButton);
 
             var selectionButton = new Button(AttachCurrentSelection)
             {
-                text = "Seleção",
+                text = "◎",
                 tooltip = "Anexar os objetos selecionados no Unity",
             };
+            selectionButton.AddToClassList("square-button");
             _composerLeft.Add(selectionButton);
 
             _agentField = new DropdownField { tooltip = "Agente definido pelo runtime" };
@@ -345,6 +377,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 _modelField?.Focus();
             });
             _modelButton.tooltip = "Provider/modelo ativo; clique para abrir as configurações";
+            _modelButton.AddToClassList("model-button");
             _composerLeft.Add(_modelButton);
 
             _sendButton = new Button(DoSend);
@@ -479,10 +512,18 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 Settings.CoderUrl, Settings.CoderToken, sessionId, replaceConversation);
         }
 
-        private void ScheduleUiFlush()
+        private void ScheduleUiFlush(bool immediate = false)
         {
-            if (rootVisualElement.panel == null || !_invalidationState.TrySchedule()) return;
+            if (rootVisualElement.panel == null) return;
+            if (immediate && _invalidationState.IsScheduled)
+            {
+                _scheduledUiFlush?.Pause();
+                _scheduledUiFlush = null;
+                _invalidationState.Cancel();
+            }
+            if (!_invalidationState.TrySchedule()) return;
             _scheduledUiFlush = rootVisualElement.schedule.Execute(FlushUi);
+            if (!immediate) _scheduledUiFlush.StartingIn(StreamingUiIntervalMs);
         }
 
         private void CancelScheduledUiFlush()
@@ -506,17 +547,39 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 RefreshSettingsControls();
             }
 
-            if (!_sessionDirty) return;
-            _sessionDirty = false;
+            if (_headerDirty)
+            {
+                _headerDirty = false;
+                UpdateConnectionHeader();
+                UpdateSendButton();
+            }
+            if (_transcriptDirty)
+            {
+                _transcriptDirty = false;
+                RefreshTranscript();
+                UpdateHistoryControl();
+            }
+            if (_interactionsDirty)
+            {
+                _interactionsDirty = false;
+                RefreshInteractions();
+            }
+            if (_sessionControlsDirty)
+            {
+                _sessionControlsDirty = false;
+                RefreshEffortAvailability();
+                RefreshPlanDepthControl();
+                RefreshSessionSettingsControls();
+                UpdateModelButton();
+            }
+        }
 
-            UpdateConnectionHeader();
-            UpdateSendButton();
-            RefreshTranscript();
-            RefreshInteractions();
-            RefreshEffortAvailability();
-            RefreshPlanDepthControl();
-            RefreshSessionSettingsControls();
-            UpdateModelButton();
+        private void MarkAllUiDirty()
+        {
+            _headerDirty = true;
+            _transcriptDirty = true;
+            _interactionsDirty = true;
+            _sessionControlsDirty = true;
         }
 
         private void TryAttachPendingSession()
@@ -562,6 +625,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     _renderedRevisions.Clear();
                     foreach (var message in _visibleMessages) _renderedRevisions[message] = message.Revision;
                     _transcriptList.Rebuild();
+                    RestoreHistoryAnchor();
                 }
             }
             else
@@ -582,6 +646,82 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 if (_scrollState.IsFollowingEnd) RequestScrollTranscriptToEnd();
                 else SetDisplayed(_newMessagesButton, true);
             }
+        }
+
+        private void UpdateHistoryControl()
+        {
+            if (_historyBar == null || _historyButton == null || _historyLabel == null) return;
+            var session = Bootstrap.ChatSession;
+            var show = _historyLoading || session?.HasEarlierMessages == true;
+            SetDisplayed(_historyBar, show);
+            if (!show) return;
+
+            _historyButton.text = _historyLoading ? "Carregando…" : "↑ Conversa anterior";
+            _historyButton.SetEnabled(!_historyLoading);
+            var loaded = session?.Messages.Count(message => message.IsRemote) ?? 0;
+            _historyLabel.text = session?.TotalRemoteMessages > 0
+                ? $"{loaded} visíveis de {session.TotalRemoteMessages} registros"
+                : $"{loaded} mensagens carregadas";
+        }
+
+        private void LoadEarlierMessages()
+        {
+            var session = Bootstrap.ChatSession;
+            var client = Bootstrap.ChatClient;
+            var sessionId = CoderSessionIdentity.Normalize(session?.RemoteSession?.Id ?? Settings.CoderSessionId);
+            if (_historyLoading || client == null || session == null || string.IsNullOrEmpty(sessionId)) return;
+
+            _historyLoading = true;
+            _historyAnchorId = _visibleMessages.FirstOrDefault(message => message.IsRemote)?.RemoteId ?? "";
+            _scrollState.SuspendFollowing();
+            UpdateHistoryControl();
+            var before = session.NextHistoryBeforeSequence ?? session.EarliestRemoteMessageId;
+            _ = LoadEarlierMessagesAsync(client, session, sessionId, before);
+        }
+
+        private async Task LoadEarlierMessagesAsync(
+            CoderApiClient client,
+            ChatSession session,
+            string sessionId,
+            long beforeSequence)
+        {
+            try
+            {
+                var page = await client.GetEarlierMessagesAsync(
+                    Settings.CoderUrl,
+                    Settings.CoderToken,
+                    sessionId,
+                    beforeSequence,
+                    true,
+                    CancellationToken.None).ConfigureAwait(false);
+                await MainThreadDispatcher.RunAsync(() =>
+                {
+                    session.MergeEarlierMessages(page);
+                    _historyLoading = false;
+                    UpdateHistoryControl();
+                }).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                await MainThreadDispatcher.RunAsync(() =>
+                {
+                    _historyLoading = false;
+                    _historyAnchorId = "";
+                    UpdateHistoryControl();
+                    ShowComposerFeedback($"Não foi possível carregar o histórico: {exception.Message}");
+                }).ConfigureAwait(false);
+            }
+        }
+
+        private void RestoreHistoryAnchor()
+        {
+            if (string.IsNullOrEmpty(_historyAnchorId) || _transcriptList == null) return;
+            var anchor = _historyAnchorId;
+            _historyAnchorId = "";
+            var index = _visibleMessages.FindIndex(message => string.Equals(
+                message.RemoteId, anchor, StringComparison.Ordinal));
+            if (index < 0) return;
+            _transcriptList.schedule.Execute(() => _transcriptList.ScrollToItem(index));
         }
 
         internal static bool IsStrictReferenceAppend<T>(IReadOnlyList<T> current, IReadOnlyList<T> next)
@@ -975,6 +1115,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         {
             return new List<CoderAgentInfo>
             {
+                new() { Id = UnityBuildAgentManifest.SelectionId, Label = "Unity Build", Description = "Build nativo do CodeStudio com Unity MCP ao vivo", Profile = "navigate" },
                 new() { Id = "plan", Label = "Plan", Description = "Planejar antes de alterar o projeto", Profile = "navigate", PlanMode = true },
                 new() { Id = "build", Label = "Code", Description = "Investigar, implementar e validar", Profile = "auto" },
                 new() { Id = "explore", Label = "Explore", Description = "Investigação somente leitura", Profile = "bootstrap" },

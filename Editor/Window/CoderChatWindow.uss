@@ -19,7 +19,7 @@
 
 .coder-chat-root {
     flex-grow: 1;
-    min-width: 360px;
+    min-width: 320px;
     background-color: var(--chat-bg);
     color: var(--text);
 }
@@ -29,8 +29,8 @@
     flex-shrink: 0;
     align-items: stretch;
     justify-content: flex-start;
-    min-height: 56px;
-    padding: 8px 10px;
+    min-height: 50px;
+    padding: 7px 10px 6px 10px;
     background-color: var(--surface);
     border-bottom-width: 1px;
     border-bottom-color: var(--border);
@@ -53,9 +53,10 @@
 
 .connection-summary { flex-grow: 0; flex-shrink: 0; min-width: 0; width: 100%; }
 .connection-copy { flex-grow: 1; min-width: 0; margin-left: 8px; }
-.connection-actions { flex-shrink: 0; justify-content: flex-start; flex-wrap: wrap; margin-top: 5px; }
-.connection-actions > * { flex-shrink: 0; margin-right: 5px; margin-top: 3px; }
-.connection-actions > .agent-field { flex-grow: 1; min-width: 180px; max-width: 300px; }
+.connection-actions { flex-shrink: 0; justify-content: flex-start; flex-wrap: nowrap; margin-top: 5px; }
+.connection-actions > * { flex-shrink: 0; margin-right: 4px; }
+.connection-actions > .session-field { flex-grow: 1; flex-shrink: 1; min-width: 120px; }
+.connection-actions > .unity-button { min-width: 26px; width: 26px; padding-left: 3px; padding-right: 3px; }
 
 .status-dot {
     width: 9px;
@@ -89,7 +90,7 @@
     border-bottom-width: 1px;
     border-bottom-color: var(--border);
 }
-.settings-foldout { padding: 4px 10px 8px 10px; }
+.settings-foldout { padding: 3px 10px 6px 10px; color: var(--text-muted); }
 .settings-scroll {
     max-height: 340px;
     flex-shrink: 0;
@@ -121,8 +122,21 @@
 .settings-preamble { min-height: 70px; max-height: 160px; }
 
 .transcript-shell { flex-grow: 1; position: relative; min-height: 160px; }
+.history-bar {
+    flex-shrink: 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 4px 10px;
+    background-color: var(--surface-muted);
+    border-bottom-width: 1px;
+    border-bottom-color: var(--border);
+}
+.history-button { min-width: 132px; height: 22px; }
+.history-label { margin-left: 7px; color: var(--text-muted); font-size: 9px; }
 .transcript-list { flex-grow: 1; background-color: var(--chat-bg); border-width: 0; }
-.transcript-list .unity-collection-view__item { padding: 5px 10px; }
+.transcript-list .unity-collection-view__item { padding: 0; }
 .new-messages-button {
     position: absolute;
     right: 16px;
@@ -134,30 +148,41 @@
     border-radius: 14px;
 }
 
-.message-row { padding: 5px 10px; }
+.message-row { padding: 3px 10px; }
 .message-bubble {
-    padding: 9px 11px;
+    padding: 8px 10px;
     border-width: 1px;
     border-color: var(--border);
     border-radius: 7px;
     background-color: var(--assistant);
 }
-.message-row.role-user .message-bubble { margin-left: 28px; background-color: var(--user); border-color: #345274; }
-.message-row.role-assistant .message-bubble { margin-right: 18px; }
+.message-row.role-user .message-bubble { margin-left: 30px; background-color: var(--user); border-color: #345274; }
+.message-row.role-assistant .message-bubble {
+    margin-right: 8px;
+    padding-left: 12px;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    border-left-width: 1px;
+    border-left-color: #343b46;
+    border-radius: 0;
+}
+.message-row.compact-activity { padding-top: 1px; padding-bottom: 1px; }
+.message-row.compact-activity .message-bubble { padding-top: 2px; padding-bottom: 3px; }
+.message-row.compact-activity .tool-list { margin-top: 0; }
 .message-row.role-system .message-bubble { background-color: var(--system); border-color: #354438; }
 .message-row.role-error .message-bubble { background-color: #3a2226; border-color: #76424a; }
 .message-row.role-tool .message-bubble { background-color: #29252f; border-color: #4e425f; }
 .message-role { flex-grow: 1; font-size: 11px; -unity-font-style: bold; color: var(--accent-strong); }
 .message-time { font-size: 9px; color: var(--text-muted); }
-.message-body { margin-top: 5px; white-space: normal; color: var(--text); }
+.message-body { margin-top: 4px; white-space: normal; color: var(--text); }
 .message-streaming { margin-left: 6px; color: var(--accent-strong); font-size: 9px; }
 .message-thinking { margin-top: 6px; color: var(--text-muted); }
 .message-thinking .unity-foldout__content { padding-left: 8px; }
 
 .tool-list { margin-top: 7px; }
 .tool-card {
-    margin-top: 4px;
-    padding: 5px 7px;
+    margin-top: 3px;
+    padding: 3px 6px;
     border-left-width: 2px;
     border-left-color: var(--accent);
     background-color: #1b1e23;
@@ -249,8 +274,8 @@
 
 .composer-panel {
     flex-shrink: 0;
-    margin: 6px 10px 10px 10px;
-    padding: 7px;
+    margin: 6px 8px 8px 8px;
+    padding: 6px;
     min-height: 88px;
     background-color: var(--surface);
     border-width: 1px;
@@ -290,9 +315,11 @@
 .composer-right { flex-shrink: 0; justify-content: flex-end; }
 .composer-left > *,
 .composer-right > * { margin-right: 5px; margin-top: 3px; }
-.agent-field { min-width: 135px; max-width: 220px; }
+.square-button { min-width: 28px; width: 28px; padding-left: 3px; padding-right: 3px; font-size: 14px; }
+.agent-field { min-width: 125px; max-width: 190px; }
 .effort-field { width: 92px; }
 .plan-depth-field { width: 100px; }
+.model-button { max-width: 180px; overflow: hidden; }
 .send-button { min-width: 82px; background-color: var(--accent); color: #ffffff; }
 .send-button.stop { background-color: var(--danger); }
 .send-button.stopping { background-color: #8e555a; color: #e2e2e2; }
@@ -300,8 +327,11 @@
 .coder-chat-root.compact-layout .composer-left { width: 100%; }
 .coder-chat-root.compact-layout .composer-right { width: 100%; margin-top: 2px; }
 .coder-chat-root.compact-layout .agent-field { flex-grow: 1; max-width: none; }
+.coder-chat-root.compact-layout .model-button { flex-grow: 1; max-width: none; }
+.coder-chat-root.compact-layout .send-button { flex-grow: 1; }
 .coder-chat-root.compact-layout .message-row.role-user .message-bubble { margin-left: 12px; }
-.coder-chat-root.compact-layout .message-row.role-assistant .message-bubble { margin-right: 6px; }
+.coder-chat-root.compact-layout .message-row.role-assistant .message-bubble { margin-right: 2px; }
+.coder-chat-root.compact-layout .history-label { display: none; }
 .coder-chat-root.compact-layout .interactions-container { max-height: 460px; }
 .coder-chat-root.compact-layout .interaction-actions { justify-content: flex-start; }
 .coder-chat-root.compact-layout .interaction-actions > * { flex-grow: 1; min-width: 112px; }

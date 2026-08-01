@@ -39,7 +39,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
             _settingsFoldout = new Foldout
             {
-                text = "Configurações avançadas",
+                text = "Sessão e modelo",
                 value = false,
             };
             _settingsFoldout.AddToClassList("settings-foldout");
@@ -260,7 +260,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 Settings.CoderShowSystemMessages = evt.newValue;
                 _showSystemMessages = evt.newValue;
-                _sessionDirty = true;
+                _transcriptDirty = true;
+                ScheduleUiFlush(true);
             });
             grid.Add(_showSystemToggle);
 

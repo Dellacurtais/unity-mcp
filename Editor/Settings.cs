@@ -248,8 +248,12 @@ namespace Maicon.SceneAnalyzer.Editor
 
         public static string CoderAgent
         {
-            get => EditorPrefs.GetString(KCoderAgent, "build");
-            set => EditorPrefs.SetString(KCoderAgent, value ?? "build");
+            get => EditorPrefs.GetString(
+                KCoderAgent,
+                Maicon.SceneAnalyzer.Editor.Chat.UnityBuildAgentManifest.SelectionId);
+            set => EditorPrefs.SetString(
+                KCoderAgent,
+                value ?? Maicon.SceneAnalyzer.Editor.Chat.UnityBuildAgentManifest.SelectionId);
         }
 
         public static int CoderProjectId

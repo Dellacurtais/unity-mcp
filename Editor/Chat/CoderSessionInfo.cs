@@ -155,16 +155,28 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public CoderSessionInfo Session;
         public readonly List<ChatMessage> Messages = new();
         public long LastMessageId;
+        public long EarliestMessageId;
+        public int TotalMessages;
+        public int ArchivedCount;
+        public bool HasEarlierMessages;
 
         public static CoderSessionSnapshot FromJson(JObject root)
         {
             var snapshot = new CoderSessionSnapshot
             {
                 Session = CoderSessionInfo.FromJson(root?["session"] ?? root),
+                TotalMessages = (int?)root?["total_messages"] ?? 0,
+                ArchivedCount = (int?)root?["archived_count"] ?? 0,
             };
             var rows = root?["message_rows"] as JArray;
             if (rows != null && rows.Count > 0) ParseRows(rows, snapshot);
             else if (root?["messages"] is JArray messages) ParseMessages(messages, snapshot);
+            snapshot.HasEarlierMessages = root?["preceding_user_seq"]?.Type != JTokenType.Null
+                && root?["preceding_user_seq"] != null;
+            if (!snapshot.HasEarlierMessages
+                && snapshot.TotalMessages > (rows?.Count ?? snapshot.Messages.Count))
+                snapshot.HasEarlierMessages = true;
+            if (snapshot.ArchivedCount > 0) snapshot.HasEarlierMessages = true;
             return snapshot;
         }
 
@@ -177,6 +189,10 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 var remoteSequence = ReadSequence(row["seq"]);
                 if (remoteSequence <= 0) remoteSequence = ReadSequence(row["id"]);
                 snapshot.LastMessageId = Math.Max(snapshot.LastMessageId, remoteSequence);
+                if (remoteSequence > 0)
+                    snapshot.EarliestMessageId = snapshot.EarliestMessageId == 0
+                        ? remoteSequence
+                        : Math.Min(snapshot.EarliestMessageId, remoteSequence);
                 var role = (string)row["role"];
                 var content = ParseContent(row["content_json"]);
                 if (string.Equals(role, "tool", StringComparison.OrdinalIgnoreCase)
@@ -211,6 +227,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 snapshot.Messages.Add(message);
             }
             snapshot.LastMessageId = syntheticId - 1;
+            snapshot.EarliestMessageId = snapshot.Messages.Count > 0 ? 1 : 0;
         }
 
         private static long ReadSequence(JToken token)
@@ -325,6 +342,29 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             return DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsed)
                 ? parsed
                 : null;
+        }
+    }
+
+    public sealed class CoderMessagePage
+    {
+        public readonly List<ChatMessage> Messages = new();
+        public long? NextBeforeSequence;
+        public bool HasMore;
+
+        public static CoderMessagePage FromJson(JObject root, string sessionId)
+        {
+            var envelope = root == null ? new JObject() : (JObject)root.DeepClone();
+            envelope["session"] = new JObject { ["id"] = CoderSessionIdentity.Normalize(sessionId) };
+            var snapshot = CoderSessionSnapshot.FromJson(envelope);
+            var page = new CoderMessagePage
+            {
+                NextBeforeSequence = (long?)root?["next_before_seq"],
+                HasMore = (bool?)root?["has_more"] ?? false,
+            };
+            page.Messages.AddRange(snapshot.Messages);
+            if (!page.NextBeforeSequence.HasValue && page.HasMore && snapshot.EarliestMessageId > 0)
+                page.NextBeforeSequence = snapshot.EarliestMessageId;
+            return page;
         }
     }
 }

@@ -307,7 +307,9 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         {
             return
                 "[unity-context — auto-injected by the Unity MCP plugin on the first message of this session]\n\n" +
-                $"You're connected to the Unity Editor running at `{unityRoot ?? "<unknown>"}` via the Model Context Protocol. " +
+                $"This request originated in the Unity Editor running at `{unityRoot ?? "<unknown>"}`. " +
+                $"The plugin-managed agent `{UnityBuildAgentManifest.SelectionId}` activates the external `unity` tier. " +
+                "Verify the live route with `ext_unity__get_server_health` before trusting this context. " +
                 "The Unity MCP plugin exposes scene tools through the registered MCP server `unity`, prefixed `ext_unity__`:\n" +
                 "- **Read / inspect**: `read_hierarchy`, `read_scene`, `read_component`, `get_project_meta`, `screenshot_scene_view`.\n" +
                 "- **Discover assets & types**: `list_assets`, `search_assets`, `read_asset_metadata`, `find_references_to_asset`, " +
@@ -373,20 +375,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "For arrays/lists on either Components or SOs, prefer `modify_array_property` over `set_property` with the raw `Array.size`/`Array.data[N]` paths.\n\n" +
                 "**After creating a NEW `.cs` MonoBehaviour script** (via filesystem write), prefer `wait_for_compile_clean` over `refresh_assets` — it tells you in ONE call whether the compile succeeded AND surfaces any error with file:line. If you still call `refresh_assets`, follow up with `read_console severity=errors_only since=<seq before refresh>` to verify there were no compile errors before calling `add_component`.\n\n" +
                 "**Avoid redundant tool calls**: the dashboard refuses identical tool+args calls after a few retries (`Refused: was called with these exact arguments N times`). Strategy: keep findings as plain text in your reply (instead of recalling the same query), change one argument when you do need fresh data, and after any error change strategy rather than repeat. The Unity tool responses end with `[unity-call #N @ HH:mm:ss.fff]` so revalidation against an unchanged scene works — but only when the INPUT args differ.\n\n" +
-                "Two project skill tools to use them:\n" +
-                "- `get_skills_list` — discover all installed skills (returns id/name/description/slashCommand).\n" +
-                "- `get_skill_content` — read a skill's full body before invoking, when you want to inspect its instructions.\n" +
-                "- `invoke_skill` — actually run a skill. Args: `{ skill_id: string, input?: string }`. Returns `[Skill: <name>]\\n\\n<interpolated body>`. Logged as `invoked_by: model`.\n\n" +
-                "Skill IDs to call, you need read this first:\n" +
-                "- **`unity-scene-audit`** — read-only diagnostic flow (performance + validation). Use when the user asks to audit, diagnose, " +
-                "find broken refs, or understand the scene.\n" +
-                "- **`unity-scene-author`** — authoring flow with `apply_changeset` (create/modify/post-fx/render-settings) preserving Unity Undo. " +
-                "Hierarquia de discovery em 3 níveis ensinada ao agente via prompt:\n" +
-                "list_skill_namespaces({}) (nova tool) — retorna {totalSkills, namespaces: [{namespace, count, repo?, commit?, sampleSkillIds}]} com até 5 IDs representativos por pack\n" +
-                "get_skills_list({namespace?}) — sem args dá overview compacto; com namespace retorna lista filtrada ordenada por id; namespace inválido retorna erro instrutivo com lista de namespaces válidos\n" +
-                "get_skill_content({skill_id})\n\n" +
-                "Use when the user asks to create, modify, decorate, or stylize the scene.\n\n" +
-                "Typical pattern: when the user's request matches one of those skills, call `invoke_skill` with the matching `skill_id` and the user's intent as `input` — then follow the skill's instructions, which include calling `ext_unity__*` tools. If unsure which skill applies (or you need details), `get_skill_content` first.\n\n" +
+                "Skills are optional specialization, not a gate before Unity work. For routine scene inspection, authoring, save and validation, call the relevant `ext_unity__*` tools directly. Use `list_skill_namespaces`, `get_skills_list`, `get_skill_content` or `invoke_skill` only when a reusable specialist workflow materially helps; never repeat discovery or delay an explicit Editor operation just to invoke a skill.\n\n" +
                 "Subsequent messages in this session don't need this preamble — the agent should remember. Now respond to the user message that follows.";
         }
 
@@ -934,6 +923,8 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         {
             try
             {
+                if (string.Equals(agent, UnityBuildAgentManifest.SelectionId, StringComparison.Ordinal))
+                    await InstallOrUpdateUnityAgentAsync(serverUrl, token, ct).ConfigureAwait(false);
                 var url = $"{serverUrl.TrimEnd('/')}/api/coder/sessions";
                 var body = BuildCreateSessionBody(projectId, title, provider, model, agent, options);
 

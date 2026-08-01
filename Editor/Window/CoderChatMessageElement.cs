@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using Maicon.SceneAnalyzer.Editor.Chat;
 using Maicon.SceneAnalyzer.Editor.Core;
 using UnityEditor;
@@ -7,9 +8,70 @@ using UnityEngine.UIElements;
 
 namespace Maicon.SceneAnalyzer.Editor.Window
 {
+    internal static class ChatMessagePresentation
+    {
+        public static bool IsCompactActivity(ChatMessage message)
+            => message != null
+                && message.Role == ChatRole.Assistant
+                && string.IsNullOrWhiteSpace(message.Text)
+                && string.IsNullOrWhiteSpace(message.ThinkingText)
+                && message.ToolCalls.Count > 0;
+
+        public static string CleanMarkdown(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            var normalized = value.Replace("\r\n", "\n")
+                .Replace("**", "")
+                .Replace("__", "")
+                .Replace("`", "");
+            var lines = normalized.Split('\n');
+            var output = new StringBuilder(normalized.Length);
+            for (var index = 0; index < lines.Length; index++)
+            {
+                var line = lines[index];
+                var contentStart = HeadingContentStart(line);
+                if (contentStart > 0) line = line.Substring(contentStart);
+                else if (line.StartsWith("- ", StringComparison.Ordinal)
+                    || line.StartsWith("* ", StringComparison.Ordinal))
+                    line = "• " + line.Substring(2);
+                if (index > 0) output.Append('\n');
+                output.Append(line);
+            }
+            return output.ToString();
+        }
+
+        public static string ToolName(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "Ferramenta";
+            var name = value.Trim();
+            foreach (var prefix in new[] { "ext_unity__", "mcp__unity__", "unity__" })
+            {
+                if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                name = name.Substring(prefix.Length);
+                return "Unity · " + Humanize(name);
+            }
+            return Humanize(name);
+        }
+
+        private static int HeadingContentStart(string line)
+        {
+            if (string.IsNullOrEmpty(line) || line[0] != '#') return 0;
+            var index = 0;
+            while (index < line.Length && line[index] == '#') index++;
+            return index > 0 && index < line.Length && line[index] == ' ' ? index + 1 : 0;
+        }
+
+        private static string Humanize(string value)
+        {
+            var words = (value ?? "").Replace('_', ' ').Trim();
+            return string.IsNullOrEmpty(words) ? "Ferramenta" : words;
+        }
+    }
+
     internal sealed class CoderChatMessageElement : VisualElement
     {
         private readonly VisualElement _bubble;
+        private readonly VisualElement _header;
         private readonly Label _role;
         private readonly Label _time;
         private readonly Label _streaming;
@@ -32,21 +94,21 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _bubble.AddToClassList("message-bubble");
             Add(_bubble);
 
-            var header = new VisualElement();
-            header.AddToClassList("message-header");
-            _bubble.Add(header);
+            _header = new VisualElement();
+            _header.AddToClassList("message-header");
+            _bubble.Add(_header);
 
             _role = new Label();
             _role.AddToClassList("message-role");
-            header.Add(_role);
+            _header.Add(_role);
 
             _streaming = new Label("recebendo…");
             _streaming.AddToClassList("message-streaming");
-            header.Add(_streaming);
+            _header.Add(_streaming);
 
             _time = new Label();
             _time.AddToClassList("message-time");
-            header.Add(_time);
+            _header.Add(_time);
 
             _body = new Label();
             _body.AddToClassList("message-body");
@@ -73,6 +135,12 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         }
 
         public void Bind(ChatMessage message)
+            => BindCore(message, true);
+
+        public void BindForTranscript(ChatMessage message, bool showHeader)
+            => BindCore(message, showHeader);
+
+        private void BindCore(ChatMessage message, bool showHeader)
         {
             if (message == null)
             {
@@ -92,13 +160,16 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 _time.text = message.Timestamp.ToString("HH:mm:ss");
             }
 
-            SetTextIfChanged(_body, message.Text);
+            var compactActivity = ChatMessagePresentation.IsCompactActivity(message);
+            EnableInClassList("compact-activity", compactActivity);
+            SetDisplayed(_header, showHeader && !compactActivity);
+            SetTextIfChanged(_body, ChatMessagePresentation.CleanMarkdown(message.Text));
             SetDisplayed(_body, !string.IsNullOrEmpty(message.Text));
             SetDisplayed(_streaming, message.Streaming);
 
             var hasThinking = !string.IsNullOrEmpty(message.ThinkingText);
             _thinking.SetValueWithoutNotify(message.ThinkingExpanded);
-            SetTextIfChanged(_thinkingText, message.ThinkingText);
+            SetTextIfChanged(_thinkingText, ChatMessagePresentation.CleanMarkdown(message.ThinkingText));
             SetDisplayed(_thinking, hasThinking);
 
             ReconcileToolCards(message.ToolCalls);
@@ -118,6 +189,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             _references.Clear();
             _toolCards.Clear();
             _referenceChips.Clear();
+            RemoveFromClassList("compact-activity");
+            SetDisplayed(_header, false);
             SetDisplayed(_body, false);
             SetDisplayed(_streaming, false);
             SetDisplayed(_thinking, false);
@@ -299,8 +372,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 AddToClassList("tool-card");
                 RegisterCallback<ChangeEvent<bool>>(evt =>
                 {
-                    if (_call != null) _call.Expanded = evt.newValue;
-                });
+                    if (_call == null) return;
+                    _call.Expanded = evt.newValue;
+                    RenderDetails(evt.newValue);
+                }, TrickleDown.TrickleDown);
 
                 _meta = CreateLabel("tool-meta");
                 Add(_meta);
@@ -317,7 +392,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             public void UpdateFrom(ChatToolCall call)
             {
                 _call = call;
-                text = string.IsNullOrEmpty(call.Name) ? "Ferramenta" : call.Name;
+                text = ChatMessagePresentation.ToolName(call.Name);
                 SetValueWithoutNotify(call.Expanded);
                 EnableInClassList("failed", call.Failed);
 
@@ -325,13 +400,18 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 var duration = call.DurationMs > 0 ? $" • {call.DurationMs:F0} ms" : "";
                 SetTextIfChanged(_meta, status + duration);
 
-                var hasInput = !string.IsNullOrEmpty(call.InputJson);
-                SetTextIfChanged(_input, Truncate(call.InputJson, 4000));
+                RenderDetails(call.Expanded);
+            }
+
+            private void RenderDetails(bool expanded)
+            {
+                var hasInput = expanded && !string.IsNullOrEmpty(_call?.InputJson);
+                SetTextIfChanged(_input, hasInput ? Truncate(_call.InputJson, 4000) : "");
                 SetDisplayed(_inputCaption, hasInput);
                 SetDisplayed(_input, hasInput);
 
-                var hasResult = !string.IsNullOrEmpty(call.ResultText);
-                SetTextIfChanged(_result, Truncate(call.ResultText, 8000));
+                var hasResult = expanded && !string.IsNullOrEmpty(_call?.ResultText);
+                SetTextIfChanged(_result, hasResult ? Truncate(_call.ResultText, 8000) : "");
                 SetDisplayed(_resultCaption, hasResult);
                 SetDisplayed(_result, hasResult);
             }

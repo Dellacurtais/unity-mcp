@@ -5,6 +5,30 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.24] - 2026-08-01
+
+### Changed
+
+- Give the managed Unity Build agent a 64-tool catalog budget while trimming its pinned Unity set to the critical execution path, leaving capacity for native skill tools and `find_tools` promotions.
+- Keep routine Unity authoring direct: the managed agent no longer injects overlapping skill bodies or treats `invoke_skill` as a prerequisite for live Editor operations.
+
+## [0.16.23] - 2026-08-01
+
+### Fixed
+
+- Omit absent stable-target fields from structured Unity tool results instead of emitting JSON `null`, preventing direct authoring calls such as `look_at` from failing MCP output validation and disconnecting the Unity server.
+
+## [0.16.22] - 2026-08-01
+
+### Added
+
+- The Unity package now owns a versioned `Unity Build` CodeStudio agent and installs or updates it through a stable managed-agent contract.
+- Unity sessions inherit the native CodeStudio build runtime while activating the complete `unity` tool tier and pinning the critical live Editor tools from the first turn.
+
+### Changed
+
+- Coder Chat defaults to the plugin-managed Unity agent and verifies a real Unity MCP health round-trip instead of treating injected context as connection proof.
+
 ## [0.16.21] - 2026-07-31
 
 ### Fixed
