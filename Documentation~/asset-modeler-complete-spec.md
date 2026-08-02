@@ -2,7 +2,7 @@
 
 > Status: especificação para implementação
 >
-> Baseline verificada: `com.maicon.scene-analyzer` `0.17.0`, Unity `6000.1`
+> Baseline verificada: `com.maicon.scene-analyzer` `0.17.1`, Unity `6000.1`
 >
 > Escopo: Editor Unity, ferramentas MCP, Coder Chat, sidecar opcional e componentes mínimos de runtime para personagens modulares
 

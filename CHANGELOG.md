@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add the first Smart Body Split vertical slice for rigged or static humanoid-shaped meshes, with six-part semantic proposals, Scene View preview, exact rig/UV/material/blend-shape preserving extraction, modular body-part assets, fidelity validation, Undo-aware scene output, and four guarded MCP tools.
 - Add `Window → Asset Modeler (Unity MCP)` plus GameObject context commands for editable copies and Smart Body Split.
 
+### Fixed
+
+- Treat Unity's expected bone-weight quantization and influence ordering as numerically equivalent during Smart Body Split validation, while still rejecting meaningful rig-weight drift.
+
+## [0.17.1] - 2026-08-01
+
+### Changed
+
+- Bump package, C# fallback, Python broker, and release validator versions to `0.17.1`.
+
 ## [0.17.0] - 2026-08-01
 
 ### Changed

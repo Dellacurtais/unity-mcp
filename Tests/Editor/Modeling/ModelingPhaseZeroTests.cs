@@ -90,6 +90,42 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
         }
 
         [Test]
+        public void BoneWeightValidation_ToleratesQuantizationAndOrderingButRejectsRealDrift()
+        {
+            var expected = new[]
+            {
+                new BoneWeight1 { boneIndex = 3, weight = 0.7000000f },
+                new BoneWeight1 { boneIndex = 8, weight = 0.3000000f },
+            };
+            var quantizedAndReordered = new[]
+            {
+                new BoneWeight1 { boneIndex = 8, weight = 0.3000076f },
+                new BoneWeight1 { boneIndex = 3, weight = 0.6999924f },
+            };
+            Assert.That(
+                SplitFidelityValidator.BoneWeightsEquivalent(
+                    expected, 0, expected.Length,
+                    quantizedAndReordered, 0, quantizedAndReordered.Length,
+                    out var quantizationDifference),
+                Is.True,
+                quantizationDifference);
+
+            var changed = new[]
+            {
+                new BoneWeight1 { boneIndex = 3, weight = 0.68f },
+                new BoneWeight1 { boneIndex = 8, weight = 0.32f },
+            };
+            Assert.That(
+                SplitFidelityValidator.BoneWeightsEquivalent(
+                    expected, 0, expected.Length,
+                    changed, 0, changed.Length,
+                    out var realDifference),
+                Is.False);
+            StringAssert.Contains("bone 3", realDifference);
+            StringAssert.Contains("delta", realDifference);
+        }
+
+        [Test]
         public void Analyzer_GenericRigProducesSixCompleteParts()
         {
             using (var fixture = ModelingTestMeshFactory.CreateSixPartCharacter())

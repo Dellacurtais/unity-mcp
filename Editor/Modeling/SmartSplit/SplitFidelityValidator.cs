@@ -15,6 +15,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
 
     public static class SplitFidelityValidator
     {
+        // Unity stores modern bone weights in a normalized vertex format. A
+        // SetBoneWeights/GetAllBoneWeights round-trip can therefore change the
+        // last few bits without changing the skinning result.
+        internal const float BoneWeightTolerance = 2e-5f;
+
         internal static MeshValidationReport Validate(
             SmartBodySplitProposal proposal,
             MeshChannelSnapshot source,
@@ -146,22 +151,101 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 int sourceCount = source.BoneWeightOffsets[sourceVertex + 1] - sourceStart;
                 int destinationStart = destination.BoneWeightOffsets[destinationVertex];
                 int destinationCount = destination.BoneWeightOffsets[destinationVertex + 1] - destinationStart;
-                if (sourceCount != destinationCount)
+                if (!BoneWeightsEquivalent(
+                        source.BoneWeights,
+                        sourceStart,
+                        sourceCount,
+                        destination.BoneWeights,
+                        destinationStart,
+                        destinationCount,
+                        out var difference))
                 {
-                    report.Error("BONE_WEIGHT_COUNT_MISMATCH", $"Part '{part.Mesh.name}' changed influences for source vertex {sourceVertex}.");
-                    continue;
-                }
-                for (int i = 0; i < sourceCount; i++)
-                {
-                    var expected = source.BoneWeights[sourceStart + i];
-                    var actual = destination.BoneWeights[destinationStart + i];
-                    if (expected.boneIndex != actual.boneIndex || !expected.weight.Equals(actual.weight))
-                    {
-                        report.Error("BONE_WEIGHT_CHANGED", $"Part '{part.Mesh.name}' changed weight {i} for source vertex {sourceVertex}.");
-                        break;
-                    }
+                    report.Error(
+                        "BONE_WEIGHT_CHANGED",
+                        $"Part '{part.Mesh.name}' changed weights for source vertex {sourceVertex}: {difference}.");
                 }
             }
+        }
+
+        internal static bool BoneWeightsEquivalent(
+            BoneWeight1[] expected,
+            int expectedStart,
+            int expectedCount,
+            BoneWeight1[] actual,
+            int actualStart,
+            int actualCount,
+            out string difference)
+        {
+            difference = null;
+            for (int i = 0; i < expectedCount; i++)
+            {
+                int boneIndex = expected[expectedStart + i].boneIndex;
+                if (!IsFirstBone(expected, expectedStart, i, boneIndex)) continue;
+                if (!BoneWeightMatches(
+                        boneIndex,
+                        expected,
+                        expectedStart,
+                        expectedCount,
+                        actual,
+                        actualStart,
+                        actualCount,
+                        out difference)) return false;
+            }
+
+            for (int i = 0; i < actualCount; i++)
+            {
+                int boneIndex = actual[actualStart + i].boneIndex;
+                if (!IsFirstBone(actual, actualStart, i, boneIndex)) continue;
+                if (!BoneWeightMatches(
+                        boneIndex,
+                        expected,
+                        expectedStart,
+                        expectedCount,
+                        actual,
+                        actualStart,
+                        actualCount,
+                        out difference)) return false;
+            }
+            return true;
+        }
+
+        private static bool BoneWeightMatches(
+            int boneIndex,
+            BoneWeight1[] expected,
+            int expectedStart,
+            int expectedCount,
+            BoneWeight1[] actual,
+            int actualStart,
+            int actualCount,
+            out string difference)
+        {
+            float expectedWeight = SumBoneWeight(expected, expectedStart, expectedCount, boneIndex);
+            float actualWeight = SumBoneWeight(actual, actualStart, actualCount, boneIndex);
+            float delta = Mathf.Abs(expectedWeight - actualWeight);
+            if (delta <= BoneWeightTolerance)
+            {
+                difference = null;
+                return true;
+            }
+
+            difference = $"bone {boneIndex} expected {expectedWeight:R}, got {actualWeight:R}, delta {delta:R} " +
+                $"(influences {expectedCount} -> {actualCount})";
+            return false;
+        }
+
+        private static bool IsFirstBone(BoneWeight1[] weights, int start, int relativeIndex, int boneIndex)
+        {
+            for (int i = 0; i < relativeIndex; i++)
+                if (weights[start + i].boneIndex == boneIndex) return false;
+            return true;
+        }
+
+        private static float SumBoneWeight(BoneWeight1[] weights, int start, int count, int boneIndex)
+        {
+            float total = 0f;
+            for (int i = 0; i < count; i++)
+                if (weights[start + i].boneIndex == boneIndex) total += weights[start + i].weight;
+            return total;
         }
 
         private static void ValidateBlendShapes(

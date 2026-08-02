@@ -119,6 +119,7 @@ def main() -> int:
     tests = read("Tests/Editor/Modeling/ModelingPhaseZeroTests.cs")
     for test_name in (
         "Analyzer_GenericRigProducesSixCompleteParts",
+        "BoneWeightValidation_ToleratesQuantizationAndOrderingButRejectsRealDrift",
         "Split_CreatesValidatedPartsAndLeavesSourceUntouched",
         "Split_RejectsStaleSourceAndPreviewHashesWithoutCreatingAssets",
         "Split_RequiresApprovalAndRejectsRendererMeshSwap",

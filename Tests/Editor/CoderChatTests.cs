@@ -1066,7 +1066,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(UnityBuildAgentManifest.AgentId, Is.EqualTo("unity-build"));
             Assert.That(UnityBuildAgentManifest.SelectionId, Is.EqualTo("custom:unity-build"));
             Assert.That((string)manifest["managedBy"], Is.EqualTo("com.maicon.scene-analyzer"));
-            Assert.That((string)manifest["managedVersion"], Is.EqualTo("0.17.0"));
+            Assert.That((string)manifest["managedVersion"], Is.EqualTo("0.17.1"));
             Assert.That((string)manifest["baseAgentId"], Is.EqualTo("build"));
             Assert.That(manifest["toolNames"].Type, Is.EqualTo(JTokenType.Null),
                 "null inherits the native build tool registry instead of replacing it");
