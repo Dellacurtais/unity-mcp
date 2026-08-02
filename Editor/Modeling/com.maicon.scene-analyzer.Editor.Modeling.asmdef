@@ -1,0 +1,21 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.Modeling",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.Modeling",
+  "references": [
+    "com.maicon.scene-analyzer",
+    "com.maicon.scene-analyzer.Runtime.Modeling",
+    "com.maicon.scene-analyzer.Editor",
+    "Unity.Newtonsoft.Json"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

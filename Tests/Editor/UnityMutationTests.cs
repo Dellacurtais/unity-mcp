@@ -13,6 +13,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 {
     public sealed class UnityMutationTests
     {
+        private const string Root = "Assets/__SceneAnalyzerUnityMutationAudit";
+
         private sealed class CodecFixture : ScriptableObject
         {
             public int integer;
@@ -20,6 +22,27 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             public Vector3 vector;
             public Color color;
             public int[] values;
+        }
+
+        [SetUp]
+        public void SetUp()
+        {
+            Undo.ClearAll();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            AssetDatabase.DeleteAsset(Root);
+            AssetDatabase.CreateFolder("Assets", "__SceneAnalyzerUnityMutationAudit");
+            Assert.That(
+                EditorSceneManager.SaveScene(SceneManager.GetActiveScene(), Root + "/Host.unity"),
+                Is.True,
+                "UnityMutationTests require a saved host scene before exercising additive scene APIs.");
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            Undo.ClearAll();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            AssetDatabase.DeleteAsset(Root);
         }
 
         [Test]
@@ -37,7 +60,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 var gameObjectRef = ToolTargetRef.Capture(child);
                 var componentRef = ToolTargetRef.Capture(secondCollider);
-                Assert.That(gameObjectRef.SceneHandle, Is.EqualTo(scene.handle));
+                Assert.That(gameObjectRef.SceneHandle, Is.EqualTo((int)scene.handle));
                 Assert.That(gameObjectRef.HierarchyPath, Is.EqualTo("TargetRoot/TargetChild"));
                 Assert.That(gameObjectRef.AssetGuid, Is.Null.Or.Empty);
                 Assert.That(componentRef.AssetGuid, Is.Null.Or.Empty);

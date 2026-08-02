@@ -5,6 +5,20 @@ All notable changes to this package will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Add the Asset Modeler Phase 0 foundation: editable mesh documents, full channel snapshots, source/revision fingerprints, operation contracts, synthetic fixtures, benchmark harness, and isolated Editor/runtime assemblies.
+- Add the first Smart Body Split vertical slice for rigged or static humanoid-shaped meshes, with six-part semantic proposals, Scene View preview, exact rig/UV/material/blend-shape preserving extraction, modular body-part assets, fidelity validation, Undo-aware scene output, and four guarded MCP tools.
+- Add `Window → Asset Modeler (Unity MCP)` plus GameObject context commands for editable copies and Smart Body Split.
+
+## [0.17.0] - 2026-08-01
+
+### Changed
+
+- Bump package, C# fallback, Python broker, and release validator versions to `0.17.0`.
+
 ## [0.16.24] - 2026-08-01
 
 ### Changed

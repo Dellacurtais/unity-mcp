@@ -1,0 +1,26 @@
+{
+  "name": "com.maicon.scene-analyzer.Editor.Modeling.Tests",
+  "rootNamespace": "Maicon.SceneAnalyzer.Editor.Modeling.Tests",
+  "references": [
+    "com.maicon.scene-analyzer",
+    "com.maicon.scene-analyzer.Runtime.Modeling",
+    "com.maicon.scene-analyzer.Editor",
+    "com.maicon.scene-analyzer.Editor.Modeling"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "Newtonsoft.Json.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ],
+  "noEngineReferences": false
+}

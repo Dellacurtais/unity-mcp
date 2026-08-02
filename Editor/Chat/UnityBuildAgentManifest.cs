@@ -11,7 +11,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public const string AgentId = "unity-build";
         public const string SelectionId = "custom:unity-build";
         public const string ManagedBy = "com.maicon.scene-analyzer";
-        public const string ManagedVersion = "0.16.24";
+        public const string ManagedVersion = "0.17.0";
 
         private const string Prompt = @"# Unity Build agent
 
