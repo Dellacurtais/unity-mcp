@@ -8,8 +8,15 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
 {
     public sealed class SmartBodySplitWindow : EditorWindow
     {
+        private static readonly string[] PresetLabels =
+        {
+            SmartBodySplitPresets.Label(SmartBodySplitPreset.Core),
+            SmartBodySplitPresets.Label(SmartBodySplitPreset.HandsAndFeet),
+        };
+
         private GameObject _target;
         private SmartBodySplitProposal _proposal;
+        private SmartBodySplitPreset _preset = SmartBodySplitPreset.Core;
         private string _outputFolder = string.Empty;
         private Vector2 _scroll;
         private string _error;
@@ -43,11 +50,14 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         [MenuItem("GameObject/Asset Modeler/Make Editable Copy", true)]
         private static bool ValidateMakeEditableCopy() => ValidateOpenFromSelection();
 
-        public static SmartBodySplitWindow Open(GameObject target)
+        public static SmartBodySplitWindow Open(
+            GameObject target,
+            SmartBodySplitPreset preset = SmartBodySplitPreset.Core)
         {
             var window = GetWindow<SmartBodySplitWindow>();
             window.titleContent = new GUIContent("Asset Modeler — Smart Split");
             window.minSize = new Vector2(390f, 420f);
+            window._preset = preset;
             window.SetTarget(target);
             window.Show();
             return window;
@@ -71,6 +81,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             var target = (GameObject)EditorGUILayout.ObjectField("Personagem", _target, typeof(GameObject), true);
             if (EditorGUI.EndChangeCheck()) SetTarget(target);
 
+            EditorGUI.BeginChangeCheck();
+            _preset = (SmartBodySplitPreset)EditorGUILayout.Popup("Preset", (int)_preset, PresetLabels);
+            if (EditorGUI.EndChangeCheck() && _target != null) Analyze();
+
             _outputFolder = EditorGUILayout.TextField(
                 new GUIContent("Pasta de saída", "Vazio usa Assets/AssetModeler/SmartSplits/<personagem>."),
                 _outputFolder);
@@ -88,6 +102,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             {
                 EditorGUILayout.Space(6f);
                 EditorGUILayout.LabelField("Proposta", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("Preset", SmartBodySplitPresets.Label(_proposal.Preset));
                 EditorGUILayout.LabelField("Rig", _proposal.RigType);
                 EditorGUILayout.LabelField("Triângulos", _proposal.SourceTriangleCount.ToString("N0"));
                 EditorGUILayout.LabelField("Confiança média", _proposal.AverageConfidence.ToString("P1"));
@@ -130,7 +145,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             _proposal = null;
             try
             {
-                _proposal = SmartBodySplitAnalyzer.Analyze(_target);
+                _proposal = SmartBodySplitAnalyzer.Analyze(_target, _preset);
                 SmartBodySplitPreviewController.Show(_proposal);
                 SceneView.lastActiveSceneView?.FrameSelected();
             }

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add the Asset Modeler Phase 0 foundation: editable mesh documents, full channel snapshots, source/revision fingerprints, operation contracts, synthetic fixtures, benchmark harness, and isolated Editor/runtime assemblies.
 - Add the first Smart Body Split vertical slice for rigged or static humanoid-shaped meshes, with six-part semantic proposals, Scene View preview, exact rig/UV/material/blend-shape preserving extraction, modular body-part assets, fidelity validation, Undo-aware scene output, and four guarded MCP tools.
 - Add `Window → Asset Modeler (Unity MCP)` plus GameObject context commands for editable copies and Smart Body Split.
+- Add selectable six-part and ten-part Smart Body Split presets, with the detailed preset extracting left/right hands and feet across the Editor UI and MCP tools.
 
 ### Fixed
 

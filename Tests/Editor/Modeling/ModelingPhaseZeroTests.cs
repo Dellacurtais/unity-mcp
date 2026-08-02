@@ -152,6 +152,50 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
         }
 
         [Test]
+        public void Analyzer_HandsAndFeetPresetProducesTenPartsAndKeepsCoreCompatible()
+        {
+            using (var fixture = ModelingTestMeshFactory.CreateTenPartCharacter())
+            {
+                var core = SmartBodySplitAnalyzer.Analyze(fixture.Root, SmartBodySplitPreset.Core);
+                var detailed = SmartBodySplitAnalyzer.Analyze(fixture.Root, SmartBodySplitPreset.HandsAndFeet);
+
+                Assert.That(core.Preset, Is.EqualTo(SmartBodySplitPreset.Core));
+                Assert.That(core.Parts.Count, Is.EqualTo(6));
+                Assert.That(core.Find(SemanticBodyPart.LeftArm)?.Triangles.Count, Is.EqualTo(2));
+                Assert.That(core.Find(SemanticBodyPart.RightArm)?.Triangles.Count, Is.EqualTo(2));
+                Assert.That(core.Find(SemanticBodyPart.LeftLeg)?.Triangles.Count, Is.EqualTo(2));
+                Assert.That(core.Find(SemanticBodyPart.RightLeg)?.Triangles.Count, Is.EqualTo(2));
+
+                Assert.That(detailed.Preset, Is.EqualTo(SmartBodySplitPreset.HandsAndFeet));
+                Assert.That(detailed.Parts.Count, Is.EqualTo(10));
+                Assert.That(detailed.SourceTriangleCount, Is.EqualTo(10));
+                Assert.That(detailed.PreviewHash, Is.Not.EqualTo(core.PreviewHash));
+                foreach (var part in SmartBodySplitPresets.Parts(SmartBodySplitPreset.HandsAndFeet))
+                    Assert.That(detailed.Find(part)?.Triangles.Count, Is.EqualTo(1), part.ToString());
+            }
+        }
+
+        [Test]
+        public void Split_HandsAndFeetPresetCreatesTenValidatedRiggedParts()
+        {
+            using (var fixture = ModelingTestMeshFactory.CreateTenPartCharacter())
+            {
+                var proposal = SmartBodySplitAnalyzer.Analyze(fixture.Root, SmartBodySplitPreset.HandsAndFeet);
+                var result = SmartBodySplitService.Apply(
+                    proposal,
+                    NewAssetFolder(),
+                    proposal.SourceHash,
+                    proposal.PreviewHash);
+
+                Assert.That(result.Validation.IsValid, Is.True);
+                Assert.That(result.Manifest.Preset, Is.EqualTo(SmartBodySplitPreset.HandsAndFeet));
+                Assert.That(result.Manifest.Parts.Count, Is.EqualTo(10));
+                Assert.That(result.BodyPartSet.Parts.Count, Is.EqualTo(10));
+                Assert.That(result.PartsRoot.GetComponentsInChildren<SkinnedMeshRenderer>(), Has.Length.EqualTo(10));
+            }
+        }
+
+        [Test]
         public void Analyzer_StaticFallbackAssignsEveryTriangle()
         {
             var gameObject = new GameObject("StaticBody");
@@ -162,11 +206,18 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
             gameObject.AddComponent<MeshRenderer>();
 
             var proposal = SmartBodySplitAnalyzer.Analyze(gameObject);
+            var detailed = SmartBodySplitAnalyzer.Analyze(gameObject, SmartBodySplitPreset.HandsAndFeet);
 
             Assert.That(proposal.RigType, Is.EqualTo("None"));
             Assert.That(proposal.SourceTriangleCount, Is.EqualTo(4 * 8 * 2));
             Assert.That(proposal.Parts, Is.Not.Empty);
             Assert.That(string.Join(" | ", proposal.Warnings), Does.Contain("sem rig"));
+            Assert.That(detailed.SourceTriangleCount, Is.EqualTo(proposal.SourceTriangleCount));
+            Assert.That(detailed.Find(SemanticBodyPart.LeftHand), Is.Not.Null);
+            Assert.That(detailed.Find(SemanticBodyPart.RightHand), Is.Not.Null);
+            Assert.That(detailed.Find(SemanticBodyPart.LeftFoot), Is.Not.Null);
+            Assert.That(detailed.Find(SemanticBodyPart.RightFoot), Is.Not.Null);
+            Assert.That(string.Join(" | ", detailed.Warnings), Does.Contain("Mãos e pés sem rig"));
         }
 
         [Test]
@@ -306,6 +357,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
             Assert.That(apply.ConfirmationPolicy, Is.EqualTo(McpConfirmationPolicy.Required));
             var required = registry.GetInputSchema("mesh_apply_smart_split")["required"].ToString();
             Assert.That(required, Does.Contain("expectedSourceHash").And.Contain("previewHash"));
+            var presetValues = registry.GetInputSchema("mesh_analyze_body_parts")["properties"]["preset"]["enum"].ToString();
+            Assert.That(presetValues, Does.Contain("core").And.Contain("hands_feet"));
         }
 
         private string NewAssetFolder()

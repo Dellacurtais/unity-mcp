@@ -22,29 +22,41 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
     {
         public static ModelingTestCharacter CreateSixPartCharacter()
         {
-            var root = new GameObject("ModelingTestCharacter");
-            var bones = new[]
+            var names = new[]
             {
-                CreateBone(root.transform, "Head", new Vector3(0f, 2f, 0f)),
-                CreateBone(root.transform, "Spine", new Vector3(0f, 1f, 0f)),
-                CreateBone(root.transform, "LeftUpperArm", new Vector3(-1f, 1.3f, 0f)),
-                CreateBone(root.transform, "RightUpperArm", new Vector3(1f, 1.3f, 0f)),
-                CreateBone(root.transform, "LeftUpperLeg", new Vector3(-0.35f, 0.3f, 0f)),
-                CreateBone(root.transform, "RightUpperLeg", new Vector3(0.35f, 0.3f, 0f)),
+                "Head", "Spine", "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg",
             };
-            var rendererObject = new GameObject("Body");
-            rendererObject.transform.SetParent(root.transform, false);
-            var renderer = rendererObject.AddComponent<SkinnedMeshRenderer>();
-            var mesh = CreateSixPartMesh(bones.Length);
-            renderer.sharedMesh = mesh;
-            renderer.bones = bones;
-            renderer.rootBone = bones[1];
-            return new ModelingTestCharacter { Root = root, Renderer = renderer, Mesh = mesh };
+            return CreateCharacter(names, SixPartCenters(), "SixPartSkinnedFixture");
+        }
+
+        public static ModelingTestCharacter CreateTenPartCharacter()
+        {
+            var names = new[]
+            {
+                "Head", "Spine", "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg",
+                "LeftHand", "RightHand", "LeftFoot", "RightFoot",
+            };
+            var centers = new[]
+            {
+                new Vector3(0f, 2f, 0f),
+                new Vector3(0f, 1f, 0f),
+                new Vector3(-0.85f, 1.3f, 0f),
+                new Vector3(0.85f, 1.3f, 0f),
+                new Vector3(-0.35f, 0.35f, 0f),
+                new Vector3(0.35f, 0.35f, 0f),
+                new Vector3(-1.25f, 1.25f, 0f),
+                new Vector3(1.25f, 1.25f, 0f),
+                new Vector3(-0.35f, 0.02f, 0f),
+                new Vector3(0.35f, 0.02f, 0f),
+            };
+            return CreateCharacter(names, centers, "TenPartSkinnedFixture");
         }
 
         public static Mesh CreateSixPartMesh(int boneCount)
-        {
-            var centers = new[]
+            => CreatePartMesh(SixPartCenters(), boneCount, "SixPartSkinnedFixture");
+
+        private static Vector3[] SixPartCenters()
+            => new[]
             {
                 new Vector3(0f, 2f, 0f),
                 new Vector3(0f, 1f, 0f),
@@ -53,15 +65,40 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
                 new Vector3(-0.35f, 0.25f, 0f),
                 new Vector3(0.35f, 0.25f, 0f),
             };
+
+        private static ModelingTestCharacter CreateCharacter(
+            IReadOnlyList<string> boneNames,
+            IReadOnlyList<Vector3> centers,
+            string meshName)
+        {
+            var root = new GameObject("ModelingTestCharacter");
+            var bones = new Transform[boneNames.Count];
+            for (int i = 0; i < bones.Length; i++) bones[i] = CreateBone(root.transform, boneNames[i], centers[i]);
+            var rendererObject = new GameObject("Body");
+            rendererObject.transform.SetParent(root.transform, false);
+            var renderer = rendererObject.AddComponent<SkinnedMeshRenderer>();
+            var mesh = CreatePartMesh(centers, bones.Length, meshName);
+            renderer.sharedMesh = mesh;
+            renderer.bones = bones;
+            renderer.rootBone = bones[1];
+            return new ModelingTestCharacter { Root = root, Renderer = renderer, Mesh = mesh };
+        }
+
+        private static Mesh CreatePartMesh(
+            IReadOnlyList<Vector3> centers,
+            int boneCount,
+            string meshName)
+        {
+            if (centers == null || centers.Count == 0) throw new ArgumentException("Part centers are required.", nameof(centers));
             var vertices = new List<Vector3>();
             var normals = new List<Vector3>();
             var tangents = new List<Vector4>();
             var colors = new List<Color32>();
             var uvs = new List<Vector2>();
             var triangles = new List<int>();
-            var counts = new byte[centers.Length * 3];
+            var counts = new byte[centers.Count * 3];
             var weights = new BoneWeight1[counts.Length];
-            for (int part = 0; part < centers.Length; part++)
+            for (int part = 0; part < centers.Count; part++)
             {
                 var center = centers[part];
                 int start = vertices.Count;
@@ -82,7 +119,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
                 triangles.Add(start + 2);
             }
 
-            var mesh = new Mesh { name = "SixPartSkinnedFixture" };
+            var mesh = new Mesh { name = meshName };
             mesh.SetVertices(vertices);
             mesh.SetNormals(normals);
             mesh.SetTangents(tangents);

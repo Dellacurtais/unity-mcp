@@ -48,6 +48,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         [SerializeField] private string _sourceHash;
         [SerializeField] private string _previewHash;
         [SerializeField] private string _rigType;
+        [SerializeField] private SmartBodySplitPreset _preset;
         [SerializeField] private bool _valid;
         [SerializeField] private int _sourceTriangleCount;
         [SerializeField] private string[] _validationMessages = Array.Empty<string>();
@@ -57,6 +58,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         public string SourceHash => _sourceHash;
         public string PreviewHash => _previewHash;
         public string RigType => _rigType;
+        public SmartBodySplitPreset Preset => _preset;
         public bool IsValid => _valid;
         public int SourceTriangleCount => _sourceTriangleCount;
         public IReadOnlyList<string> ValidationMessages => _validationMessages;
@@ -74,6 +76,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             _sourceHash = proposal.SourceHash ?? string.Empty;
             _previewHash = proposal.PreviewHash ?? string.Empty;
             _rigType = proposal.RigType ?? "None";
+            _preset = proposal.Preset;
             _valid = valid;
             _sourceTriangleCount = proposal.SourceTriangleCount;
             _validationMessages = validationMessages != null

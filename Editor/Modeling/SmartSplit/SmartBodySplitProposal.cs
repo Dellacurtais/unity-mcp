@@ -7,6 +7,12 @@ using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
 {
+    public enum SmartBodySplitPreset
+    {
+        Core = 0,
+        HandsAndFeet = 1,
+    }
+
     public enum SemanticBodyPart
     {
         Head = 0,
@@ -15,7 +21,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         RightArm = 3,
         LeftLeg = 4,
         RightLeg = 5,
-        Unassigned = 6,
+        LeftHand = 6,
+        RightHand = 7,
+        LeftFoot = 8,
+        RightFoot = 9,
+        Unassigned = 10,
     }
 
     public readonly struct SourceTriangle
@@ -61,6 +71,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         public string SourceHash { get; internal set; }
         public string PreviewHash { get; internal set; }
         public string RigType { get; internal set; }
+        public SmartBodySplitPreset Preset { get; internal set; }
         public bool IsRigged { get; internal set; }
         public float AverageConfidence { get; internal set; }
         public int SourceTriangleCount { get; internal set; }
@@ -93,7 +104,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         private string ComputePreviewHash()
         {
             var canonical = new StringBuilder(SourceTriangleCount * 20);
-            canonical.Append(SourceHash).Append('|').Append(RigType).Append('|');
+            canonical.Append(SourceHash).Append('|').Append(RigType).Append('|').Append((int)Preset).Append('|');
             foreach (var part in Parts.OrderBy(candidate => candidate.Part))
             {
                 canonical.Append((int)part.Part).Append(':');
@@ -120,6 +131,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 case SemanticBodyPart.RightArm: return "arm.right";
                 case SemanticBodyPart.LeftLeg: return "leg.left";
                 case SemanticBodyPart.RightLeg: return "leg.right";
+                case SemanticBodyPart.LeftHand: return "hand.left";
+                case SemanticBodyPart.RightHand: return "hand.right";
+                case SemanticBodyPart.LeftFoot: return "foot.left";
+                case SemanticBodyPart.RightFoot: return "foot.right";
                 default: return "unassigned";
             }
         }
@@ -134,8 +149,55 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 case SemanticBodyPart.RightArm: return "Braço direito";
                 case SemanticBodyPart.LeftLeg: return "Perna esquerda";
                 case SemanticBodyPart.RightLeg: return "Perna direita";
+                case SemanticBodyPart.LeftHand: return "Mão esquerda";
+                case SemanticBodyPart.RightHand: return "Mão direita";
+                case SemanticBodyPart.LeftFoot: return "Pé esquerdo";
+                case SemanticBodyPart.RightFoot: return "Pé direito";
                 default: return "Não atribuído";
             }
         }
+    }
+
+    public static class SmartBodySplitPresets
+    {
+        private static readonly IReadOnlyList<SemanticBodyPart> CoreParts = Array.AsReadOnly(new[]
+        {
+            SemanticBodyPart.Head,
+            SemanticBodyPart.Torso,
+            SemanticBodyPart.LeftArm,
+            SemanticBodyPart.RightArm,
+            SemanticBodyPart.LeftLeg,
+            SemanticBodyPart.RightLeg,
+        });
+
+        private static readonly IReadOnlyList<SemanticBodyPart> HandsAndFeetParts = Array.AsReadOnly(new[]
+        {
+            SemanticBodyPart.Head,
+            SemanticBodyPart.Torso,
+            SemanticBodyPart.LeftArm,
+            SemanticBodyPart.RightArm,
+            SemanticBodyPart.LeftLeg,
+            SemanticBodyPart.RightLeg,
+            SemanticBodyPart.LeftHand,
+            SemanticBodyPart.RightHand,
+            SemanticBodyPart.LeftFoot,
+            SemanticBodyPart.RightFoot,
+        });
+
+        public static IReadOnlyList<SemanticBodyPart> Parts(SmartBodySplitPreset preset)
+            => preset == SmartBodySplitPreset.HandsAndFeet ? HandsAndFeetParts : CoreParts;
+
+        public static string Id(SmartBodySplitPreset preset)
+            => preset == SmartBodySplitPreset.HandsAndFeet ? "hands_feet" : "core";
+
+        public static string Label(SmartBodySplitPreset preset)
+            => preset == SmartBodySplitPreset.HandsAndFeet
+                ? "Corpo + mãos e pés (10 partes)"
+                : "Corpo principal (6 partes)";
+
+        public static SmartBodySplitPreset Parse(string value)
+            => string.Equals(value, "hands_feet", StringComparison.OrdinalIgnoreCase)
+                ? SmartBodySplitPreset.HandsAndFeet
+                : SmartBodySplitPreset.Core;
     }
 }

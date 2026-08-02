@@ -19,6 +19,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             {
                 ["target"] = SchemaHelpers.TargetRefSchema,
                 ["instanceId"] = new JObject { ["type"] = "integer" },
+                ["preset"] = Preset(),
             },
             ["oneOf"] = new JArray
             {
@@ -35,6 +36,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             {
                 ["target"] = SchemaHelpers.TargetRefSchema,
                 ["instanceId"] = new JObject { ["type"] = "integer" },
+                ["preset"] = Preset(),
                 ["outputFolder"] = new JObject { ["type"] = "string", ["pattern"] = "^Assets(?:/|$)" },
                 ["expectedSourceHash"] = Hash(),
                 ["previewHash"] = Hash(),
@@ -67,6 +69,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                 ["target"] = SchemaHelpers.TargetRefSchema,
                 ["meshName"] = new JObject { ["type"] = "string" },
                 ["rigType"] = new JObject { ["type"] = "string" },
+                ["preset"] = Preset(),
                 ["sourceHash"] = Hash(),
                 ["previewHash"] = Hash(),
                 ["triangleCount"] = new JObject { ["type"] = "integer", ["minimum"] = 1 },
@@ -91,7 +94,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             },
             ["required"] = new JArray
             {
-                "target", "meshName", "rigType", "sourceHash", "previewHash",
+                "target", "meshName", "rigType", "preset", "sourceHash", "previewHash",
                 "triangleCount", "averageConfidence", "parts", "warnings",
             },
             ["additionalProperties"] = false,
@@ -101,6 +104,13 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
         {
             ["type"] = "string",
             ["pattern"] = "^[0-9a-f]{64}$",
+        };
+
+        private static JObject Preset() => new JObject
+        {
+            ["type"] = "string",
+            ["enum"] = new JArray("core", "hands_feet"),
+            ["default"] = "core",
         };
 
         private static JObject Required(string name, JObject schema) => new JObject
@@ -115,7 +125,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
     {
         public string Name => "mesh_analyze_body_parts";
         public string Description =>
-            "Analyzes the selected humanoid/static mesh into head, torso, left/right arms and left/right legs. " +
+            "Analyzes a humanoid/static mesh with the core six-part or detailed hands-and-feet preset. " +
             "Returns sourceHash and previewHash required by mesh_apply_smart_split. Does not modify assets.";
         public JObject InputSchema => SmartBodySplitToolSchemas.TargetInput;
         public JObject OutputSchema => SmartBodySplitToolSchemas.ProposalOutput;
@@ -128,7 +138,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             if (target == null) return ToolResult.Error("TARGET_NOT_FOUND", error);
             try
             {
-                var proposal = SmartBodySplitAnalyzer.Analyze(target);
+                var proposal = SmartBodySplitAnalyzer.Analyze(target, ReadPreset(arguments));
                 return ToolResult.Ok(
                     $"Analyzed '{proposal.SourceMesh.name}' into {proposal.Parts.Count} body parts.",
                     ProposalJson(proposal));
@@ -173,6 +183,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                 ["target"] = ToolTargetRef.Capture(proposal.Target).ToJson(),
                 ["meshName"] = proposal.SourceMesh.name,
                 ["rigType"] = proposal.RigType,
+                ["preset"] = SmartBodySplitPresets.Id(proposal.Preset),
                 ["sourceHash"] = proposal.SourceHash,
                 ["previewHash"] = proposal.PreviewHash,
                 ["triangleCount"] = proposal.SourceTriangleCount,
@@ -196,6 +207,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             }
             return ToolResult.Error("SMART_SPLIT_FAILED", message);
         }
+
+        internal static SmartBodySplitPreset ReadPreset(JObject arguments)
+            => SmartBodySplitPresets.Parse((string)arguments?["preset"]);
     }
 
     public sealed class PreviewSmartBodySplitTool : IMcpTool
@@ -213,9 +227,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             if (target == null) return ToolResult.Error("TARGET_NOT_FOUND", error);
             try
             {
-                var proposal = SmartBodySplitAnalyzer.Analyze(target);
+                var preset = AnalyzeBodyPartsTool.ReadPreset(arguments);
+                var proposal = SmartBodySplitAnalyzer.Analyze(target, preset);
                 SmartBodySplitPreviewController.Show(proposal);
-                SmartBodySplitWindow.Open(target);
+                SmartBodySplitWindow.Open(target, preset);
                 return ToolResult.Ok("Smart Body Split preview is active in the Scene View.", AnalyzeBodyPartsTool.ProposalJson(proposal));
             }
             catch (Exception exception)
@@ -239,6 +254,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             {
                 ["splitId"] = new JObject { ["type"] = "string" },
                 ["outputFolder"] = new JObject { ["type"] = "string" },
+                ["preset"] = new JObject { ["type"] = "string" },
                 ["partsRoot"] = SchemaHelpers.TargetRefSchema,
                 ["bodyPartSetPath"] = new JObject { ["type"] = "string" },
                 ["manifestPath"] = new JObject { ["type"] = "string" },
@@ -248,7 +264,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             },
             ["required"] = new JArray
             {
-                "splitId", "outputFolder", "partsRoot", "bodyPartSetPath",
+                "splitId", "outputFolder", "preset", "partsRoot", "bodyPartSetPath",
                 "manifestPath", "partCount", "createdAssets", "valid",
             },
             ["additionalProperties"] = false,
@@ -274,7 +290,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             if (target == null) return ToolResult.Error("TARGET_NOT_FOUND", error);
             try
             {
-                var proposal = SmartBodySplitAnalyzer.Analyze(target);
+                var proposal = SmartBodySplitAnalyzer.Analyze(target, AnalyzeBodyPartsTool.ReadPreset(arguments));
                 var result = SmartBodySplitService.Apply(
                     proposal,
                     (string)arguments["outputFolder"],
@@ -286,6 +302,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                     {
                         ["splitId"] = result.SplitId,
                         ["outputFolder"] = result.OutputFolder,
+                        ["preset"] = SmartBodySplitPresets.Id(proposal.Preset),
                         ["partsRoot"] = ToolTargetRef.Capture(result.PartsRoot).ToJson(),
                         ["bodyPartSetPath"] = AssetDatabase.GetAssetPath(result.BodyPartSet),
                         ["manifestPath"] = AssetDatabase.GetAssetPath(result.Manifest),
@@ -315,6 +332,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                 ["splitId"] = new JObject { ["type"] = "string" },
                 ["sourceHash"] = new JObject { ["type"] = "string" },
                 ["previewHash"] = new JObject { ["type"] = "string" },
+                ["preset"] = new JObject { ["type"] = "string" },
                 ["valid"] = new JObject { ["type"] = "boolean" },
                 ["triangleCount"] = new JObject { ["type"] = "integer" },
                 ["parts"] = new JObject
@@ -338,7 +356,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             },
             ["required"] = new JArray
             {
-                "manifestAssetPath", "splitId", "sourceHash", "previewHash",
+                "manifestAssetPath", "splitId", "sourceHash", "previewHash", "preset",
                 "valid", "triangleCount", "parts", "messages",
             },
             ["additionalProperties"] = false,
@@ -372,6 +390,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                     ["splitId"] = manifest.SplitId,
                     ["sourceHash"] = manifest.SourceHash,
                     ["previewHash"] = manifest.PreviewHash,
+                    ["preset"] = SmartBodySplitPresets.Id(manifest.Preset),
                     ["valid"] = manifest.IsValid,
                     ["triangleCount"] = manifest.SourceTriangleCount,
                     ["parts"] = parts,

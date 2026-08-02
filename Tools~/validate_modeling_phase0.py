@@ -101,6 +101,7 @@ def main() -> int:
         "mesh_validate_split",
     ):
         require(name in tools, f"Smart Body Split MCP tool is missing: {name}", failures)
+    require("hands_feet" in tools, "Smart Body Split detailed preset must be exposed through MCP", failures)
     require("McpCapability.AssetWrite" in tools, "split apply must declare AssetWrite", failures)
     require("McpCapability.Destructive" in tools, "split apply must declare Destructive", failures)
     require("McpConfirmationPolicy.Required" in tools, "split apply must require confirmation", failures)
@@ -119,6 +120,8 @@ def main() -> int:
     tests = read("Tests/Editor/Modeling/ModelingPhaseZeroTests.cs")
     for test_name in (
         "Analyzer_GenericRigProducesSixCompleteParts",
+        "Analyzer_HandsAndFeetPresetProducesTenPartsAndKeepsCoreCompatible",
+        "Split_HandsAndFeetPresetCreatesTenValidatedRiggedParts",
         "BoneWeightValidation_ToleratesQuantizationAndOrderingButRejectsRealDrift",
         "Split_CreatesValidatedPartsAndLeavesSourceUntouched",
         "Split_RejectsStaleSourceAndPreviewHashesWithoutCreatingAssets",

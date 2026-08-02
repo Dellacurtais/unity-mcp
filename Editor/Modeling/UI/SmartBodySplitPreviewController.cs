@@ -80,6 +80,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                 case SemanticBodyPart.RightArm: return new Color(0.8f, 0.25f, 1f);
                 case SemanticBodyPart.LeftLeg: return new Color(1f, 0.25f, 0.35f);
                 case SemanticBodyPart.RightLeg: return new Color(1f, 0.9f, 0.2f);
+                case SemanticBodyPart.LeftHand: return new Color(0.15f, 0.95f, 0.95f);
+                case SemanticBodyPart.RightHand: return new Color(1f, 0.35f, 0.75f);
+                case SemanticBodyPart.LeftFoot: return new Color(0.45f, 0.55f, 1f);
+                case SemanticBodyPart.RightFoot: return new Color(0.95f, 0.65f, 0.25f);
                 default: return Color.gray;
             }
         }
