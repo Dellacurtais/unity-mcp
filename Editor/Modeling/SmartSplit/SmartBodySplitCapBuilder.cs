@@ -56,6 +56,29 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             public bool HasVertexSeam;
         }
 
+        private readonly struct ContinuationCandidate
+        {
+            public readonly int Incoming;
+            public readonly int Outgoing;
+            public readonly bool ExactVertex;
+            public readonly bool SameSubMesh;
+            public readonly float DirectionScore;
+
+            public ContinuationCandidate(
+                int incoming,
+                int outgoing,
+                bool exactVertex,
+                bool sameSubMesh,
+                float directionScore)
+            {
+                Incoming = incoming;
+                Outgoing = outgoing;
+                ExactVertex = exactVertex;
+                SameSubMesh = sameSubMesh;
+                DirectionScore = directionScore;
+            }
+        }
+
         private readonly struct SpatialCell : IEquatable<SpatialCell>
         {
             private readonly int _x;
@@ -100,7 +123,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             var canonicalVertices = BuildCanonicalVertices(sourcePositions);
             var cutEdges = FindCutEdges(proposal, part.Part, canonicalVertices);
             if (cutEdges.Count == 0) return result;
-            var loops = BuildLoops(cutEdges);
+            var loops = BuildLoops(cutEdges, sourcePositions);
             for (int loopIndex = 0; loopIndex < loops.Count; loopIndex++)
             {
                 var loop = loops[loopIndex];
@@ -220,30 +243,43 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             list.Add(new EdgeUse(part, from, to, canonicalFrom, canonicalTo, subMesh));
         }
 
-        private static List<BoundaryLoop> BuildLoops(IReadOnlyList<BoundaryEdge> edges)
+        private static List<BoundaryLoop> BuildLoops(
+            IReadOnlyList<BoundaryEdge> edges,
+            IReadOnlyList<Vector3> sourcePositions)
         {
-            var incident = new Dictionary<int, List<int>>();
+            var incoming = new Dictionary<int, List<int>>();
+            var outgoing = new Dictionary<int, List<int>>();
             for (int i = 0; i < edges.Count; i++)
             {
-                AddIncident(incident, edges[i].CanonicalFrom, i);
-                AddIncident(incident, edges[i].CanonicalTo, i);
+                AddIncident(outgoing, edges[i].CanonicalFrom, i);
+                AddIncident(incoming, edges[i].CanonicalTo, i);
             }
-            foreach (var pair in incident)
-                if (pair.Value.Count != 2)
+            var continuation = new int[edges.Count];
+            for (int i = 0; i < continuation.Length; i++) continuation[i] = -1;
+            var vertices = new SortedSet<int>();
+            foreach (int vertex in incoming.Keys) vertices.Add(vertex);
+            foreach (int vertex in outgoing.Keys) vertices.Add(vertex);
+            foreach (int vertex in vertices)
+            {
+                incoming.TryGetValue(vertex, out var incomingEdges);
+                outgoing.TryGetValue(vertex, out var outgoingEdges);
+                int incomingCount = incomingEdges?.Count ?? 0;
+                int outgoingCount = outgoingEdges?.Count ?? 0;
+                if (incomingCount != outgoingCount || incomingCount == 0)
                     throw new InvalidOperationException(
-                        $"SPLIT_CAP_BOUNDARY_AMBIGUOUS: cut vertex {pair.Key} has degree {pair.Value.Count}; refine the split boundary before closing it.");
+                        $"SPLIT_CAP_BOUNDARY_ORIENTATION_AMBIGUOUS: cut vertex {vertex} has {incomingCount} incoming and {outgoingCount} outgoing edges; refine the split boundary before closing it.");
+                PairContinuations(vertex, incomingEdges, outgoingEdges, edges, sourcePositions, continuation);
+            }
 
             var used = new bool[edges.Count];
             var loops = new List<BoundaryLoop>();
             for (int startEdge = 0; startEdge < edges.Count; startEdge++)
             {
                 if (used[startEdge]) continue;
-                var first = edges[startEdge];
                 var loop = new BoundaryLoop();
                 var subMeshVotes = new Dictionary<int, int>();
-                int startVertex = first.CanonicalFrom;
-                int currentVertex = startVertex;
                 int currentEdge = startEdge;
+                var visitedVertices = new HashSet<int>();
                 int guard = 0;
                 while (guard++ <= edges.Count)
                 {
@@ -251,27 +287,18 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                         throw new InvalidOperationException("SPLIT_CAP_BOUNDARY_REPEATED: cut loop reused an edge.");
                     used[currentEdge] = true;
                     var source = edges[currentEdge];
-                    var oriented = source.CanonicalFrom == currentVertex
-                        ? source
-                        : new BoundaryEdge
-                        {
-                            From = source.To,
-                            To = source.From,
-                            CanonicalFrom = source.CanonicalTo,
-                            CanonicalTo = source.CanonicalFrom,
-                            SubMesh = source.SubMesh,
-                        };
-                    loop.Edges.Add(oriented);
-                    Vote(subMeshVotes, oriented.SubMesh);
-                    currentVertex = oriented.CanonicalTo;
-                    if (currentVertex == startVertex) break;
-                    var candidates = incident[currentVertex];
-                    int nextEdge = candidates[0] == currentEdge ? candidates[1] : candidates[0];
+                    if (!visitedVertices.Add(source.CanonicalFrom)) loop.HasVertexSeam = true;
+                    loop.Edges.Add(source);
+                    Vote(subMeshVotes, source.SubMesh);
+                    int nextEdge = continuation[currentEdge];
+                    if (nextEdge < 0)
+                        throw new InvalidOperationException("SPLIT_CAP_BOUNDARY_OPEN: cut boundary has no directed continuation.");
+                    if (nextEdge == startEdge) break;
                     if (used[nextEdge])
                         throw new InvalidOperationException("SPLIT_CAP_BOUNDARY_OPEN: cut boundary did not form a closed loop.");
                     currentEdge = nextEdge;
                 }
-                if (currentVertex != startVertex || loop.Edges.Count < 3)
+                if (continuation[currentEdge] != startEdge || loop.Edges.Count < 3)
                     throw new InvalidOperationException("SPLIT_CAP_BOUNDARY_OPEN: cut boundary did not form a valid closed loop.");
                 for (int edgeIndex = 0; edgeIndex < loop.Edges.Count; edgeIndex++)
                 {
@@ -287,6 +314,61 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 loops.Add(loop);
             }
             return loops;
+        }
+
+        private static void PairContinuations(
+            int canonicalVertex,
+            IReadOnlyList<int> incoming,
+            IReadOnlyList<int> outgoing,
+            IReadOnlyList<BoundaryEdge> edges,
+            IReadOnlyList<Vector3> sourcePositions,
+            int[] continuation)
+        {
+            var candidates = new List<ContinuationCandidate>(incoming.Count * outgoing.Count);
+            for (int incomingIndex = 0; incomingIndex < incoming.Count; incomingIndex++)
+            {
+                var previous = edges[incoming[incomingIndex]];
+                var incomingDirection = sourcePositions[previous.To] - sourcePositions[previous.From];
+                for (int outgoingIndex = 0; outgoingIndex < outgoing.Count; outgoingIndex++)
+                {
+                    var next = edges[outgoing[outgoingIndex]];
+                    var outgoingDirection = sourcePositions[next.To] - sourcePositions[next.From];
+                    float directionScore = incomingDirection.sqrMagnitude > 1e-14f && outgoingDirection.sqrMagnitude > 1e-14f
+                        ? Vector3.Dot(incomingDirection.normalized, outgoingDirection.normalized)
+                        : -1f;
+                    candidates.Add(new ContinuationCandidate(
+                        incoming[incomingIndex],
+                        outgoing[outgoingIndex],
+                        previous.To == next.From,
+                        previous.SubMesh == next.SubMesh,
+                        directionScore));
+                }
+            }
+            candidates.Sort((left, right) =>
+            {
+                int compare = right.ExactVertex.CompareTo(left.ExactVertex);
+                if (compare != 0) return compare;
+                compare = right.DirectionScore.CompareTo(left.DirectionScore);
+                if (compare != 0) return compare;
+                compare = right.SameSubMesh.CompareTo(left.SameSubMesh);
+                if (compare != 0) return compare;
+                compare = left.Incoming.CompareTo(right.Incoming);
+                return compare != 0 ? compare : left.Outgoing.CompareTo(right.Outgoing);
+            });
+
+            var pairedIncoming = new HashSet<int>();
+            var pairedOutgoing = new HashSet<int>();
+            for (int candidateIndex = 0; candidateIndex < candidates.Count; candidateIndex++)
+            {
+                var candidate = candidates[candidateIndex];
+                if (pairedIncoming.Contains(candidate.Incoming) || pairedOutgoing.Contains(candidate.Outgoing)) continue;
+                continuation[candidate.Incoming] = candidate.Outgoing;
+                pairedIncoming.Add(candidate.Incoming);
+                pairedOutgoing.Add(candidate.Outgoing);
+            }
+            if (pairedIncoming.Count != incoming.Count || pairedOutgoing.Count != outgoing.Count)
+                throw new InvalidOperationException(
+                    $"SPLIT_CAP_BOUNDARY_PAIRING_FAILED: cut vertex {canonicalVertex} could not be decomposed into continuous loops.");
         }
 
         private static int AppendInterpolatedCenter(

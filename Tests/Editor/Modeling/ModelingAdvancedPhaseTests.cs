@@ -524,6 +524,78 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
             Assert.That(mesh.vertexCount, Is.EqualTo(7), "Source mesh must remain untouched.");
         }
 
+        [Test]
+        public void SmartSplit_DecomposesDegreeFourTouchingCutLoops()
+        {
+            string folder = $"Assets/__AssetModelerBranchCaps_{Guid.NewGuid():N}";
+            AssetModelerAssetPaths.ValidateAndEnsureFolder(folder);
+            _assetFolders.Add(folder);
+            var root = new GameObject("TouchingOctahedra");
+            _objects.Add(root);
+            var mesh = new Mesh { name = "TouchingOctahedra" };
+            _objects.Add(mesh);
+            mesh.vertices = new[]
+            {
+                new Vector3(0f, 1f, 0f), new Vector3(0f, -1f, 0f),
+                new Vector3(1f, 0f, 0f), new Vector3(0f, 0f, 1f),
+                new Vector3(-1f, 0f, 0f), new Vector3(0f, 0f, -1f),
+                new Vector3(2f, 1f, 0f), new Vector3(2f, -1f, 0f),
+                new Vector3(3f, 0f, 0f), new Vector3(2f, 0f, 1f),
+                new Vector3(1f, 0f, 0f), // Distinct shell touching vertex 2 geometrically.
+                new Vector3(2f, 0f, -1f),
+            };
+            mesh.triangles = new[]
+            {
+                0, 3, 2, 0, 4, 3, 0, 5, 4, 0, 2, 5,
+                1, 2, 3, 1, 3, 4, 1, 4, 5, 1, 5, 2,
+                6, 9, 8, 6, 10, 9, 6, 11, 10, 6, 8, 11,
+                7, 8, 9, 7, 9, 10, 7, 10, 11, 7, 11, 8,
+            };
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            root.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var renderer = root.AddComponent<MeshRenderer>();
+            var proposal = new SmartBodySplitProposal
+            {
+                Target = root,
+                SourceRenderer = renderer,
+                SourceMesh = mesh,
+                SourceHash = MeshFingerprint.Compute(mesh),
+                RigType = "None",
+                Preset = SmartBodySplitPreset.Core,
+            };
+            var upper = new SmartBodySplitPartProposal(SemanticBodyPart.Head);
+            var lower = new SmartBodySplitPartProposal(SemanticBodyPart.Torso);
+            proposal.Parts.Add(upper);
+            proposal.Parts.Add(lower);
+            var indices = mesh.triangles;
+            for (int triangle = 0; triangle < 16; triangle++)
+            {
+                var destination = triangle % 8 < 4 ? upper : lower;
+                int offset = triangle * 3;
+                destination.Triangles.Add(new SourceTriangle(
+                    0, triangle, indices[offset], indices[offset + 1], indices[offset + 2], 1f));
+            }
+            proposal.FinalizeProposal();
+
+            var result = SmartBodySplitService.Apply(
+                proposal, folder, proposal.SourceHash, proposal.PreviewHash, true);
+            _objects.Add(result.PartsRoot);
+
+            Assert.That(result.Validation.IsValid, Is.True);
+            Assert.That(result.Manifest.Parts, Has.Count.EqualTo(2));
+            foreach (var part in result.Manifest.Parts)
+            {
+                Assert.That(part.SourceTriangleCount, Is.EqualTo(8));
+                Assert.That(part.CapLoopCount, Is.EqualTo(2));
+                Assert.That(part.CapTriangleCount, Is.EqualTo(4));
+                Assert.That(part.Mesh.vertexCount, Is.EqualTo(10));
+                Assert.That(part.Mesh.triangles.Length / 3, Is.EqualTo(12));
+                Assert.That(HalfEdgeTopology.Build(part.Mesh).BoundaryEdges, Is.Empty, part.SlotId);
+            }
+            Assert.That(mesh.triangles.Length / 3, Is.EqualTo(16), "Source mesh must remain untouched.");
+        }
+
         private MeshEditDocument Document(Mesh source, out Mesh working)
         {
             working = UnityEngine.Object.Instantiate(source);
