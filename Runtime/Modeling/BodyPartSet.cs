@@ -5,6 +5,25 @@ using UnityEngine;
 namespace Maicon.SceneAnalyzer.Modeling
 {
     [Serializable]
+    public sealed class SeamAnchorDefinition
+    {
+        [SerializeField] private int _sourceVertexIndex;
+        [SerializeField] private Vector3 _position;
+        [SerializeField] private Vector3 _normal;
+
+        public int SourceVertexIndex => _sourceVertexIndex;
+        public Vector3 Position => _position;
+        public Vector3 Normal => _normal;
+
+        public void Configure(int sourceVertexIndex, Vector3 position, Vector3 normal)
+        {
+            _sourceVertexIndex = sourceVertexIndex;
+            _position = position;
+            _normal = normal;
+        }
+    }
+
+    [Serializable]
     public sealed class SkeletonCompatibilitySignature
     {
         [SerializeField] private string _rigType;
@@ -45,6 +64,10 @@ namespace Maicon.SceneAnalyzer.Modeling
         [SerializeField] private int _sourceTriangleCount;
         [SerializeField] private int _sourceVertexCount;
         [SerializeField] private float _confidence;
+        [SerializeField] private string _seamSignature;
+        [SerializeField] private SeamAnchorDefinition[] _seamAnchors = Array.Empty<SeamAnchorDefinition>();
+        [SerializeField] private int _capTriangleCount;
+        [SerializeField] private int _capLoopCount;
 
         public string SlotId => _slotId;
         public string Label => _label;
@@ -53,6 +76,10 @@ namespace Maicon.SceneAnalyzer.Modeling
         public int SourceTriangleCount => _sourceTriangleCount;
         public int SourceVertexCount => _sourceVertexCount;
         public float Confidence => _confidence;
+        public string SeamSignature => _seamSignature;
+        public IReadOnlyList<SeamAnchorDefinition> SeamAnchors => _seamAnchors;
+        public int CapTriangleCount => _capTriangleCount;
+        public int CapLoopCount => _capLoopCount;
 
         public void Configure(
             string slotId,
@@ -61,7 +88,11 @@ namespace Maicon.SceneAnalyzer.Modeling
             Material[] materials,
             int sourceTriangleCount,
             int sourceVertexCount,
-            float confidence)
+            float confidence,
+            string seamSignature = null,
+            SeamAnchorDefinition[] seamAnchors = null,
+            int capTriangleCount = 0,
+            int capLoopCount = 0)
         {
             _slotId = slotId ?? string.Empty;
             _label = label ?? _slotId;
@@ -70,7 +101,16 @@ namespace Maicon.SceneAnalyzer.Modeling
             _sourceTriangleCount = Mathf.Max(0, sourceTriangleCount);
             _sourceVertexCount = Mathf.Max(0, sourceVertexCount);
             _confidence = Mathf.Clamp01(confidence);
+            _seamSignature = seamSignature ?? string.Empty;
+            _seamAnchors = seamAnchors != null ? (SeamAnchorDefinition[])seamAnchors.Clone() : Array.Empty<SeamAnchorDefinition>();
+            _capTriangleCount = Mathf.Max(0, capTriangleCount);
+            _capLoopCount = Mathf.Max(0, capLoopCount);
         }
+
+        public bool IsSeamCompatibleWith(BodyPartDefinition other)
+            => other != null
+                && !string.IsNullOrEmpty(_seamSignature)
+                && string.Equals(_seamSignature, other._seamSignature, StringComparison.Ordinal);
     }
 
     [CreateAssetMenu(fileName = "BodyPartSet", menuName = "Unity MCP/Modeling/Body Part Set")]

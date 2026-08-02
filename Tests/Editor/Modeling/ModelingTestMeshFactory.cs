@@ -52,6 +52,30 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
             return CreateCharacter(names, centers, "TenPartSkinnedFixture");
         }
 
+        public static ModelingTestCharacter CreateModularCharacter()
+        {
+            var names = new[]
+            {
+                "Head", "Neck", "Chest", "Hips",
+                "LeftUpperArm", "LeftLowerArm", "RightUpperArm", "RightLowerArm",
+                "LeftHand", "RightHand",
+                "LeftUpperLeg", "LeftLowerLeg", "RightUpperLeg", "RightLowerLeg",
+                "LeftFoot", "RightFoot",
+            };
+            var centers = new[]
+            {
+                new Vector3(0f, 2f, 0f), new Vector3(0f, 1.72f, 0f),
+                new Vector3(0f, 1.42f, 0f), new Vector3(0f, 0.92f, 0f),
+                new Vector3(-0.55f, 1.42f, 0f), new Vector3(-0.95f, 1.28f, 0f),
+                new Vector3(0.55f, 1.42f, 0f), new Vector3(0.95f, 1.28f, 0f),
+                new Vector3(-1.25f, 1.2f, 0f), new Vector3(1.25f, 1.2f, 0f),
+                new Vector3(-0.3f, 0.62f, 0f), new Vector3(-0.3f, 0.25f, 0f),
+                new Vector3(0.3f, 0.62f, 0f), new Vector3(0.3f, 0.25f, 0f),
+                new Vector3(-0.3f, 0.02f, 0f), new Vector3(0.3f, 0.02f, 0f),
+            };
+            return CreateCharacter(names, centers, "ModularSkinnedFixture");
+        }
+
         public static Mesh CreateSixPartMesh(int boneCount)
             => CreatePartMesh(SixPartCenters(), boneCount, "SixPartSkinnedFixture");
 

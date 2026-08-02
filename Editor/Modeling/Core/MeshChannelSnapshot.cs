@@ -50,6 +50,18 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
         }
     }
 
+    public sealed class MeshSubMeshSnapshot
+    {
+        public MeshTopology Topology { get; }
+        public int[] Indices { get; }
+
+        public MeshSubMeshSnapshot(MeshTopology topology, int[] indices)
+        {
+            Topology = topology;
+            Indices = indices ?? Array.Empty<int>();
+        }
+    }
+
     public sealed class MeshChannelSnapshot
     {
         public MeshChannelManifest Manifest { get; }
@@ -65,6 +77,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
         public int[] BoneWeightOffsets { get; }
         public Matrix4x4[] BindPoses { get; }
         public IReadOnlyList<BlendShapeSnapshot> BlendShapes { get; }
+        public IReadOnlyList<MeshSubMeshSnapshot> SubMeshes { get; }
+        public IndexFormat IndexFormat { get; }
+        public Bounds Bounds { get; }
 
         private MeshChannelSnapshot(
             MeshChannelManifest manifest,
@@ -79,7 +94,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
             BoneWeight1[] boneWeights,
             int[] boneWeightOffsets,
             Matrix4x4[] bindPoses,
-            List<BlendShapeSnapshot> blendShapes)
+            List<BlendShapeSnapshot> blendShapes,
+            List<MeshSubMeshSnapshot> subMeshes,
+            IndexFormat indexFormat,
+            Bounds bounds)
         {
             Manifest = manifest;
             Positions = positions;
@@ -94,6 +112,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
             BoneWeightOffsets = boneWeightOffsets;
             BindPoses = bindPoses;
             BlendShapes = blendShapes;
+            SubMeshes = subMeshes;
+            IndexFormat = indexFormat;
+            Bounds = bounds;
         }
 
         public static MeshChannelSnapshot Capture(Mesh mesh)
@@ -164,6 +185,12 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
                 blendShapes.Add(new BlendShapeSnapshot(mesh.GetBlendShapeName(shapeIndex), frames));
             }
 
+            var subMeshes = new List<MeshSubMeshSnapshot>(mesh.subMeshCount);
+            for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+                subMeshes.Add(new MeshSubMeshSnapshot(
+                    mesh.GetTopology(subMesh),
+                    mesh.GetIndices(subMesh, true)));
+
             return new MeshChannelSnapshot(
                 manifest,
                 positions,
@@ -177,7 +204,36 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
                 boneWeights,
                 offsets,
                 mesh.bindposes,
-                blendShapes);
+                blendShapes,
+                subMeshes,
+                mesh.indexFormat,
+                mesh.bounds);
+        }
+
+        public Mesh CreateMesh(string name = null)
+        {
+            var mesh = new Mesh { name = string.IsNullOrWhiteSpace(name) ? "EditableMesh" : name };
+            ApplyAll(mesh);
+            return mesh;
+        }
+
+        public void ApplyAll(Mesh destination)
+        {
+            if (destination == null) throw new ArgumentNullException(nameof(destination));
+            var name = destination.name;
+            destination.Clear(false);
+            destination.indexFormat = IndexFormat;
+            var allVertices = new int[Positions.Length];
+            for (int i = 0; i < allVertices.Length; i++) allVertices[i] = i;
+            ApplyVertexChannels(destination, allVertices);
+            destination.subMeshCount = SubMeshes.Count;
+            for (int subMesh = 0; subMesh < SubMeshes.Count; subMesh++)
+            {
+                var source = SubMeshes[subMesh];
+                destination.SetIndices(source.Indices, source.Topology, subMesh, false);
+            }
+            destination.bounds = Bounds;
+            destination.name = name;
         }
 
         public void ApplyVertexChannels(Mesh destination, IReadOnlyList<int> sourceVertexIndices)

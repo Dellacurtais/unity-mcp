@@ -936,6 +936,17 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void ScrollState_ShortTranscriptUsesTopAsItsStableEnd()
+        {
+            Assert.That(CoderChatScrollState.NormalizeEnd(-540f), Is.Zero,
+                "um transcript menor que a viewport não pode produzir offset negativo");
+            Assert.That(CoderChatScrollState.NormalizeEnd(float.NaN), Is.Zero);
+            Assert.That(CoderChatScrollState.NormalizeEnd(float.PositiveInfinity), Is.Zero);
+            Assert.That(CoderChatScrollState.DistanceFromEnd(-540f, -540f), Is.Zero);
+            Assert.That(CoderChatScrollState.DistanceFromEnd(0f, -540f), Is.Zero);
+        }
+
+        [Test]
         public void ComposerHeight_GrowsForExplicitAndWrappedLinesWithinBounds()
         {
             Assert.That(CoderChatWindow.EstimateComposerHeight("", 500f), Is.EqualTo(42f));

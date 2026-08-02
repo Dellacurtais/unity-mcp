@@ -17,6 +17,33 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             if (target == null) throw new ArgumentNullException(nameof(target));
             if (!EditableMeshFactory.TryResolveRenderer(target, out var renderer, out var mesh, out var error))
                 throw new InvalidOperationException(error);
+            return AnalyzeRenderer(target, renderer, mesh, preset);
+        }
+
+        public static SmartBodySplitProposal AnalyzeRenderer(
+            GameObject target,
+            Renderer renderer,
+            SmartBodySplitPreset preset = SmartBodySplitPreset.Core)
+        {
+            if (target == null) throw new ArgumentNullException(nameof(target));
+            if (renderer == null) throw new ArgumentNullException(nameof(renderer));
+            if (renderer.transform != target.transform
+                && !renderer.transform.IsChildOf(target.transform)
+                && !target.transform.IsChildOf(renderer.transform))
+                throw new InvalidOperationException("RENDERER_OUTSIDE_TARGET: selected renderer is not inside the character root.");
+            Mesh mesh;
+            if (renderer is SkinnedMeshRenderer skinnedRenderer) mesh = skinnedRenderer.sharedMesh;
+            else mesh = renderer.GetComponent<MeshFilter>()?.sharedMesh;
+            if (mesh == null) throw new InvalidOperationException("RENDERER_MESH_MISSING: selected renderer has no mesh.");
+            return AnalyzeRenderer(target, renderer, mesh, preset);
+        }
+
+        private static SmartBodySplitProposal AnalyzeRenderer(
+            GameObject target,
+            Renderer renderer,
+            Mesh mesh,
+            SmartBodySplitPreset preset)
+        {
             if (mesh.vertexCount == 0) throw new InvalidOperationException("Source mesh has no vertices.");
             if (!mesh.isReadable)
                 throw new InvalidOperationException(
@@ -31,7 +58,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 ?? target.GetComponentInParent<Animator>()
                 ?? target.GetComponentInChildren<Animator>(true);
             var activeParts = SmartBodySplitPresets.Parts(preset);
-            var boneParts = skinned != null ? BuildBonePartMap(skinned, animator, preset) : Array.Empty<SemanticBodyPart>();
+            var boneParts = skinned != null ? BuildBonePartMap(skinned, animator, preset, mesh.bounds) : Array.Empty<SemanticBodyPart>();
             var scores = BuildVertexScores(mesh, skinned, boneParts, preset, activeParts);
             var proposal = new SmartBodySplitProposal
             {
@@ -48,8 +75,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 proposal.Warnings.Add("Mesh sem rig: a proposta usa geometria normalizada e deve ser revisada visualmente.");
             else if (animator == null || !animator.isHuman)
                 proposal.Warnings.Add("Rig Generic: a proposta usa nomes, hierarquia de bones e pesos; revise bones com nomes incomuns.");
-            if (skinned == null && preset == SmartBodySplitPreset.HandsAndFeet)
-                proposal.Warnings.Add("Mãos e pés sem rig dependem da posição das extremidades; revise essas quatro cores com atenção.");
+            if (skinned == null && (SmartBodySplitPresets.HasSeparateHands(preset) || SmartBodySplitPresets.HasSeparateFeet(preset)))
+                proposal.Warnings.Add(preset == SmartBodySplitPreset.HandsAndFeet
+                    ? "Mãos e pés sem rig dependem da posição das extremidades; revise essas quatro cores com atenção."
+                    : "Extremidades sem rig dependem da posição normalizada; revise mãos e pés com atenção.");
 
             var partLookup = new Dictionary<SemanticBodyPart, SmartBodySplitPartProposal>();
             for (int part = 0; part < activeParts.Count; part++)
@@ -174,7 +203,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         private static SemanticBodyPart[] BuildBonePartMap(
             SkinnedMeshRenderer renderer,
             Animator animator,
-            SmartBodySplitPreset preset)
+            SmartBodySplitPreset preset,
+            Bounds meshBounds)
         {
             var bones = renderer.bones ?? Array.Empty<Transform>();
             var map = new SemanticBodyPart[bones.Length];
@@ -200,6 +230,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                     map[boneIndex] = FromHumanBone(humanBone, preset);
                 else
                     map[boneIndex] = FromBoneName(bone.name, preset);
+                if (map[boneIndex] == SemanticBodyPart.Unassigned)
+                {
+                    var localBone = renderer.transform.InverseTransformPoint(bone.position);
+                    map[boneIndex] = ClassifyPosition(localBone, meshBounds, preset);
+                }
             }
             return map;
         }
@@ -209,29 +244,52 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             var name = bone.ToString();
             if (name == "Head" || name == "Jaw" || name.EndsWith("Eye", StringComparison.Ordinal))
                 return SemanticBodyPart.Head;
+            if (name == "Neck")
+                return preset == SmartBodySplitPreset.Modular || preset == SmartBodySplitPreset.Damage
+                    ? SemanticBodyPart.Neck
+                    : SmartBodySplitPresets.HasDetailedTorso(preset) ? SemanticBodyPart.Chest : SemanticBodyPart.Torso;
+            if (ContainsAny(name, "Chest", "Spine", "Hips"))
+            {
+                if (!SmartBodySplitPresets.HasDetailedTorso(preset)) return SemanticBodyPart.Torso;
+                return ContainsAny(name, "Chest", "UpperChest") ? SemanticBodyPart.Chest : SemanticBodyPart.AbdomenHip;
+            }
             if (name.StartsWith("Left", StringComparison.Ordinal))
             {
-                if (preset == SmartBodySplitPreset.HandsAndFeet
+                if (SmartBodySplitPresets.HasSeparateHands(preset)
                     && ContainsAny(name, "Hand", "Thumb", "Index", "Middle", "Ring", "Little"))
                     return SemanticBodyPart.LeftHand;
-                if (preset == SmartBodySplitPreset.HandsAndFeet && ContainsAny(name, "Foot", "Toes"))
+                if (SmartBodySplitPresets.HasSeparateFeet(preset) && ContainsAny(name, "Foot", "Toes"))
                     return SemanticBodyPart.LeftFoot;
-                if (ContainsAny(name, "Leg", "Foot", "Toes")) return SemanticBodyPart.LeftLeg;
+                if (ContainsAny(name, "Leg", "Foot", "Toes"))
+                {
+                    if (!SmartBodySplitPresets.HasDetailedLegs(preset)) return SemanticBodyPart.LeftLeg;
+                    return ContainsAny(name, "UpperLeg") ? SemanticBodyPart.LeftUpperLeg : SemanticBodyPart.LeftLowerLeg;
+                }
                 if (ContainsAny(name, "Shoulder", "Arm", "Hand", "Thumb", "Index", "Middle", "Ring", "Little"))
-                    return SemanticBodyPart.LeftArm;
+                {
+                    if (!SmartBodySplitPresets.HasDetailedArms(preset)) return SemanticBodyPart.LeftArm;
+                    return ContainsAny(name, "LowerArm") ? SemanticBodyPart.LeftLowerArm : SemanticBodyPart.LeftUpperArm;
+                }
             }
             if (name.StartsWith("Right", StringComparison.Ordinal))
             {
-                if (preset == SmartBodySplitPreset.HandsAndFeet
+                if (SmartBodySplitPresets.HasSeparateHands(preset)
                     && ContainsAny(name, "Hand", "Thumb", "Index", "Middle", "Ring", "Little"))
                     return SemanticBodyPart.RightHand;
-                if (preset == SmartBodySplitPreset.HandsAndFeet && ContainsAny(name, "Foot", "Toes"))
+                if (SmartBodySplitPresets.HasSeparateFeet(preset) && ContainsAny(name, "Foot", "Toes"))
                     return SemanticBodyPart.RightFoot;
-                if (ContainsAny(name, "Leg", "Foot", "Toes")) return SemanticBodyPart.RightLeg;
+                if (ContainsAny(name, "Leg", "Foot", "Toes"))
+                {
+                    if (!SmartBodySplitPresets.HasDetailedLegs(preset)) return SemanticBodyPart.RightLeg;
+                    return ContainsAny(name, "UpperLeg") ? SemanticBodyPart.RightUpperLeg : SemanticBodyPart.RightLowerLeg;
+                }
                 if (ContainsAny(name, "Shoulder", "Arm", "Hand", "Thumb", "Index", "Middle", "Ring", "Little"))
-                    return SemanticBodyPart.RightArm;
+                {
+                    if (!SmartBodySplitPresets.HasDetailedArms(preset)) return SemanticBodyPart.RightArm;
+                    return ContainsAny(name, "LowerArm") ? SemanticBodyPart.RightLowerArm : SemanticBodyPart.RightUpperArm;
+                }
             }
-            return SemanticBodyPart.Torso;
+            return SmartBodySplitPresets.HasDetailedTorso(preset) ? SemanticBodyPart.AbdomenHip : SemanticBodyPart.Torso;
         }
 
         private static SemanticBodyPart FromBoneName(string boneName, SmartBodySplitPreset preset)
@@ -244,16 +302,38 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             bool foot = ContainsAny(name, "ankle", "foot", "toe");
             bool leg = ContainsAny(name, "thigh", "upleg", "leg", "calf", "knee", "shin") || foot;
             bool arm = ContainsAny(name, "shoulder", "arm", "elbow", "forearm") || hand;
-            if (preset == SmartBodySplitPreset.HandsAndFeet && left && hand) return SemanticBodyPart.LeftHand;
-            if (preset == SmartBodySplitPreset.HandsAndFeet && right && hand) return SemanticBodyPart.RightHand;
-            if (preset == SmartBodySplitPreset.HandsAndFeet && left && foot) return SemanticBodyPart.LeftFoot;
-            if (preset == SmartBodySplitPreset.HandsAndFeet && right && foot) return SemanticBodyPart.RightFoot;
-            if (left && leg) return SemanticBodyPart.LeftLeg;
-            if (right && leg) return SemanticBodyPart.RightLeg;
-            if (left && arm) return SemanticBodyPart.LeftArm;
-            if (right && arm) return SemanticBodyPart.RightArm;
-            if (ContainsAny(name, "hips", "pelvis", "root", "spine", "chest", "neck", "torso"))
-                return SemanticBodyPart.Torso;
+            if (SmartBodySplitPresets.HasSeparateHands(preset) && left && hand) return SemanticBodyPart.LeftHand;
+            if (SmartBodySplitPresets.HasSeparateHands(preset) && right && hand) return SemanticBodyPart.RightHand;
+            if (SmartBodySplitPresets.HasSeparateFeet(preset) && left && foot) return SemanticBodyPart.LeftFoot;
+            if (SmartBodySplitPresets.HasSeparateFeet(preset) && right && foot) return SemanticBodyPart.RightFoot;
+            if (left && leg)
+            {
+                if (!SmartBodySplitPresets.HasDetailedLegs(preset)) return SemanticBodyPart.LeftLeg;
+                return ContainsAny(name, "thigh", "upleg", "upperleg") ? SemanticBodyPart.LeftUpperLeg : SemanticBodyPart.LeftLowerLeg;
+            }
+            if (right && leg)
+            {
+                if (!SmartBodySplitPresets.HasDetailedLegs(preset)) return SemanticBodyPart.RightLeg;
+                return ContainsAny(name, "thigh", "upleg", "upperleg") ? SemanticBodyPart.RightUpperLeg : SemanticBodyPart.RightLowerLeg;
+            }
+            if (left && arm)
+            {
+                if (!SmartBodySplitPresets.HasDetailedArms(preset)) return SemanticBodyPart.LeftArm;
+                return ContainsAny(name, "forearm", "lowerarm", "elbow") ? SemanticBodyPart.LeftLowerArm : SemanticBodyPart.LeftUpperArm;
+            }
+            if (right && arm)
+            {
+                if (!SmartBodySplitPresets.HasDetailedArms(preset)) return SemanticBodyPart.RightArm;
+                return ContainsAny(name, "forearm", "lowerarm", "elbow") ? SemanticBodyPart.RightLowerArm : SemanticBodyPart.RightUpperArm;
+            }
+            if (ContainsAny(name, "neck"))
+                return preset == SmartBodySplitPreset.Modular || preset == SmartBodySplitPreset.Damage
+                    ? SemanticBodyPart.Neck
+                    : SmartBodySplitPresets.HasDetailedTorso(preset) ? SemanticBodyPart.Chest : SemanticBodyPart.Torso;
+            if (ContainsAny(name, "chest", "upperchest"))
+                return SmartBodySplitPresets.HasDetailedTorso(preset) ? SemanticBodyPart.Chest : SemanticBodyPart.Torso;
+            if (ContainsAny(name, "hips", "pelvis", "root", "spine", "torso"))
+                return SmartBodySplitPresets.HasDetailedTorso(preset) ? SemanticBodyPart.AbdomenHip : SemanticBodyPart.Torso;
             return SemanticBodyPart.Unassigned;
         }
 
@@ -265,15 +345,32 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             var size = bounds.size;
             float y = size.y > 1e-6f ? (point.y - bounds.min.y) / size.y : 0.5f;
             float x = point.x - bounds.center.x;
-            if (y >= 0.78f) return SemanticBodyPart.Head;
-            if (preset == SmartBodySplitPreset.HandsAndFeet && y <= 0.16f)
+            if (y >= 0.82f) return SemanticBodyPart.Head;
+            if ((preset == SmartBodySplitPreset.Modular || preset == SmartBodySplitPreset.Damage)
+                && y >= 0.76f && Mathf.Abs(x) < Mathf.Max(size.x * 0.22f, 1e-5f))
+                return SemanticBodyPart.Neck;
+            if (SmartBodySplitPresets.HasSeparateFeet(preset) && y <= 0.14f)
                 return x < 0f ? SemanticBodyPart.LeftFoot : SemanticBodyPart.RightFoot;
-            if (y <= 0.48f) return x < 0f ? SemanticBodyPart.LeftLeg : SemanticBodyPart.RightLeg;
-            if (preset == SmartBodySplitPreset.HandsAndFeet
+            if (y <= 0.48f)
+            {
+                if (!SmartBodySplitPresets.HasDetailedLegs(preset))
+                    return x < 0f ? SemanticBodyPart.LeftLeg : SemanticBodyPart.RightLeg;
+                if (y <= 0.29f) return x < 0f ? SemanticBodyPart.LeftLowerLeg : SemanticBodyPart.RightLowerLeg;
+                return x < 0f ? SemanticBodyPart.LeftUpperLeg : SemanticBodyPart.RightUpperLeg;
+            }
+            if (SmartBodySplitPresets.HasSeparateHands(preset)
                 && Mathf.Abs(x) >= Mathf.Max(size.x * 0.40f, 1e-5f))
                 return x < 0f ? SemanticBodyPart.LeftHand : SemanticBodyPart.RightHand;
             if (Mathf.Abs(x) >= Mathf.Max(size.x * 0.22f, 1e-5f))
-                return x < 0f ? SemanticBodyPart.LeftArm : SemanticBodyPart.RightArm;
+            {
+                if (!SmartBodySplitPresets.HasDetailedArms(preset))
+                    return x < 0f ? SemanticBodyPart.LeftArm : SemanticBodyPart.RightArm;
+                bool lower = Mathf.Abs(x) >= Mathf.Max(size.x * 0.33f, 1e-5f);
+                if (x < 0f) return lower ? SemanticBodyPart.LeftLowerArm : SemanticBodyPart.LeftUpperArm;
+                return lower ? SemanticBodyPart.RightLowerArm : SemanticBodyPart.RightUpperArm;
+            }
+            if (SmartBodySplitPresets.HasDetailedTorso(preset))
+                return y >= 0.61f ? SemanticBodyPart.Chest : SemanticBodyPart.AbdomenHip;
             return SemanticBodyPart.Torso;
         }
 

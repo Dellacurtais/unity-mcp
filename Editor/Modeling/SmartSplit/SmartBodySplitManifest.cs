@@ -14,6 +14,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         [SerializeField] private int _sourceTriangleCount;
         [SerializeField] private int[] _sourceVertexIndices = Array.Empty<int>();
         [SerializeField] private float _confidence;
+        [SerializeField] private int _capTriangleCount;
+        [SerializeField] private int _capLoopCount;
 
         public string SlotId => _slotId;
         public string Label => _label;
@@ -22,6 +24,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         public int SourceTriangleCount => _sourceTriangleCount;
         public IReadOnlyList<int> SourceVertexIndices => _sourceVertexIndices;
         public float Confidence => _confidence;
+        public int CapTriangleCount => _capTriangleCount;
+        public int CapLoopCount => _capLoopCount;
 
         public void Configure(
             string slotId,
@@ -30,7 +34,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             string assetPath,
             int sourceTriangleCount,
             int[] sourceVertexIndices,
-            float confidence)
+            float confidence,
+            int capTriangleCount = 0,
+            int capLoopCount = 0)
         {
             _slotId = slotId ?? string.Empty;
             _label = label ?? _slotId;
@@ -39,12 +45,15 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             _sourceTriangleCount = Mathf.Max(0, sourceTriangleCount);
             _sourceVertexIndices = sourceVertexIndices != null ? (int[])sourceVertexIndices.Clone() : Array.Empty<int>();
             _confidence = Mathf.Clamp01(confidence);
+            _capTriangleCount = Mathf.Max(0, capTriangleCount);
+            _capLoopCount = Mathf.Max(0, capLoopCount);
         }
     }
 
     public sealed class SmartBodySplitManifest : ScriptableObject
     {
         [SerializeField] private string _splitId;
+        [SerializeField] private Mesh _sourceMesh;
         [SerializeField] private string _sourceHash;
         [SerializeField] private string _previewHash;
         [SerializeField] private string _rigType;
@@ -55,6 +64,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         [SerializeField] private List<SmartBodySplitManifestPart> _parts = new List<SmartBodySplitManifestPart>();
 
         public string SplitId => _splitId;
+        public Mesh SourceMesh => _sourceMesh;
         public string SourceHash => _sourceHash;
         public string PreviewHash => _previewHash;
         public string RigType => _rigType;
@@ -73,6 +83,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         {
             if (proposal == null) throw new ArgumentNullException(nameof(proposal));
             _splitId = splitId ?? string.Empty;
+            _sourceMesh = proposal.SourceMesh;
             _sourceHash = proposal.SourceHash ?? string.Empty;
             _previewHash = proposal.PreviewHash ?? string.Empty;
             _rigType = proposal.RigType ?? "None";

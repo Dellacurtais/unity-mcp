@@ -361,6 +361,30 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
             Assert.That(presetValues, Does.Contain("core").And.Contain("hands_feet"));
         }
 
+        [Test]
+        public void AssetModelerMcpCatalog_ExposesAllPhaseWorkflowThroughSharedTools()
+        {
+            var registry = new McpToolRegistry();
+            registry.RegisterRange(new IMcpTool[]
+            {
+                new AnalyzeBodyPartsTool(), new GetSmartBodySplitProposalTool(),
+                new PreviewSmartBodySplitTool(), new ApplySmartBodySplitTool(), new ValidateSmartBodySplitTool(),
+                new CreateModularCharacterPrefabTool(), new RefineSmartBodySplitBoundaryTool(), new RecombineSmartBodySplitTool(),
+                new BeginMeshEditSessionTool(), new GetMeshEditContextTool(), new PreviewMeshOperationTool(), new ApplyMeshOperationTool(),
+                new CommitMeshEditSessionTool(), new RebaseMeshEditSessionTool(), new DiscardMeshEditSessionTool(), new ValidateEditableMeshTool(),
+                new GetMeshSelectionTool(), new SelectMeshElementsTool(), new SelectMeshRegionTool(), new LinkMeshRegionsTool(),
+                new PaintMeshRegionConstraintTool(), new ReorderMeshModifierTool(), new RemoveMeshModifierTool(),
+                new PreviewSurfaceFitTool(), new ApplySurfaceFitTool(), new EvaluatePoseClearanceTool(),
+                new StageExternalModelAssetTool(), new ExportMeshFbxTool(),
+            });
+
+            Assert.That(registry.Count, Is.EqualTo(28));
+            Assert.That(registry.GetDescriptor("mesh_apply_surface_fit").ConfirmationPolicy, Is.EqualTo(McpConfirmationPolicy.Required));
+            Assert.That(registry.GetDescriptor("mesh_stage_external_asset").Risk, Is.EqualTo(McpRiskLevel.High));
+            Assert.That(registry.GetInputSchema("mesh_apply_operation")["required"].ToString(), Does.Contain("previewHash"));
+            Assert.That(registry.GetInputSchema("mesh_select_elements")["required"].ToString(), Does.Contain("expectedTopologyRevision"));
+        }
+
         private string NewAssetFolder()
         {
             var folder = $"Assets/__AssetModelerPhase0Tests_{Guid.NewGuid():N}";

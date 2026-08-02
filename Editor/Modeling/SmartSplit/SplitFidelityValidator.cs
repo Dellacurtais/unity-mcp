@@ -11,6 +11,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         public Mesh Mesh;
         public string AssetPath;
         public List<int> SourceVertexIndices;
+        public int CapTriangleCount;
+        public int CapLoopCount;
+        public List<MeshEdgeKey> CutBoundaryEdges;
     }
 
     public static class SplitFidelityValidator
@@ -36,6 +39,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             for (int submesh = 0; submesh < proposal.SourceMesh.subMeshCount; submesh++)
                 sourceTriangleCount += (int)proposal.SourceMesh.GetIndexCount(submesh) / 3;
             int resultTriangleCount = 0;
+            int generatedCapTriangleCount = 0;
 
             for (int partIndex = 0; partIndex < parts.Count; partIndex++)
             {
@@ -55,21 +59,39 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
 
                 for (int submesh = 0; submesh < part.Mesh.subMeshCount; submesh++)
                     resultTriangleCount += (int)part.Mesh.GetIndexCount(submesh) / 3;
+                generatedCapTriangleCount += Mathf.Max(0, part.CapTriangleCount);
 
                 ValidateVertexChannels(source, part, report);
                 ValidateSkinning(source, part, report);
                 ValidateBlendShapes(source, part, report);
+                ValidateCaps(part, report);
             }
 
-            if (resultTriangleCount != sourceTriangleCount)
+            if (resultTriangleCount - generatedCapTriangleCount != sourceTriangleCount)
                 report.Error(
                     "TRIANGLE_COVERAGE_MISMATCH",
-                    $"Split contains {resultTriangleCount} triangles but source contains {sourceTriangleCount}.");
+                    $"Split contains {resultTriangleCount - generatedCapTriangleCount} source triangles and {generatedCapTriangleCount} generated cap triangles, but source contains {sourceTriangleCount}.");
             if (proposal.SourceTriangleCount != sourceTriangleCount)
                 report.Error(
                     "PROPOSAL_COVERAGE_MISMATCH",
                     $"Proposal assigned {proposal.SourceTriangleCount} of {sourceTriangleCount} source triangles.");
             return report;
+        }
+
+        private static void ValidateCaps(SplitPartBuildData part, MeshValidationReport report)
+        {
+            if (part.CapTriangleCount <= 0) return;
+            if (part.CapLoopCount <= 0)
+                report.Error("CAP_LOOP_COUNT_INVALID", $"Part '{part.Mesh.name}' has cap triangles without a cap loop.");
+            var topology = HalfEdgeTopology.Build(part.Mesh);
+            var unique = new HashSet<MeshEdgeKey>(part.CutBoundaryEdges ?? new List<MeshEdgeKey>());
+            foreach (var edge in unique)
+            {
+                if (!topology.EdgeFaces.TryGetValue(edge, out var faces) || faces.Length != 2)
+                    report.Error(
+                        "CAP_EDGE_OPEN",
+                        $"Part '{part.Mesh.name}' did not close cut edge {edge}; adjacent face count is {faces?.Length ?? 0}.");
+            }
         }
 
         private static void ValidateVertexChannels(

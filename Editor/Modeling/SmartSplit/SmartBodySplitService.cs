@@ -20,6 +20,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         public GameObject PartsRoot { get; internal set; }
         public BodyPartSet BodyPartSet { get; internal set; }
         public SmartBodySplitManifest Manifest { get; internal set; }
+        public string ModularPrefabPath { get; internal set; }
         public IReadOnlyList<string> CreatedAssetPaths { get; internal set; }
         public MeshValidationReport Validation { get; internal set; }
     }
@@ -30,7 +31,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             SmartBodySplitProposal proposal,
             string outputFolder = null,
             string expectedSourceHash = null,
-            string expectedPreviewHash = null)
+            string expectedPreviewHash = null,
+            bool closeCutSurfaces = true)
         {
             if (proposal == null) throw new ArgumentNullException(nameof(proposal));
             if (proposal.SourceMesh == null || proposal.SourceRenderer == null)
@@ -63,7 +65,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 {
                     var part = proposal.Parts[partIndex];
                     if (part.Triangles.Count == 0) continue;
-                    buildParts.Add(BuildPart(proposal, snapshot, part, folder, createdPaths));
+                    buildParts.Add(BuildPart(proposal, snapshot, part, folder, createdPaths, closeCutSurfaces));
                 }
 
                 var validation = SplitFidelityValidator.Validate(proposal, snapshot, buildParts);
@@ -71,6 +73,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                     throw new InvalidOperationException("SPLIT_VALIDATION_FAILED: " + ValidationSummary(validation));
 
                 var skeleton = BuildSkeletonSignature(proposal);
+                var seamUseCounts = BuildSeamUseCounts(buildParts);
                 var definitions = new List<BodyPartDefinition>(buildParts.Count);
                 var manifestParts = new List<SmartBodySplitManifestPart>(buildParts.Count);
                 var sourceMaterials = proposal.SourceRenderer.sharedMaterials;
@@ -78,6 +81,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 {
                     var build = buildParts[i];
                     var definition = new BodyPartDefinition();
+                    var seamAnchors = BuildSeamAnchors(build, snapshot, seamUseCounts);
                     definition.Configure(
                         build.Proposal.SlotId,
                         build.Proposal.Label,
@@ -85,7 +89,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                         sourceMaterials,
                         build.Proposal.Triangles.Count,
                         build.SourceVertexIndices.Count,
-                        build.Proposal.AverageConfidence);
+                        build.Proposal.AverageConfidence,
+                        HashSeamAnchors(seamAnchors),
+                        seamAnchors,
+                        build.CapTriangleCount,
+                        build.CapLoopCount);
                     definitions.Add(definition);
 
                     var manifestPart = new SmartBodySplitManifestPart();
@@ -96,7 +104,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                         build.AssetPath,
                         build.Proposal.Triangles.Count,
                         build.SourceVertexIndices.ToArray(),
-                        build.Proposal.AverageConfidence);
+                        build.Proposal.AverageConfidence,
+                        build.CapTriangleCount,
+                        build.CapLoopCount);
                     manifestParts.Add(manifestPart);
                 }
 
@@ -123,6 +133,12 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 AssetDatabase.CreateAsset(manifest, manifestPath);
                 createdPaths.Add(manifestPath);
 
+                var modularPrefabPath = ModularCharacterPrefabService.Create(
+                    proposal,
+                    buildParts,
+                    bodyPartSet,
+                    folder);
+                createdPaths.Add(modularPrefabPath);
                 partsRoot = CreateSceneParts(proposal, buildParts, bodyPartSet);
                 using (var mutation = new MutationScope("Smart Body Split"))
                 {
@@ -142,6 +158,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                     PartsRoot = partsRoot,
                     BodyPartSet = bodyPartSet,
                     Manifest = manifest,
+                    ModularPrefabPath = modularPrefabPath,
                     CreatedAssetPaths = createdPaths,
                     Validation = validation,
                 };
@@ -160,7 +177,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             MeshChannelSnapshot snapshot,
             SmartBodySplitPartProposal part,
             string folder,
-            List<string> createdPaths)
+            List<string> createdPaths,
+            bool closeCutSurfaces)
         {
             var sourceToDestination = new Dictionary<int, int>();
             var sourceVertexIndices = new List<int>();
@@ -176,6 +194,15 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 indices.Add(GetOrAdd(triangle.B, sourceToDestination, sourceVertexIndices));
                 indices.Add(GetOrAdd(triangle.C, sourceToDestination, sourceVertexIndices));
             }
+
+            var cap = closeCutSurfaces
+                ? SmartBodySplitCapBuilder.AppendCaps(
+                    proposal,
+                    part,
+                    sourceToDestination,
+                    snapshot.Positions,
+                    submeshIndices)
+                : new SmartBodySplitCapBuildResult();
 
             var mesh = new Mesh
             {
@@ -199,6 +226,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 Mesh = mesh,
                 AssetPath = assetPath,
                 SourceVertexIndices = sourceVertexIndices,
+                CapTriangleCount = cap.TriangleCount,
+                CapLoopCount = cap.LoopCount,
+                CutBoundaryEdges = cap.LocalCutEdges,
             };
         }
 
@@ -212,6 +242,62 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             sourceToDestination.Add(sourceIndex, destinationIndex);
             sourceVertexIndices.Add(sourceIndex);
             return destinationIndex;
+        }
+
+        private static Dictionary<int, int> BuildSeamUseCounts(IReadOnlyList<SplitPartBuildData> parts)
+        {
+            var counts = new Dictionary<int, int>();
+            for (int partIndex = 0; partIndex < parts.Count; partIndex++)
+            {
+                var unique = new HashSet<int>(parts[partIndex].SourceVertexIndices);
+                foreach (int sourceVertex in unique)
+                {
+                    counts.TryGetValue(sourceVertex, out var count);
+                    counts[sourceVertex] = count + 1;
+                }
+            }
+            return counts;
+        }
+
+        private static SeamAnchorDefinition[] BuildSeamAnchors(
+            SplitPartBuildData part,
+            MeshChannelSnapshot snapshot,
+            IReadOnlyDictionary<int, int> seamUseCounts)
+        {
+            var anchors = new List<SeamAnchorDefinition>();
+            var unique = new SortedSet<int>(part.SourceVertexIndices);
+            foreach (int sourceVertex in unique)
+            {
+                if (!seamUseCounts.TryGetValue(sourceVertex, out var count) || count < 2) continue;
+                var anchor = new SeamAnchorDefinition();
+                anchor.Configure(
+                    sourceVertex,
+                    snapshot.Positions[sourceVertex],
+                    snapshot.Normals.Length == snapshot.Positions.Length ? snapshot.Normals[sourceVertex] : Vector3.zero);
+                anchors.Add(anchor);
+            }
+            return anchors.ToArray();
+        }
+
+        private static string HashSeamAnchors(IReadOnlyList<SeamAnchorDefinition> anchors)
+        {
+            if (anchors == null || anchors.Count == 0) return string.Empty;
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream))
+            {
+                writer.Write(anchors.Count);
+                for (int i = 0; i < anchors.Count; i++)
+                {
+                    var anchor = anchors[i];
+                    writer.Write(anchor.SourceVertexIndex);
+                    writer.Write(anchor.Position.x); writer.Write(anchor.Position.y); writer.Write(anchor.Position.z);
+                    writer.Write(anchor.Normal.x); writer.Write(anchor.Normal.y); writer.Write(anchor.Normal.z);
+                }
+                writer.Flush();
+                stream.Position = 0;
+                using (var sha = SHA256.Create())
+                    return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", string.Empty).ToLowerInvariant();
+            }
         }
 
         private static Mesh CurrentRendererMesh(Renderer renderer)

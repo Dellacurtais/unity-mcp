@@ -40,6 +40,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                 ["outputFolder"] = new JObject { ["type"] = "string", ["pattern"] = "^Assets(?:/|$)" },
                 ["expectedSourceHash"] = Hash(),
                 ["previewHash"] = Hash(),
+                ["closeCutSurfaces"] = new JObject { ["type"] = "boolean", ["default"] = true },
             },
             ["required"] = new JArray { "expectedSourceHash", "previewHash" },
             ["oneOf"] = new JArray
@@ -56,6 +57,41 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             ["properties"] = new JObject
             {
                 ["manifestAssetPath"] = new JObject { ["type"] = "string", ["pattern"] = "^Assets/.*\\.asset$" },
+            },
+            ["required"] = new JArray { "manifestAssetPath" },
+            ["additionalProperties"] = false,
+        };
+
+        public static JObject RefineInput => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["target"] = SchemaHelpers.TargetRefSchema,
+                ["instanceId"] = new JObject { ["type"] = "integer" },
+                ["preset"] = Preset(),
+                ["subMesh"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["triangleIndex"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["targetPart"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+                ["growRings"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = 64, ["default"] = 0 },
+            },
+            ["required"] = new JArray { "subMesh", "triangleIndex", "targetPart" },
+            ["oneOf"] = new JArray
+            {
+                Required("target", SchemaHelpers.TargetRefSchema),
+                Required("instanceId", new JObject { ["type"] = "integer" }),
+            },
+            ["additionalProperties"] = false,
+        };
+
+        public static JObject RecombineInput => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["manifestAssetPath"] = new JObject { ["type"] = "string", ["pattern"] = "^Assets/.*\\.asset$" },
+                ["outputFolder"] = new JObject { ["type"] = "string", ["pattern"] = "^Assets(?:/|$)" },
+                ["seamTolerance"] = new JObject { ["type"] = "number", ["exclusiveMinimum"] = 0, ["default"] = 0.00001 },
             },
             ["required"] = new JArray { "manifestAssetPath" },
             ["additionalProperties"] = false,
@@ -109,7 +145,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
         private static JObject Preset() => new JObject
         {
             ["type"] = "string",
-            ["enum"] = new JArray("core", "hands_feet"),
+            ["enum"] = new JArray("core", "hands_feet", "modular", "fps", "damage", "clothing"),
             ["default"] = "core",
         };
 
@@ -125,7 +161,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
     {
         public string Name => "mesh_analyze_body_parts";
         public string Description =>
-            "Analyzes a humanoid/static mesh with the core six-part or detailed hands-and-feet preset. " +
+            "Analyzes a humanoid/static mesh with core, hands/feet, modular, FPS, damage or clothing presets. " +
             "Returns sourceHash and previewHash required by mesh_apply_smart_split. Does not modify assets.";
         public JObject InputSchema => SmartBodySplitToolSchemas.TargetInput;
         public JObject OutputSchema => SmartBodySplitToolSchemas.ProposalOutput;
@@ -240,6 +276,31 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
         }
     }
 
+    public sealed class GetSmartBodySplitProposalTool : IMcpTool
+    {
+        public string Name => "mesh_get_split_proposal";
+        public string Description => "Returns the active reviewed split proposal when compatible, otherwise performs deterministic analysis without modifying assets.";
+        public JObject InputSchema => SmartBodySplitToolSchemas.TargetInput;
+        public JObject OutputSchema => SmartBodySplitToolSchemas.ProposalOutput;
+        public bool IsWrite => false;
+        public ToolDescriptor Descriptor => AnalyzeBodyPartsTool.ReadDescriptor(Name, OutputSchema, false);
+
+        public ToolResult Execute(JObject arguments)
+        {
+            var target = ToolTargetResolver.ResolveGameObject(arguments, out var error);
+            if (target == null) return ToolResult.Error("TARGET_NOT_FOUND", error);
+            try
+            {
+                var preset = AnalyzeBodyPartsTool.ReadPreset(arguments);
+                var proposal = SmartBodySplitPreviewController.ActiveProposal;
+                if (proposal == null || proposal.Target != target || proposal.Preset != preset)
+                    proposal = SmartBodySplitAnalyzer.Analyze(target, preset);
+                return ToolResult.Ok("Smart Body Split proposal loaded.", AnalyzeBodyPartsTool.ProposalJson(proposal));
+            }
+            catch (Exception exception) { return AnalyzeBodyPartsTool.ExceptionResult(exception); }
+        }
+    }
+
     public sealed class ApplySmartBodySplitTool : IMcpTool
     {
         public string Name => "mesh_apply_smart_split";
@@ -258,14 +319,18 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                 ["partsRoot"] = SchemaHelpers.TargetRefSchema,
                 ["bodyPartSetPath"] = new JObject { ["type"] = "string" },
                 ["manifestPath"] = new JObject { ["type"] = "string" },
+                ["modularPrefabPath"] = new JObject { ["type"] = "string" },
                 ["partCount"] = new JObject { ["type"] = "integer" },
                 ["createdAssets"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" } },
                 ["valid"] = new JObject { ["type"] = "boolean" },
+                ["capTriangleCount"] = new JObject { ["type"] = "integer" },
+                ["capLoopCount"] = new JObject { ["type"] = "integer" },
             },
             ["required"] = new JArray
             {
                 "splitId", "outputFolder", "preset", "partsRoot", "bodyPartSetPath",
-                "manifestPath", "partCount", "createdAssets", "valid",
+                "manifestPath", "modularPrefabPath", "partCount", "createdAssets", "valid",
+                "capTriangleCount", "capLoopCount",
             },
             ["additionalProperties"] = false,
         };
@@ -295,7 +360,14 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                     proposal,
                     (string)arguments["outputFolder"],
                     (string)arguments["expectedSourceHash"],
-                    (string)arguments["previewHash"]);
+                    (string)arguments["previewHash"],
+                    (bool?)arguments["closeCutSurfaces"] ?? true);
+                int capTriangles = 0, capLoops = 0;
+                for (int i = 0; i < result.Manifest.Parts.Count; i++)
+                {
+                    capTriangles += result.Manifest.Parts[i].CapTriangleCount;
+                    capLoops += result.Manifest.Parts[i].CapLoopCount;
+                }
                 return ToolResult.Ok(
                     $"Created and validated {result.Manifest.Parts.Count} body parts.",
                     new JObject
@@ -306,9 +378,12 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                         ["partsRoot"] = ToolTargetRef.Capture(result.PartsRoot).ToJson(),
                         ["bodyPartSetPath"] = AssetDatabase.GetAssetPath(result.BodyPartSet),
                         ["manifestPath"] = AssetDatabase.GetAssetPath(result.Manifest),
+                        ["modularPrefabPath"] = result.ModularPrefabPath,
                         ["partCount"] = result.Manifest.Parts.Count,
                         ["createdAssets"] = new JArray(result.CreatedAssetPaths),
                         ["valid"] = result.Validation.IsValid,
+                        ["capTriangleCount"] = capTriangles,
+                        ["capLoopCount"] = capLoops,
                     });
             }
             catch (Exception exception)
@@ -348,6 +423,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                             ["triangleCount"] = new JObject { ["type"] = "integer" },
                             ["vertexCount"] = new JObject { ["type"] = "integer" },
                             ["confidence"] = new JObject { ["type"] = "number" },
+                            ["capTriangleCount"] = new JObject { ["type"] = "integer" },
+                            ["capLoopCount"] = new JObject { ["type"] = "integer" },
                         },
                         ["additionalProperties"] = false,
                     },
@@ -380,6 +457,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                     ["triangleCount"] = part.SourceTriangleCount,
                     ["vertexCount"] = part.Mesh != null ? part.Mesh.vertexCount : 0,
                     ["confidence"] = part.Confidence,
+                    ["capTriangleCount"] = part.CapTriangleCount,
+                    ["capLoopCount"] = part.CapLoopCount,
                 });
             }
             return ToolResult.Ok(
@@ -396,6 +475,177 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                     ["parts"] = parts,
                     ["messages"] = new JArray(manifest.ValidationMessages),
                 });
+        }
+    }
+
+    public sealed class CreateModularCharacterPrefabTool : IMcpTool
+    {
+        public string Name => "mesh_create_modular_character_prefab";
+        public string Description => "Creates the validated split assets and modular Prefab through the same approved Smart Body Split transaction.";
+        public JObject InputSchema => SmartBodySplitToolSchemas.ApplyInput;
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["splitId"] = new JObject { ["type"] = "string" },
+                ["modularPrefabPath"] = new JObject { ["type"] = "string" },
+                ["bodyPartSetPath"] = new JObject { ["type"] = "string" },
+                ["manifestPath"] = new JObject { ["type"] = "string" },
+                ["partCount"] = new JObject { ["type"] = "integer" },
+                ["valid"] = new JObject { ["type"] = "boolean" },
+                ["capTriangleCount"] = new JObject { ["type"] = "integer" },
+                ["capLoopCount"] = new JObject { ["type"] = "integer" },
+            },
+            ["required"] = new JArray { "splitId", "modularPrefabPath", "bodyPartSetPath", "manifestPath", "partCount", "valid", "capTriangleCount", "capLoopCount" },
+            ["additionalProperties"] = false,
+        };
+        public bool IsWrite => true;
+        public ToolDescriptor Descriptor => new ToolDescriptor
+        {
+            Name = Name,
+            Category = "mesh",
+            Capabilities = McpCapability.SceneWrite | McpCapability.AssetWrite | McpCapability.Destructive,
+            Risk = McpRiskLevel.High,
+            ConfirmationPolicy = McpConfirmationPolicy.Required,
+            EditorMode = McpEditorMode.EditModeOnly,
+            IsIdempotent = false,
+            ExecutionRequirements = McpExecutionRequirement.MainThread | McpExecutionRequirement.EditorUpdates,
+            HeadlessSafe = true,
+            OutputSchema = OutputSchema,
+        };
+
+        public ToolResult Execute(JObject arguments)
+        {
+            var target = ToolTargetResolver.ResolveGameObject(arguments, out var error);
+            if (target == null) return ToolResult.Error("TARGET_NOT_FOUND", error);
+            try
+            {
+                var proposal = SmartBodySplitAnalyzer.Analyze(target, AnalyzeBodyPartsTool.ReadPreset(arguments));
+                var result = SmartBodySplitService.Apply(
+                    proposal,
+                    (string)arguments["outputFolder"],
+                    (string)arguments["expectedSourceHash"],
+                    (string)arguments["previewHash"],
+                    (bool?)arguments["closeCutSurfaces"] ?? true);
+                int capTriangles = 0, capLoops = 0;
+                for (int i = 0; i < result.Manifest.Parts.Count; i++)
+                {
+                    capTriangles += result.Manifest.Parts[i].CapTriangleCount;
+                    capLoops += result.Manifest.Parts[i].CapLoopCount;
+                }
+                return ToolResult.Ok("Validated modular character Prefab created.", new JObject
+                {
+                    ["splitId"] = result.SplitId,
+                    ["modularPrefabPath"] = result.ModularPrefabPath,
+                    ["bodyPartSetPath"] = AssetDatabase.GetAssetPath(result.BodyPartSet),
+                    ["manifestPath"] = AssetDatabase.GetAssetPath(result.Manifest),
+                    ["partCount"] = result.Manifest.Parts.Count,
+                    ["valid"] = result.Validation.IsValid,
+                    ["capTriangleCount"] = capTriangles,
+                    ["capLoopCount"] = capLoops,
+                });
+            }
+            catch (Exception exception) { return AnalyzeBodyPartsTool.ExceptionResult(exception); }
+        }
+    }
+
+    public sealed class RefineSmartBodySplitBoundaryTool : IMcpTool
+    {
+        public string Name => "mesh_refine_split_boundary";
+        public string Description => "Reassigns a triangle and optional graph rings to another semantic body part, then refreshes the approved visual preview hash.";
+        public JObject InputSchema => SmartBodySplitToolSchemas.RefineInput;
+        public JObject OutputSchema => SmartBodySplitToolSchemas.ProposalOutput;
+        public bool IsWrite => false;
+        public ToolDescriptor Descriptor => AnalyzeBodyPartsTool.ReadDescriptor(Name, OutputSchema, true);
+
+        public ToolResult Execute(JObject arguments)
+        {
+            var target = ToolTargetResolver.ResolveGameObject(arguments, out var error);
+            if (target == null) return ToolResult.Error("TARGET_NOT_FOUND", error);
+            if (!SmartBodySplitPartNames.TryParse((string)arguments["targetPart"], out var part))
+                return ToolResult.Error("PART_NOT_FOUND", $"Unknown Smart Body Split part '{(string)arguments["targetPart"]}'.");
+            try
+            {
+                var preset = AnalyzeBodyPartsTool.ReadPreset(arguments);
+                var proposal = SmartBodySplitPreviewController.ActiveProposal;
+                if (proposal == null || proposal.Target != target || proposal.Preset != preset)
+                    proposal = SmartBodySplitAnalyzer.Analyze(target, preset);
+                SmartBodySplitBoundaryRefiner.Reassign(
+                    proposal,
+                    (int)arguments["subMesh"],
+                    (int)arguments["triangleIndex"],
+                    part,
+                    (int?)arguments["growRings"] ?? 0);
+                SmartBodySplitPreviewController.Show(proposal);
+                SmartBodySplitWindow.Open(target, preset);
+                return ToolResult.Ok("Split boundary refined; review the updated Scene View colors.", AnalyzeBodyPartsTool.ProposalJson(proposal));
+            }
+            catch (Exception exception)
+            {
+                return AnalyzeBodyPartsTool.ExceptionResult(exception);
+            }
+        }
+    }
+
+    public sealed class RecombineSmartBodySplitTool : IMcpTool
+    {
+        public string Name => "mesh_recombine_split";
+        public string Description => "Recombines a validated split manifest into a new editable mesh asset, rejecting divergent seam vertices.";
+        public JObject InputSchema => SmartBodySplitToolSchemas.RecombineInput;
+        public JObject OutputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject
+            {
+                ["assetPath"] = new JObject { ["type"] = "string" },
+                ["meshName"] = new JObject { ["type"] = "string" },
+                ["vertexCount"] = new JObject { ["type"] = "integer" },
+                ["updatedVertexCount"] = new JObject { ["type"] = "integer" },
+                ["valid"] = new JObject { ["type"] = "boolean" },
+            },
+            ["required"] = new JArray { "assetPath", "meshName", "vertexCount", "updatedVertexCount", "valid" },
+            ["additionalProperties"] = false,
+        };
+        public bool IsWrite => true;
+        public ToolDescriptor Descriptor => new ToolDescriptor
+        {
+            Name = Name,
+            Category = "mesh",
+            Capabilities = McpCapability.AssetWrite,
+            Risk = McpRiskLevel.Medium,
+            ConfirmationPolicy = McpConfirmationPolicy.Required,
+            EditorMode = McpEditorMode.EditModeOnly,
+            IsIdempotent = false,
+            ExecutionRequirements = McpExecutionRequirement.MainThread,
+            HeadlessSafe = true,
+            OutputSchema = OutputSchema,
+        };
+
+        public ToolResult Execute(JObject arguments)
+        {
+            var path = (string)arguments["manifestAssetPath"];
+            var manifest = AssetDatabase.LoadAssetAtPath<SmartBodySplitManifest>(path);
+            if (manifest == null) return ToolResult.Error("MANIFEST_NOT_FOUND", $"No Smart Body Split manifest exists at '{path}'.");
+            try
+            {
+                var result = SmartBodySplitRecombineService.Recombine(
+                    manifest,
+                    (string)arguments["outputFolder"],
+                    (float?)arguments["seamTolerance"] ?? 1e-5f);
+                return ToolResult.Ok("Split parts recombined into a new mesh asset.", new JObject
+                {
+                    ["assetPath"] = result.AssetPath,
+                    ["meshName"] = result.Mesh.name,
+                    ["vertexCount"] = result.Mesh.vertexCount,
+                    ["updatedVertexCount"] = result.UpdatedVertexCount,
+                    ["valid"] = result.Validation.IsValid,
+                });
+            }
+            catch (Exception exception)
+            {
+                return AnalyzeBodyPartsTool.ExceptionResult(exception);
+            }
         }
     }
 }

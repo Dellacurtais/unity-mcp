@@ -1046,7 +1046,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             }
 
             var scroller = _transcriptScroll.verticalScroller;
-            var end = scroller.highValue;
+            var end = CoderChatScrollState.NormalizeEnd(scroller.highValue);
             scroller.value = end;
             _transcriptScroll.scrollOffset = new Vector2(_transcriptScroll.scrollOffset.x, end);
             _transcriptScroll.schedule.Execute(CompleteScrollCorrection);
@@ -1231,7 +1231,14 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
         internal static float DistanceFromEnd(float value, float highValue)
         {
-            return Mathf.Max(0f, highValue - value);
+            return Mathf.Max(0f, NormalizeEnd(highValue) - Mathf.Max(0f, value));
+        }
+
+        internal static float NormalizeEnd(float highValue)
+        {
+            return float.IsNaN(highValue) || float.IsInfinity(highValue)
+                ? 0f
+                : Mathf.Max(0f, highValue);
         }
     }
 }
