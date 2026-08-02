@@ -88,7 +88,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                         build.Mesh,
                         sourceMaterials,
                         build.Proposal.Triangles.Count,
-                        build.SourceVertexIndices.Count,
+                        CountMappedSourceVertices(build.SourceVertexIndices),
                         build.Proposal.AverageConfidence,
                         HashSeamAnchors(seamAnchors),
                         seamAnchors,
@@ -195,13 +195,19 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 indices.Add(GetOrAdd(triangle.C, sourceToDestination, sourceVertexIndices));
             }
 
+            var vertexSources = new List<MeshVertexSource>(sourceVertexIndices.Count + 1);
+            for (int vertex = 0; vertex < sourceVertexIndices.Count; vertex++)
+                vertexSources.Add(MeshVertexSource.Copy(sourceVertexIndices[vertex]));
+
             var cap = closeCutSurfaces
                 ? SmartBodySplitCapBuilder.AppendCaps(
                     proposal,
                     part,
                     sourceToDestination,
                     snapshot.Positions,
-                    submeshIndices)
+                    submeshIndices,
+                    vertexSources,
+                    sourceVertexIndices)
                 : new SmartBodySplitCapBuildResult();
 
             var mesh = new Mesh
@@ -211,7 +217,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                     ? IndexFormat.UInt32
                     : IndexFormat.UInt16,
             };
-            snapshot.ApplyVertexChannels(mesh, sourceVertexIndices);
+            MeshChannelTransfer.ApplyInterpolated(snapshot, mesh, vertexSources);
             mesh.subMeshCount = proposal.SourceMesh.subMeshCount;
             for (int submesh = 0; submesh < submeshIndices.Length; submesh++)
                 mesh.SetTriangles(submeshIndices[submesh], submesh, false);
@@ -244,6 +250,14 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             return destinationIndex;
         }
 
+        private static int CountMappedSourceVertices(IReadOnlyList<int> sourceVertexIndices)
+        {
+            int count = 0;
+            for (int i = 0; i < sourceVertexIndices.Count; i++)
+                if (sourceVertexIndices[i] >= 0) count++;
+            return count;
+        }
+
         private static Dictionary<int, int> BuildSeamUseCounts(IReadOnlyList<SplitPartBuildData> parts)
         {
             var counts = new Dictionary<int, int>();
@@ -252,6 +266,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 var unique = new HashSet<int>(parts[partIndex].SourceVertexIndices);
                 foreach (int sourceVertex in unique)
                 {
+                    if (sourceVertex < 0) continue;
                     counts.TryGetValue(sourceVertex, out var count);
                     counts[sourceVertex] = count + 1;
                 }
@@ -268,6 +283,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             var unique = new SortedSet<int>(part.SourceVertexIndices);
             foreach (int sourceVertex in unique)
             {
+                if (sourceVertex < 0) continue;
                 if (!seamUseCounts.TryGetValue(sourceVertex, out var count) || count < 2) continue;
                 var anchor = new SeamAnchorDefinition();
                 anchor.Configure(

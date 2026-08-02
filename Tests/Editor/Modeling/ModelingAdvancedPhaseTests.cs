@@ -425,6 +425,105 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
             Assert.That(mesh.triangles.Length / 3, Is.EqualTo(8), "Source mesh must remain untouched.");
         }
 
+        [Test]
+        public void SmartSplit_ClosesCutLoopAcrossDuplicatedFbxSeamVertices()
+        {
+            string folder = $"Assets/__AssetModelerSeamCaps_{Guid.NewGuid():N}";
+            AssetModelerAssetPaths.ValidateAndEnsureFolder(folder);
+            _assetFolders.Add(folder);
+            var root = new GameObject("SeamedOctahedron");
+            _objects.Add(root);
+            var mesh = new Mesh { name = "SeamedOctahedron" };
+            _objects.Add(mesh);
+            mesh.vertices = new[]
+            {
+                new Vector3(0f, 1f, 0f),
+                new Vector3(0f, -1f, 0f),
+                new Vector3(1f, 0f, 0f),
+                new Vector3(0f, 0f, 1f),
+                new Vector3(-1f, 0f, 0f),
+                new Vector3(0f, 0f, -1f),
+                new Vector3(1f, 0f, 0f), // FBX UV/normal seam duplicate of vertex 2.
+            };
+            mesh.triangles = new[]
+            {
+                0, 3, 2, 0, 4, 3, 0, 5, 4, 0, 6, 5,
+                1, 2, 3, 1, 3, 4, 1, 4, 5, 1, 5, 2,
+            };
+            mesh.uv = new[]
+            {
+                new Vector2(0.5f, 1f), new Vector2(0.5f, 0f),
+                new Vector2(1f, 0.5f), new Vector2(0.75f, 0.5f),
+                new Vector2(0f, 0.5f), new Vector2(0.25f, 0.5f),
+                new Vector2(0f, 0.5f),
+            };
+            mesh.bindposes = new[] { Matrix4x4.identity, Matrix4x4.Translate(Vector3.right) };
+            var boneWeights = new BoneWeight[mesh.vertexCount];
+            for (int vertex = 0; vertex < boneWeights.Length; vertex++)
+                boneWeights[vertex] = new BoneWeight { boneIndex0 = vertex % 2, weight0 = 1f };
+            mesh.boneWeights = boneWeights;
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            var blendVertices = new Vector3[mesh.vertexCount];
+            var blendNormals = new Vector3[mesh.vertexCount];
+            var blendTangents = new Vector3[mesh.vertexCount];
+            for (int vertex = 0; vertex < blendVertices.Length; vertex++)
+                blendVertices[vertex] = Vector3.up * (vertex + 1) * 0.01f;
+            mesh.AddBlendShapeFrame("Pulse", 100f, blendVertices, blendNormals, blendTangents);
+            root.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var renderer = root.AddComponent<MeshRenderer>();
+            var proposal = new SmartBodySplitProposal
+            {
+                Target = root,
+                SourceRenderer = renderer,
+                SourceMesh = mesh,
+                SourceHash = MeshFingerprint.Compute(mesh),
+                RigType = "None",
+                Preset = SmartBodySplitPreset.Core,
+            };
+            var upper = new SmartBodySplitPartProposal(SemanticBodyPart.Head);
+            var lower = new SmartBodySplitPartProposal(SemanticBodyPart.Torso);
+            proposal.Parts.Add(upper);
+            proposal.Parts.Add(lower);
+            var indices = mesh.triangles;
+            for (int triangle = 0; triangle < 8; triangle++)
+            {
+                var destination = triangle < 4 ? upper : lower;
+                int offset = triangle * 3;
+                destination.Triangles.Add(new SourceTriangle(
+                    0, triangle, indices[offset], indices[offset + 1], indices[offset + 2], 1f));
+            }
+            proposal.FinalizeProposal();
+
+            var result = SmartBodySplitService.Apply(
+                proposal, folder, proposal.SourceHash, proposal.PreviewHash, true);
+            _objects.Add(result.PartsRoot);
+
+            Assert.That(result.Validation.IsValid, Is.True);
+            SmartBodySplitManifestPart seamedPart = null;
+            for (int i = 0; i < result.Manifest.Parts.Count; i++)
+                if (result.Manifest.Parts[i].CapTriangleCount == 4) seamedPart = result.Manifest.Parts[i];
+            Assert.That(seamedPart, Is.Not.Null, "The UV seam must select the interpolated fan fallback.");
+            Assert.That(seamedPart.CapLoopCount, Is.EqualTo(1));
+            Assert.That(seamedPart.Mesh.vertexCount, Is.EqualTo(7));
+            Assert.That(seamedPart.Mesh.triangles.Length / 3, Is.EqualTo(8));
+            Assert.That(seamedPart.SourceVertexIndices, Does.Contain(-1), "Generated cap centers must not impersonate source vertices.");
+            Assert.That(seamedPart.Mesh.uv.Length, Is.EqualTo(seamedPart.Mesh.vertexCount));
+            Assert.That(seamedPart.Mesh.blendShapeCount, Is.EqualTo(1));
+            int capCenter = -1;
+            for (int vertex = 0; vertex < seamedPart.SourceVertexIndices.Count; vertex++)
+                if (seamedPart.SourceVertexIndices[vertex] < 0) { capCenter = vertex; break; }
+            var capSnapshot = MeshChannelSnapshot.Capture(seamedPart.Mesh);
+            int weightStart = capSnapshot.BoneWeightOffsets[capCenter];
+            int weightEnd = capSnapshot.BoneWeightOffsets[capCenter + 1];
+            float weightSum = 0f;
+            for (int weightIndex = weightStart; weightIndex < weightEnd; weightIndex++)
+                weightSum += capSnapshot.BoneWeights[weightIndex].weight;
+            Assert.That(weightEnd - weightStart, Is.EqualTo(2), "The generated center must interpolate both rig influences.");
+            Assert.That(weightSum, Is.EqualTo(1f).Within(SplitFidelityValidator.BoneWeightTolerance));
+            Assert.That(mesh.vertexCount, Is.EqualTo(7), "Source mesh must remain untouched.");
+        }
+
         private MeshEditDocument Document(Mesh source, out Mesh working)
         {
             working = UnityEngine.Object.Instantiate(source);

@@ -19,13 +19,23 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             public readonly SemanticBodyPart Part;
             public readonly int From;
             public readonly int To;
+            public readonly int CanonicalFrom;
+            public readonly int CanonicalTo;
             public readonly int SubMesh;
 
-            public EdgeUse(SemanticBodyPart part, int from, int to, int subMesh)
+            public EdgeUse(
+                SemanticBodyPart part,
+                int from,
+                int to,
+                int canonicalFrom,
+                int canonicalTo,
+                int subMesh)
             {
                 Part = part;
                 From = from;
                 To = to;
+                CanonicalFrom = canonicalFrom;
+                CanonicalTo = canonicalTo;
                 SubMesh = subMesh;
             }
         }
@@ -34,7 +44,42 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
         {
             public int From;
             public int To;
+            public int CanonicalFrom;
+            public int CanonicalTo;
             public int SubMesh;
+        }
+
+        private sealed class BoundaryLoop
+        {
+            public readonly List<BoundaryEdge> Edges = new List<BoundaryEdge>();
+            public int SubMesh;
+            public bool HasVertexSeam;
+        }
+
+        private readonly struct SpatialCell : IEquatable<SpatialCell>
+        {
+            private readonly int _x;
+            private readonly int _y;
+            private readonly int _z;
+
+            public SpatialCell(int x, int y, int z)
+            {
+                _x = x;
+                _y = y;
+                _z = z;
+            }
+
+            public bool Equals(SpatialCell other) => _x == other._x && _y == other._y && _z == other._z;
+            public override bool Equals(object obj) => obj is SpatialCell other && Equals(other);
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    int hash = _x;
+                    hash = hash * 397 ^ _y;
+                    return hash * 397 ^ _z;
+                }
+            }
         }
 
         public static SmartBodySplitCapBuildResult AppendCaps(
@@ -42,44 +87,73 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             SmartBodySplitPartProposal part,
             IReadOnlyDictionary<int, int> sourceToDestination,
             IReadOnlyList<Vector3> sourcePositions,
-            IReadOnlyList<List<int>> subMeshIndices)
+            IReadOnlyList<List<int>> subMeshIndices,
+            List<MeshVertexSource> vertexSources,
+            List<int> sourceVertexIndices)
         {
             if (proposal == null) throw new ArgumentNullException(nameof(proposal));
             if (part == null) throw new ArgumentNullException(nameof(part));
+            if (sourcePositions == null) throw new ArgumentNullException(nameof(sourcePositions));
+            if (vertexSources == null) throw new ArgumentNullException(nameof(vertexSources));
+            if (sourceVertexIndices == null) throw new ArgumentNullException(nameof(sourceVertexIndices));
             var result = new SmartBodySplitCapBuildResult();
-            var cutEdges = FindCutEdges(proposal, part.Part);
+            var canonicalVertices = BuildCanonicalVertices(sourcePositions);
+            var cutEdges = FindCutEdges(proposal, part.Part, canonicalVertices);
             if (cutEdges.Count == 0) return result;
             var loops = BuildLoops(cutEdges);
             for (int loopIndex = 0; loopIndex < loops.Count; loopIndex++)
             {
                 var loop = loops[loopIndex];
-                if (!TryTriangulate(loop.vertices, sourcePositions, out var triangles, out var reason))
-                    throw new InvalidOperationException(
-                        $"SPLIT_CAP_TRIANGULATION_FAILED: part '{part.SlotId}', loop {loopIndex}: {reason}");
-                int subMesh = Mathf.Clamp(loop.subMesh, 0, subMeshIndices.Count - 1);
+                int subMesh = Mathf.Clamp(loop.SubMesh, 0, subMeshIndices.Count - 1);
                 var output = subMeshIndices[subMesh];
-                for (int triangle = 0; triangle < triangles.Count; triangle += 3)
+                if (loop.HasVertexSeam)
                 {
-                    // Boundary edges follow the source face winding. The cap must use
-                    // the opposite winding so every cut edge receives an opposing face.
-                    output.Add(sourceToDestination[triangles[triangle]]);
-                    output.Add(sourceToDestination[triangles[triangle + 2]]);
-                    output.Add(sourceToDestination[triangles[triangle + 1]]);
-                    result.TriangleCount++;
+                    int center = AppendInterpolatedCenter(loop, vertexSources, sourceVertexIndices);
+                    for (int edgeIndex = 0; edgeIndex < loop.Edges.Count; edgeIndex++)
+                    {
+                        var edge = loop.Edges[edgeIndex];
+                        // The target face uses From -> To. From -> center -> To gives
+                        // the cap the opposing To -> From boundary edge.
+                        output.Add(sourceToDestination[edge.From]);
+                        output.Add(center);
+                        output.Add(sourceToDestination[edge.To]);
+                        result.TriangleCount++;
+                    }
                 }
-                for (int edge = 0; edge < loop.vertices.Count; edge++)
+                else
                 {
-                    int next = (edge + 1) % loop.vertices.Count;
+                    var vertices = new List<int>(loop.Edges.Count);
+                    for (int edgeIndex = 0; edgeIndex < loop.Edges.Count; edgeIndex++)
+                        vertices.Add(loop.Edges[edgeIndex].From);
+                    if (!TryTriangulate(vertices, sourcePositions, out var triangles, out var reason))
+                        throw new InvalidOperationException(
+                            $"SPLIT_CAP_TRIANGULATION_FAILED: part '{part.SlotId}', loop {loopIndex}: {reason}");
+                    for (int triangle = 0; triangle < triangles.Count; triangle += 3)
+                    {
+                        // Boundary edges follow the source face winding. The cap must use
+                        // the opposite winding so every cut edge receives an opposing face.
+                        output.Add(sourceToDestination[triangles[triangle]]);
+                        output.Add(sourceToDestination[triangles[triangle + 2]]);
+                        output.Add(sourceToDestination[triangles[triangle + 1]]);
+                        result.TriangleCount++;
+                    }
+                }
+                for (int edgeIndex = 0; edgeIndex < loop.Edges.Count; edgeIndex++)
+                {
+                    var edge = loop.Edges[edgeIndex];
                     result.LocalCutEdges.Add(new MeshEdgeKey(
-                        sourceToDestination[loop.vertices[edge]],
-                        sourceToDestination[loop.vertices[next]]));
+                        sourceToDestination[edge.From],
+                        sourceToDestination[edge.To]));
                 }
                 result.LoopCount++;
             }
             return result;
         }
 
-        private static List<BoundaryEdge> FindCutEdges(SmartBodySplitProposal proposal, SemanticBodyPart targetPart)
+        private static List<BoundaryEdge> FindCutEdges(
+            SmartBodySplitProposal proposal,
+            SemanticBodyPart targetPart,
+            IReadOnlyList<int> canonicalVertices)
         {
             var uses = new Dictionary<MeshEdgeKey, List<EdgeUse>>();
             for (int partIndex = 0; partIndex < proposal.Parts.Count; partIndex++)
@@ -88,32 +162,43 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 for (int triangleIndex = 0; triangleIndex < part.Triangles.Count; triangleIndex++)
                 {
                     var triangle = part.Triangles[triangleIndex];
-                    AddUse(uses, part.Part, triangle.A, triangle.B, triangle.SubMesh);
-                    AddUse(uses, part.Part, triangle.B, triangle.C, triangle.SubMesh);
-                    AddUse(uses, part.Part, triangle.C, triangle.A, triangle.SubMesh);
+                    AddUse(uses, part.Part, triangle.A, triangle.B, triangle.SubMesh, canonicalVertices);
+                    AddUse(uses, part.Part, triangle.B, triangle.C, triangle.SubMesh, canonicalVertices);
+                    AddUse(uses, part.Part, triangle.C, triangle.A, triangle.SubMesh, canonicalVertices);
                 }
             }
 
             var result = new List<BoundaryEdge>();
+            var added = new HashSet<MeshEdgeKey>();
             foreach (var pair in uses)
             {
-                bool hasTarget = false, hasOther = false;
-                EdgeUse target = default;
+                bool hasOther = false;
+                for (int i = 0; i < pair.Value.Count; i++)
+                    if (pair.Value[i].Part != targetPart) { hasOther = true; break; }
+                if (!hasOther) continue;
                 for (int i = 0; i < pair.Value.Count; i++)
                 {
-                    if (pair.Value[i].Part == targetPart)
+                    var target = pair.Value[i];
+                    if (target.Part != targetPart || !added.Add(new MeshEdgeKey(target.From, target.To))) continue;
+                    result.Add(new BoundaryEdge
                     {
-                        if (!hasTarget) target = pair.Value[i];
-                        hasTarget = true;
-                    }
-                    else hasOther = true;
+                        From = target.From,
+                        To = target.To,
+                        CanonicalFrom = target.CanonicalFrom,
+                        CanonicalTo = target.CanonicalTo,
+                        SubMesh = target.SubMesh,
+                    });
                 }
-                if (!hasTarget || !hasOther) continue;
-                result.Add(new BoundaryEdge { From = target.From, To = target.To, SubMesh = target.SubMesh });
             }
             result.Sort((left, right) =>
             {
-                int compare = Math.Min(left.From, left.To).CompareTo(Math.Min(right.From, right.To));
+                int compare = Math.Min(left.CanonicalFrom, left.CanonicalTo)
+                    .CompareTo(Math.Min(right.CanonicalFrom, right.CanonicalTo));
+                if (compare != 0) return compare;
+                compare = Math.Max(left.CanonicalFrom, left.CanonicalTo)
+                    .CompareTo(Math.Max(right.CanonicalFrom, right.CanonicalTo));
+                if (compare != 0) return compare;
+                compare = Math.Min(left.From, left.To).CompareTo(Math.Min(right.From, right.To));
                 return compare != 0 ? compare : Math.Max(left.From, left.To).CompareTo(Math.Max(right.From, right.To));
             });
             return result;
@@ -124,20 +209,24 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             SemanticBodyPart part,
             int from,
             int to,
-            int subMesh)
+            int subMesh,
+            IReadOnlyList<int> canonicalVertices)
         {
-            var key = new MeshEdgeKey(from, to);
+            int canonicalFrom = canonicalVertices[from];
+            int canonicalTo = canonicalVertices[to];
+            if (canonicalFrom == canonicalTo) return;
+            var key = new MeshEdgeKey(canonicalFrom, canonicalTo);
             if (!uses.TryGetValue(key, out var list)) uses.Add(key, list = new List<EdgeUse>(2));
-            list.Add(new EdgeUse(part, from, to, subMesh));
+            list.Add(new EdgeUse(part, from, to, canonicalFrom, canonicalTo, subMesh));
         }
 
-        private static List<(List<int> vertices, int subMesh)> BuildLoops(IReadOnlyList<BoundaryEdge> edges)
+        private static List<BoundaryLoop> BuildLoops(IReadOnlyList<BoundaryEdge> edges)
         {
             var incident = new Dictionary<int, List<int>>();
             for (int i = 0; i < edges.Count; i++)
             {
-                AddIncident(incident, edges[i].From, i);
-                AddIncident(incident, edges[i].To, i);
+                AddIncident(incident, edges[i].CanonicalFrom, i);
+                AddIncident(incident, edges[i].CanonicalTo, i);
             }
             foreach (var pair in incident)
                 if (pair.Value.Count != 2)
@@ -145,14 +234,15 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                         $"SPLIT_CAP_BOUNDARY_AMBIGUOUS: cut vertex {pair.Key} has degree {pair.Value.Count}; refine the split boundary before closing it.");
 
             var used = new bool[edges.Count];
-            var loops = new List<(List<int> vertices, int subMesh)>();
+            var loops = new List<BoundaryLoop>();
             for (int startEdge = 0; startEdge < edges.Count; startEdge++)
             {
                 if (used[startEdge]) continue;
                 var first = edges[startEdge];
-                var vertices = new List<int> { first.From };
+                var loop = new BoundaryLoop();
                 var subMeshVotes = new Dictionary<int, int>();
-                int currentVertex = first.To;
+                int startVertex = first.CanonicalFrom;
+                int currentVertex = startVertex;
                 int currentEdge = startEdge;
                 int guard = 0;
                 while (guard++ <= edges.Count)
@@ -160,23 +250,117 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                     if (used[currentEdge])
                         throw new InvalidOperationException("SPLIT_CAP_BOUNDARY_REPEATED: cut loop reused an edge.");
                     used[currentEdge] = true;
-                    Vote(subMeshVotes, edges[currentEdge].SubMesh);
-                    if (currentVertex == vertices[0]) break;
-                    vertices.Add(currentVertex);
+                    var source = edges[currentEdge];
+                    var oriented = source.CanonicalFrom == currentVertex
+                        ? source
+                        : new BoundaryEdge
+                        {
+                            From = source.To,
+                            To = source.From,
+                            CanonicalFrom = source.CanonicalTo,
+                            CanonicalTo = source.CanonicalFrom,
+                            SubMesh = source.SubMesh,
+                        };
+                    loop.Edges.Add(oriented);
+                    Vote(subMeshVotes, oriented.SubMesh);
+                    currentVertex = oriented.CanonicalTo;
+                    if (currentVertex == startVertex) break;
                     var candidates = incident[currentVertex];
                     int nextEdge = candidates[0] == currentEdge ? candidates[1] : candidates[0];
                     if (used[nextEdge])
                         throw new InvalidOperationException("SPLIT_CAP_BOUNDARY_OPEN: cut boundary did not form a closed loop.");
-                    var next = edges[nextEdge];
-                    currentVertex = next.From == currentVertex ? next.To : next.From;
                     currentEdge = nextEdge;
                 }
-                if (currentVertex != vertices[0] || vertices.Count < 3)
+                if (currentVertex != startVertex || loop.Edges.Count < 3)
                     throw new InvalidOperationException("SPLIT_CAP_BOUNDARY_OPEN: cut boundary did not form a valid closed loop.");
-                loops.Add((vertices, MostFrequent(subMeshVotes)));
+                for (int edgeIndex = 0; edgeIndex < loop.Edges.Count; edgeIndex++)
+                {
+                    var current = loop.Edges[edgeIndex];
+                    var next = loop.Edges[(edgeIndex + 1) % loop.Edges.Count];
+                    if (current.To != next.From)
+                    {
+                        loop.HasVertexSeam = true;
+                        break;
+                    }
+                }
+                loop.SubMesh = MostFrequent(subMeshVotes);
+                loops.Add(loop);
             }
             return loops;
         }
+
+        private static int AppendInterpolatedCenter(
+            BoundaryLoop loop,
+            List<MeshVertexSource> vertexSources,
+            List<int> sourceVertexIndices)
+        {
+            var unique = new SortedSet<int>();
+            for (int edgeIndex = 0; edgeIndex < loop.Edges.Count; edgeIndex++)
+            {
+                unique.Add(loop.Edges[edgeIndex].From);
+                unique.Add(loop.Edges[edgeIndex].To);
+            }
+            var indices = new int[unique.Count];
+            unique.CopyTo(indices);
+            var weights = new float[indices.Length];
+            float weight = 1f / indices.Length;
+            for (int i = 0; i < weights.Length; i++) weights[i] = weight;
+            int destination = vertexSources.Count;
+            vertexSources.Add(new MeshVertexSource(indices, weights));
+            sourceVertexIndices.Add(-1);
+            return destination;
+        }
+
+        private static int[] BuildCanonicalVertices(IReadOnlyList<Vector3> positions)
+        {
+            var result = new int[positions.Count];
+            if (positions.Count == 0) return result;
+            var minimum = positions[0];
+            var maximum = positions[0];
+            for (int i = 1; i < positions.Count; i++)
+            {
+                minimum = Vector3.Min(minimum, positions[i]);
+                maximum = Vector3.Max(maximum, positions[i]);
+            }
+            float tolerance = Mathf.Max((maximum - minimum).magnitude * 1e-7f, 1e-7f);
+            float toleranceSquared = tolerance * tolerance;
+            var representatives = new List<int>();
+            var cells = new Dictionary<SpatialCell, List<int>>();
+            for (int vertex = 0; vertex < positions.Count; vertex++)
+            {
+                var cell = Cell(positions[vertex], tolerance);
+                int canonical = -1;
+                for (int x = -1; x <= 1; x++)
+                for (int y = -1; y <= 1; y++)
+                for (int z = -1; z <= 1; z++)
+                {
+                    var neighbor = new SpatialCell(cell.x + x, cell.y + y, cell.z + z);
+                    if (!cells.TryGetValue(neighbor, out var candidates)) continue;
+                    for (int candidateIndex = 0; candidateIndex < candidates.Count; candidateIndex++)
+                    {
+                        int candidate = candidates[candidateIndex];
+                        if ((positions[vertex] - positions[representatives[candidate]]).sqrMagnitude > toleranceSquared) continue;
+                        if (canonical < 0 || candidate < canonical) canonical = candidate;
+                    }
+                }
+                if (canonical < 0)
+                {
+                    canonical = representatives.Count;
+                    representatives.Add(vertex);
+                    var key = new SpatialCell(cell.x, cell.y, cell.z);
+                    if (!cells.TryGetValue(key, out var list)) cells.Add(key, list = new List<int>());
+                    list.Add(canonical);
+                }
+                result[vertex] = canonical;
+            }
+            return result;
+        }
+
+        private static (int x, int y, int z) Cell(Vector3 position, float tolerance)
+            => (
+                Mathf.FloorToInt(position.x / tolerance),
+                Mathf.FloorToInt(position.y / tolerance),
+                Mathf.FloorToInt(position.z / tolerance));
 
         private static void AddIncident(IDictionary<int, List<int>> incident, int vertex, int edge)
         {

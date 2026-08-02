@@ -42,8 +42,17 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
             destination.SetVertices(Interpolate(source.Positions, vertices, Vector3.zero));
             if (source.Normals.Length == source.Positions.Length)
             {
-                var normals = Interpolate(source.Normals, vertices, Vector3.zero);
-                for (int i = 0; i < normals.Count; i++) normals[i] = normals[i].sqrMagnitude > 1e-12f ? normals[i].normalized : Vector3.up;
+                var normals = new List<Vector3>(vertices.Count);
+                for (int i = 0; i < vertices.Count; i++)
+                {
+                    if (TryGetExactCopy(vertices[i], out int sourceIndex))
+                    {
+                        normals.Add(source.Normals[sourceIndex]);
+                        continue;
+                    }
+                    var value = Weighted(source.Normals, vertices[i], Vector3.zero);
+                    normals.Add(value.sqrMagnitude > 1e-12f ? value.normalized : Vector3.up);
+                }
                 destination.SetNormals(normals);
             }
             if (source.Tangents.Length == source.Positions.Length)
@@ -51,6 +60,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
                 var tangents = new List<Vector4>(vertices.Count);
                 for (int i = 0; i < vertices.Count; i++)
                 {
+                    if (TryGetExactCopy(vertices[i], out int sourceIndex))
+                    {
+                        tangents.Add(source.Tangents[sourceIndex]);
+                        continue;
+                    }
                     var value = Weighted(source.Tangents, vertices[i], Vector4.zero);
                     var xyz = new Vector3(value.x, value.y, value.z);
                     if (xyz.sqrMagnitude > 1e-12f) xyz.Normalize();
@@ -250,6 +264,19 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
             if (index < 0 || index >= length)
                 throw new ArgumentOutOfRangeException(nameof(index), index, "Vertex source index is outside the captured mesh.");
             return index;
+        }
+
+        private static bool TryGetExactCopy(MeshVertexSource source, out int index)
+        {
+            if (source.Indices.Length == 1
+                && source.Weights.Length == 1
+                && source.Weights[0].Equals(1f))
+            {
+                index = source.Indices[0];
+                return true;
+            }
+            index = -1;
+            return false;
         }
     }
 }

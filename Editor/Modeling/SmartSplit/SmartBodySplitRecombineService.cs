@@ -50,7 +50,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                     for (int local = 0; local < part.SourceVertexIndices.Count; local++)
                     {
                         int source = part.SourceVertexIndices[local];
-                        if (source < 0 || source >= positions.Length)
+                        // Negative entries represent vertices generated only to close a
+                        // split cap. Recombination restores the original topology, so
+                        // those vertices intentionally have no source destination.
+                        if (source < 0) continue;
+                        if (source >= positions.Length)
                             throw new InvalidOperationException($"PART_VERTEX_MAP_INVALID: '{part.SlotId}' references source vertex {source}.");
                         if (assigned[source] && (positions[source] - partPositions[local]).sqrMagnitude > seamTolerance * seamTolerance)
                             throw new InvalidOperationException(

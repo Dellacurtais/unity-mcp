@@ -107,7 +107,13 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             for (int destinationIndex = 0; destinationIndex < part.SourceVertexIndices.Count; destinationIndex++)
             {
                 int sourceIndex = part.SourceVertexIndices[destinationIndex];
-                if (sourceIndex < 0 || sourceIndex >= source.Positions.Length)
+                if (sourceIndex < 0)
+                {
+                    if (!IsFinite(vertices[destinationIndex]))
+                        report.Error("GENERATED_POSITION_INVALID", $"Part '{part.Mesh.name}' generated a non-finite cap vertex.");
+                    continue;
+                }
+                if (sourceIndex >= source.Positions.Length)
                 {
                     report.Error("SOURCE_VERTEX_OUT_OF_RANGE", $"Part '{part.Mesh.name}' maps to source vertex {sourceIndex}.");
                     continue;
@@ -141,8 +147,15 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 }
                 for (int destinationIndex = 0; destinationIndex < destinationUv.Count; destinationIndex++)
                 {
-                    var expected = sourceUv.Values[part.SourceVertexIndices[destinationIndex]];
                     var actual = destinationUv[destinationIndex];
+                    int sourceIndex = part.SourceVertexIndices[destinationIndex];
+                    if (sourceIndex < 0)
+                    {
+                        if (!IsFinite(actual))
+                            report.Error("GENERATED_UV_INVALID", $"Part '{part.Mesh.name}' generated a non-finite UV{channel} value.");
+                        continue;
+                    }
+                    var expected = sourceUv.Values[sourceIndex];
                     if (!UvEquals(actual, expected, sourceUv.Dimension))
                     {
                         report.Error("UV_CHANGED", $"Part '{part.Mesh.name}' changed UV{channel} at vertex {destinationIndex}.");
@@ -169,6 +182,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             for (int destinationVertex = 0; destinationVertex < part.SourceVertexIndices.Count; destinationVertex++)
             {
                 int sourceVertex = part.SourceVertexIndices[destinationVertex];
+                if (sourceVertex < 0) continue;
                 int sourceStart = source.BoneWeightOffsets[sourceVertex];
                 int sourceCount = source.BoneWeightOffsets[sourceVertex + 1] - sourceStart;
                 int destinationStart = destination.BoneWeightOffsets[destinationVertex];
@@ -304,6 +318,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                     for (int destinationVertex = 0; destinationVertex < part.SourceVertexIndices.Count; destinationVertex++)
                     {
                         int sourceVertex = part.SourceVertexIndices[destinationVertex];
+                        if (sourceVertex < 0) continue;
                         var frame = shape.Frames[frameIndex];
                         if (!actualVertices[destinationVertex].Equals(frame.DeltaVertices[sourceVertex])
                             || !actualNormals[destinationVertex].Equals(frame.DeltaNormals[sourceVertex])
@@ -323,5 +338,13 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
             if (dimension >= 3 && !actual.z.Equals(expected.z)) return false;
             return dimension < 4 || actual.w.Equals(expected.w);
         }
+
+        private static bool IsFinite(Vector3 value)
+            => IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+
+        private static bool IsFinite(Vector4 value)
+            => IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z) && IsFinite(value.w);
+
+        private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
     }
 }
