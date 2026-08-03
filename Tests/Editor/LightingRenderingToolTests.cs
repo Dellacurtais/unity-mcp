@@ -396,9 +396,36 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             }
         }
 
+        [Test]
+        public void OptionalSerializedReader_StopsCleanlyAtTheLastProperty()
+        {
+            var asset = ScriptableObject.CreateInstance<OptionalSerializedProbe>();
+            try
+            {
+                JObject properties = null;
+                Assert.DoesNotThrow(() => properties = Optional.OptionalToolSupport.ReadSerialized(asset));
+                Assert.That((int)properties["Value"], Is.EqualTo(42));
+                Assert.That((int)properties["Other"], Is.EqualTo(7));
+                Assert.That(properties["_truncated"], Is.Null);
+
+                var limited = Optional.OptionalToolSupport.ReadSerialized(asset, 1);
+                Assert.That((bool)limited["_truncated"], Is.True);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(asset);
+            }
+        }
+
         private static void AssertOk(OpResult result)
         {
             Assert.That(result.Ok, Is.True, result.Error);
         }
+    }
+
+    internal sealed class OptionalSerializedProbe : ScriptableObject
+    {
+        public int Value = 42;
+        public int Other = 7;
     }
 }

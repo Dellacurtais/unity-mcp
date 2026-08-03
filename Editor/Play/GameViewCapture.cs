@@ -245,8 +245,16 @@ namespace Maicon.SceneAnalyzer.Editor.Play
                     return direct;
                 }
 
-                resized = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32);
-                Graphics.Blit(source, resized);
+                // ScreenCapture returns display-ready pixels. In Gamma projects
+                // that texture is commonly linear/raw, while in Linear projects
+                // it can be flagged as sRGB. A default temporary RT follows the
+                // project color space instead of the source texture, so a plain
+                // Blit can apply one extra gamma conversion and wash the image
+                // out. Match the source encoding and explicitly control the
+                // hardware sRGB write during the resize.
+                resized = GetTemporaryMatchingColorEncoding(
+                    source, width, height, 0, RenderTextureFormat.ARGB32);
+                BlitPreservingColorEncoding(source, resized);
                 var result = ReadRenderTexture(resized, width, height, encoding, jpgQuality,
                     "Game view completed frame (all cameras + overlay UI)");
                 result.RenderPath = "screen-capture-end-of-frame";
@@ -274,15 +282,21 @@ namespace Maicon.SceneAnalyzer.Editor.Play
                 RenderTexture sourceRt = rt;
                 if (resize || flipY)
                 {
-                    downsized = RenderTexture.GetTemporary(targetW, targetH, 0, rt.format);
+                    downsized = GetTemporaryMatchingColorEncoding(
+                        rt, targetW, targetH, 0, rt.format);
                     if (flipY)
-                        Graphics.Blit(rt, downsized, new Vector2(1f, -1f), new Vector2(0f, 1f));
+                        BlitPreservingColorEncoding(rt, downsized,
+                            new Vector2(1f, -1f), new Vector2(0f, 1f));
                     else
-                        Graphics.Blit(rt, downsized);
+                        BlitPreservingColorEncoding(rt, downsized);
                     sourceRt = downsized;
                 }
                 RenderTexture.active = sourceRt;
-                tex = new Texture2D(targetW, targetH, TextureFormat.RGB24, false);
+                // The Texture2D is only a readback/encoding container. Mirror
+                // the RT flag so Unity does not reinterpret the copied pixels
+                // if this path is extended or sampled before encoding.
+                tex = new Texture2D(targetW, targetH, TextureFormat.RGB24, false,
+                    linear: !sourceRt.sRGB);
                 tex.ReadPixels(new Rect(0, 0, targetW, targetH), 0, 0);
                 tex.Apply();
 
@@ -295,6 +309,41 @@ namespace Maicon.SceneAnalyzer.Editor.Play
                 RenderTexture.active = previousActive;
                 if (tex != null) UnityEngine.Object.DestroyImmediate(tex);
                 if (downsized != null) RenderTexture.ReleaseTemporary(downsized);
+            }
+        }
+
+        private static RenderTexture GetTemporaryMatchingColorEncoding(Texture source,
+            int width, int height, int depthBuffer, RenderTextureFormat format)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+
+            var readWrite = source.isDataSRGB
+                ? RenderTextureReadWrite.sRGB
+                : RenderTextureReadWrite.Linear;
+            return RenderTexture.GetTemporary(width, height, depthBuffer, format, readWrite);
+        }
+
+        private static void BlitPreservingColorEncoding(Texture source,
+            RenderTexture destination)
+        {
+            BlitPreservingColorEncoding(source, destination, Vector2.one, Vector2.zero);
+        }
+
+        private static void BlitPreservingColorEncoding(Texture source,
+            RenderTexture destination, Vector2 scale, Vector2 offset)
+        {
+            // Graphics.Blit depends on the global GL.sRGBWrite flag. Always
+            // restore it: leaking this state would alter later Editor/game
+            // rendering performed by unrelated code.
+            var previousSrgbWrite = GL.sRGBWrite;
+            try
+            {
+                GL.sRGBWrite = destination.sRGB;
+                Graphics.Blit(source, destination, scale, offset);
+            }
+            finally
+            {
+                GL.sRGBWrite = previousSrgbWrite;
             }
         }
 

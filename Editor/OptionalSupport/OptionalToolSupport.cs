@@ -218,7 +218,8 @@ namespace Maicon.SceneAnalyzer.Editor.Optional
             var iterator = serialized.GetIterator();
             bool enterChildren = true;
             int count = 0;
-            while (count < Math.Max(1, maxProperties) && iterator.NextVisible(enterChildren))
+            var limit = Math.Max(1, maxProperties);
+            while (count < limit && iterator.NextVisible(enterChildren))
             {
                 enterChildren = false;
                 if (iterator.name == "m_Script") continue;
@@ -238,7 +239,7 @@ namespace Maicon.SceneAnalyzer.Editor.Optional
                 }
                 count++;
             }
-            if (iterator.NextVisible(false)) result["_truncated"] = true;
+            if (count >= limit && iterator.NextVisible(false)) result["_truncated"] = true;
             return result;
         }
 
