@@ -15,40 +15,51 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
         public static JObject TargetInput => new JObject
         {
             ["type"] = "object",
-            ["properties"] = new JObject
-            {
-                ["target"] = SchemaHelpers.TargetRefSchema,
-                ["instanceId"] = new JObject { ["type"] = "integer" },
-                ["preset"] = Preset(),
-            },
-            ["oneOf"] = new JArray
-            {
-                Required("target", SchemaHelpers.TargetRefSchema),
-                Required("instanceId", new JObject { ["type"] = "integer" }),
-            },
+            ["properties"] = TargetProperties(),
+            ["oneOf"] = TargetVariants(TargetProperties()),
             ["additionalProperties"] = false,
         };
 
         public static JObject ApplyInput => new JObject
         {
             ["type"] = "object",
-            ["properties"] = new JObject
-            {
-                ["target"] = SchemaHelpers.TargetRefSchema,
-                ["instanceId"] = new JObject { ["type"] = "integer" },
-                ["preset"] = Preset(),
-                ["outputFolder"] = new JObject { ["type"] = "string", ["pattern"] = "^Assets(?:/|$)" },
-                ["expectedSourceHash"] = Hash(),
-                ["previewHash"] = Hash(),
-                ["closeCutSurfaces"] = new JObject { ["type"] = "boolean", ["default"] = true },
-            },
+            ["properties"] = ApplyProperties(),
             ["required"] = new JArray { "expectedSourceHash", "previewHash" },
-            ["oneOf"] = new JArray
-            {
-                Required("target", SchemaHelpers.TargetRefSchema),
-                Required("instanceId", new JObject { ["type"] = "integer" }),
-            },
+            ["oneOf"] = TargetVariants(
+                ApplyProperties(),
+                "expectedSourceHash",
+                "previewHash"),
             ["additionalProperties"] = false,
+        };
+
+        private static JObject TargetProperties() => new JObject
+        {
+            ["target"] = SchemaHelpers.TargetRefSchema,
+            ["instanceId"] = new JObject { ["type"] = "integer" },
+            ["preset"] = Preset(),
+        };
+
+        private static JObject ApplyProperties() => new JObject
+        {
+            ["target"] = SchemaHelpers.TargetRefSchema,
+            ["instanceId"] = new JObject { ["type"] = "integer" },
+            ["preset"] = Preset(),
+            ["outputFolder"] = new JObject
+            {
+                ["type"] = "string",
+                ["pattern"] = "^Assets(?:/|$)",
+                ["description"] = "Optional Assets/ folder. Omit it to use Assets/AssetModeler/SmartSplits/<target>.",
+            },
+            ["expectedSourceHash"] = Hash(
+                "Exact sourceHash returned by mesh_analyze_body_parts or mesh_preview_smart_split."),
+            ["previewHash"] = Hash(
+                "Exact previewHash returned by the reviewed Smart Body Split proposal."),
+            ["closeCutSurfaces"] = new JObject
+            {
+                ["type"] = "boolean",
+                ["default"] = true,
+                ["description"] = "When true (default), detects every cut loop created between body parts and generates rigged cap geometry. Set false only when intentionally leaving cuts open.",
+            },
         };
 
         public static JObject ValidateInput => new JObject
@@ -65,23 +76,25 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
         public static JObject RefineInput => new JObject
         {
             ["type"] = "object",
-            ["properties"] = new JObject
-            {
-                ["target"] = SchemaHelpers.TargetRefSchema,
-                ["instanceId"] = new JObject { ["type"] = "integer" },
-                ["preset"] = Preset(),
-                ["subMesh"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
-                ["triangleIndex"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
-                ["targetPart"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
-                ["growRings"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = 64, ["default"] = 0 },
-            },
+            ["properties"] = RefineProperties(),
             ["required"] = new JArray { "subMesh", "triangleIndex", "targetPart" },
-            ["oneOf"] = new JArray
-            {
-                Required("target", SchemaHelpers.TargetRefSchema),
-                Required("instanceId", new JObject { ["type"] = "integer" }),
-            },
+            ["oneOf"] = TargetVariants(
+                RefineProperties(),
+                "subMesh",
+                "triangleIndex",
+                "targetPart"),
             ["additionalProperties"] = false,
+        };
+
+        private static JObject RefineProperties() => new JObject
+        {
+            ["target"] = SchemaHelpers.TargetRefSchema,
+            ["instanceId"] = new JObject { ["type"] = "integer" },
+            ["preset"] = Preset(),
+            ["subMesh"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+            ["triangleIndex"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+            ["targetPart"] = new JObject { ["type"] = "string", ["minLength"] = 1 },
+            ["growRings"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["maximum"] = 64, ["default"] = 0 },
         };
 
         public static JObject RecombineInput => new JObject
@@ -136,25 +149,51 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             ["additionalProperties"] = false,
         };
 
-        private static JObject Hash() => new JObject
+        private static JObject Hash(string description = null)
         {
-            ["type"] = "string",
-            ["pattern"] = "^[0-9a-f]{64}$",
-        };
+            var schema = new JObject
+            {
+                ["type"] = "string",
+                ["pattern"] = "^[0-9a-f]{64}$",
+            };
+            if (!string.IsNullOrEmpty(description)) schema["description"] = description;
+            return schema;
+        }
 
         private static JObject Preset() => new JObject
         {
             ["type"] = "string",
             ["enum"] = new JArray("core", "hands_feet", "modular", "fps", "damage", "clothing"),
             ["default"] = "core",
+            ["description"] = "Body-part layout preset used consistently for analysis, preview and apply.",
         };
 
-        private static JObject Required(string name, JObject schema) => new JObject
+        // Some MCP clients project oneOf branches directly into their callable tool
+        // signature and do not merge properties declared only on the parent schema.
+        // Repeat the complete property set in both locator branches so parameters
+        // such as preset, outputFolder and closeCutSurfaces remain agent-visible.
+        private static JArray TargetVariants(JObject properties, params string[] required)
         {
-            ["type"] = "object",
-            ["properties"] = new JObject { [name] = schema },
-            ["required"] = new JArray { name },
-        };
+            return new JArray
+            {
+                TargetVariant(properties, "target", required),
+                TargetVariant(properties, "instanceId", required),
+            };
+        }
+
+        private static JObject TargetVariant(JObject properties, string locator, string[] required)
+        {
+            var requiredProperties = new JArray { locator };
+            if (required != null)
+                for (int i = 0; i < required.Length; i++) requiredProperties.Add(required[i]);
+            return new JObject
+            {
+                ["type"] = "object",
+                ["properties"] = properties.DeepClone(),
+                ["required"] = requiredProperties,
+                ["additionalProperties"] = false,
+            };
+        }
     }
 
     public sealed class AnalyzeBodyPartsTool : IMcpTool
@@ -306,7 +345,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
         public string Name => "mesh_apply_smart_split";
         public string Description =>
             "Creates validated body-part mesh assets and scene renderers from an approved preview. " +
-            "Requires exact sourceHash/previewHash and high-risk confirmation; the imported source mesh is never modified.";
+            "Choose preset and outputFolder explicitly when needed. closeCutSurfaces defaults to true and creates rigged cap geometry; " +
+            "the result reports the requested mode plus cap loop/triangle counts. Requires exact sourceHash/previewHash and high-risk confirmation; " +
+            "the imported source mesh is never modified.";
         public JObject InputSchema => SmartBodySplitToolSchemas.ApplyInput;
         public JObject OutputSchema => new JObject
         {
@@ -323,6 +364,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                 ["partCount"] = new JObject { ["type"] = "integer" },
                 ["createdAssets"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" } },
                 ["valid"] = new JObject { ["type"] = "boolean" },
+                ["closeCutSurfaces"] = new JObject { ["type"] = "boolean" },
                 ["capTriangleCount"] = new JObject { ["type"] = "integer" },
                 ["capLoopCount"] = new JObject { ["type"] = "integer" },
             },
@@ -330,7 +372,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             {
                 "splitId", "outputFolder", "preset", "partsRoot", "bodyPartSetPath",
                 "manifestPath", "modularPrefabPath", "partCount", "createdAssets", "valid",
-                "capTriangleCount", "capLoopCount",
+                "closeCutSurfaces", "capTriangleCount", "capLoopCount",
             },
             ["additionalProperties"] = false,
         };
@@ -382,6 +424,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                         ["partCount"] = result.Manifest.Parts.Count,
                         ["createdAssets"] = new JArray(result.CreatedAssetPaths),
                         ["valid"] = result.Validation.IsValid,
+                        ["closeCutSurfaces"] = (bool?)arguments["closeCutSurfaces"] ?? true,
                         ["capTriangleCount"] = capTriangles,
                         ["capLoopCount"] = capLoops,
                     });
@@ -494,10 +537,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                 ["manifestPath"] = new JObject { ["type"] = "string" },
                 ["partCount"] = new JObject { ["type"] = "integer" },
                 ["valid"] = new JObject { ["type"] = "boolean" },
+                ["closeCutSurfaces"] = new JObject { ["type"] = "boolean" },
                 ["capTriangleCount"] = new JObject { ["type"] = "integer" },
                 ["capLoopCount"] = new JObject { ["type"] = "integer" },
             },
-            ["required"] = new JArray { "splitId", "modularPrefabPath", "bodyPartSetPath", "manifestPath", "partCount", "valid", "capTriangleCount", "capLoopCount" },
+            ["required"] = new JArray { "splitId", "modularPrefabPath", "bodyPartSetPath", "manifestPath", "partCount", "valid", "closeCutSurfaces", "capTriangleCount", "capLoopCount" },
             ["additionalProperties"] = false,
         };
         public bool IsWrite => true;
@@ -542,6 +586,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                     ["manifestPath"] = AssetDatabase.GetAssetPath(result.Manifest),
                     ["partCount"] = result.Manifest.Parts.Count,
                     ["valid"] = result.Validation.IsValid,
+                    ["closeCutSurfaces"] = (bool?)arguments["closeCutSurfaces"] ?? true,
                     ["capTriangleCount"] = capTriangles,
                     ["capLoopCount"] = capLoops,
                 });

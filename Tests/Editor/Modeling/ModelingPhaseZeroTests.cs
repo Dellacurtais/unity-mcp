@@ -355,10 +355,28 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
             Assert.That(apply.Capabilities.HasFlag(McpCapability.SceneWrite), Is.True);
             Assert.That(apply.Capabilities.HasFlag(McpCapability.Destructive), Is.True);
             Assert.That(apply.ConfirmationPolicy, Is.EqualTo(McpConfirmationPolicy.Required));
-            var required = registry.GetInputSchema("mesh_apply_smart_split")["required"].ToString();
+            var applyInput = registry.GetInputSchema("mesh_apply_smart_split");
+            var required = applyInput["required"].ToString();
             Assert.That(required, Does.Contain("expectedSourceHash").And.Contain("previewHash"));
-            var presetValues = registry.GetInputSchema("mesh_analyze_body_parts")["properties"]["preset"]["enum"].ToString();
+            foreach (var branch in applyInput["oneOf"])
+            {
+                var properties = branch["properties"];
+                Assert.That(properties["preset"], Is.Not.Null, "Every projected locator branch must expose preset.");
+                Assert.That(properties["outputFolder"], Is.Not.Null, "Every projected locator branch must expose outputFolder.");
+                Assert.That(properties["expectedSourceHash"], Is.Not.Null, "Every projected locator branch must expose expectedSourceHash.");
+                Assert.That(properties["previewHash"], Is.Not.Null, "Every projected locator branch must expose previewHash.");
+                Assert.That(properties["closeCutSurfaces"], Is.Not.Null, "Every projected locator branch must expose intelligent closure.");
+                Assert.That(branch["required"].ToString(), Does.Contain("expectedSourceHash").And.Contain("previewHash"));
+            }
+            Assert.That(
+                new ApplySmartBodySplitTool().OutputSchema["required"].ToString(),
+                Does.Contain("closeCutSurfaces").And.Contain("capTriangleCount").And.Contain("capLoopCount"));
+
+            var analyzeInput = registry.GetInputSchema("mesh_analyze_body_parts");
+            var presetValues = analyzeInput["properties"]["preset"]["enum"].ToString();
             Assert.That(presetValues, Does.Contain("core").And.Contain("hands_feet"));
+            foreach (var branch in analyzeInput["oneOf"])
+                Assert.That(branch["properties"]["preset"], Is.Not.Null, "Preset must survive MCP oneOf projection.");
         }
 
         [Test]
