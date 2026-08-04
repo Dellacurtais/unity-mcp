@@ -14,6 +14,12 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private string _portBuffer;
         private string _brokerUrlBuffer;
         private string _pythonPathBuffer;
+        private string _clientInstallMessage;
+        private MessageType _clientInstallMessageType = MessageType.None;
+        private ExternalMcpClientSnapshot _chatGptClientSnapshot;
+        private ExternalMcpClientSnapshot _claudeClientSnapshot;
+        private string _clientSnapshotFingerprint;
+        private double _nextClientInspection;
         private double _nextBrokerRepaint;
 
         [MenuItem("Window/Unity MCP Transport")]
@@ -88,8 +94,112 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 DrawEmbeddedTransport();
 
             DrawToken();
+            DrawExternalClientInstallers();
             DrawCodeStudioRegistration();
         }
+
+        private void DrawExternalClientInstallers()
+        {
+            var endpoint = BuildCurrentMcpEndpoint();
+            var token = Settings.Token;
+            RefreshExternalClientSnapshots(endpoint, token);
+            var chatGpt = _chatGptClientSnapshot;
+            var claude = _claudeClientSnapshot;
+
+            EditorGUILayout.Space(4);
+            EditorGUILayout.LabelField("AI clients", EditorStyles.boldLabel);
+            DrawExternalClientRow(
+                "ChatGPT",
+                chatGpt,
+                () => InstallExternalClient(
+                    "ChatGPT",
+                    ExternalMcpClientInstaller.InstallOrUpdateChatGpt));
+            DrawExternalClientRow(
+                "Claude Code",
+                claude,
+                () => InstallExternalClient(
+                    "Claude Code",
+                    ExternalMcpClientInstaller.InstallOrUpdateClaudeCode));
+
+            if (!string.IsNullOrEmpty(chatGpt.Error))
+                EditorGUILayout.HelpBox("ChatGPT: " + chatGpt.Error, MessageType.Warning);
+            if (!string.IsNullOrEmpty(claude.Error))
+                EditorGUILayout.HelpBox("Claude Code: " + claude.Error, MessageType.Warning);
+            if (!string.IsNullOrEmpty(_clientInstallMessage))
+                EditorGUILayout.HelpBox(_clientInstallMessage, _clientInstallMessageType);
+        }
+
+        private void RefreshExternalClientSnapshots(string endpoint, string token)
+        {
+            var fingerprint = endpoint + "|" + (token ?? string.Empty);
+            var now = EditorApplication.timeSinceStartup;
+            if (_chatGptClientSnapshot != null
+                && _claudeClientSnapshot != null
+                && string.Equals(
+                    fingerprint, _clientSnapshotFingerprint, StringComparison.Ordinal)
+                && now < _nextClientInspection)
+                return;
+
+            _chatGptClientSnapshot = ExternalMcpClientInstaller.InspectChatGpt(endpoint, token);
+            _claudeClientSnapshot = ExternalMcpClientInstaller.InspectClaudeCode(endpoint, token);
+            _clientSnapshotFingerprint = fingerprint;
+            _nextClientInspection = now + 5d;
+        }
+
+        private static void DrawExternalClientRow(
+            string clientName,
+            ExternalMcpClientSnapshot snapshot,
+            Action installOrUpdate)
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField(clientName, GUILayout.Width(100));
+                EditorGUILayout.LabelField(snapshot.State, EditorStyles.miniLabel);
+                var action = snapshot.IsConfigured ? "Update" : "Install";
+                if (GUILayout.Button(
+                        new GUIContent(
+                            action,
+                            "Install or update the global Unity MCP connection for " + clientName + "."),
+                        GUILayout.Width(80)))
+                    installOrUpdate();
+            }
+        }
+
+        private void InstallExternalClient(
+            string clientName,
+            Action<string, string> installOrUpdate)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(Settings.Token))
+                    Settings.Token = Settings.GenerateToken();
+                if (Settings.TransportMode == McpTransportMode.Broker)
+                    Settings.BrokerUrl = _brokerUrlBuffer?.Trim();
+                var endpoint = BuildCurrentMcpEndpoint();
+                installOrUpdate(endpoint, Settings.Token);
+                _clientSnapshotFingerprint = null;
+                _nextClientInspection = 0d;
+                _clientInstallMessage = clientName
+                    + " configured. Restart " + clientName + " to load the Unity tools.";
+                _clientInstallMessageType = MessageType.Info;
+                Bootstrap.RecordEntry(clientName + " MCP configuration installed/updated");
+            }
+            catch (Exception exception)
+            {
+                _clientInstallMessage = clientName + " installation failed: "
+                    + exception.GetBaseException().Message;
+                _clientInstallMessageType = MessageType.Error;
+                Bootstrap.RecordEntry(clientName + " MCP configuration failed");
+            }
+        }
+
+        private string BuildCurrentMcpEndpoint()
+            => CodeStudioMcpRegistration.BuildUnityMcpUrl(
+                Settings.TransportMode,
+                Settings.Port,
+                Settings.TransportMode == McpTransportMode.Broker
+                    ? _brokerUrlBuffer
+                    : Settings.BrokerUrl);
 
         private static void DrawCodeStudioRegistration()
         {

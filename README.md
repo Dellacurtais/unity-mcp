@@ -160,6 +160,7 @@ Managed setup from **Window → Unity MCP Transport**:
 3. Click **Install**. Unity copies the broker to a versioned user-owned directory under local application data, creates a private virtual environment, and installs `Broker~/requirements.txt`. The package itself is never modified.
 4. Click **Start**. Unity launches the separate broker with the configured bearer token and persistent SQLite/log paths, then connects the outbound WebSocket bridge. The process survives compilation and Domain Reload. It stops when the Unity process that launched it exits, including after an abnormal termination; **Stop** remains available for an explicit shutdown.
 5. Point the MCP client at `http://127.0.0.1:8765/mcp/` with the token shown in the window. Use **Repair** to rebuild the private environment and **Logs** to reveal installation/runtime logs.
+6. Under **AI clients**, click **Install** or **Update** beside **ChatGPT** or **Claude Code** to register the current endpoint and token automatically in that client's global user configuration. Restart the client after the operation.
 
 Manual setup remains supported: install `Broker~/requirements.txt` in an external environment, set `UNITY_MCP_BROKER_TOKEN`, run `python Broker~/main.py`, then click **Connect** in Broker mode. A manually launched broker has no Unity owner and keeps the operator-controlled lifetime.
 
