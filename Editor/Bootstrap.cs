@@ -362,7 +362,8 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new GetPerformanceSnapshotTool());
 
                 // Mesh analytics (inspect_submeshes, detect_sharp_edges, detect_planes,
-                // sample_points_on_region, render_object_views, render_region_highlight)
+                // sample_points_on_region, screenshot_object, render_object_views,
+                // render_region_highlight)
                 // live in com.maicon.scene-analyzer.Editor.MeshAnalytics and are
                 // registered there via MeshAnalyticsBootstrap.
 

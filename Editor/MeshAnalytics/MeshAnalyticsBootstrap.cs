@@ -32,6 +32,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics
                     new DetectSmoothRegionsTool(),
                     new DetectParallelChainsTool(),
                     new SamplePointsOnRegionTool(),
+                    new ScreenshotObjectTool(),
                     new RenderObjectViewsTool(),
                     new RenderRegionHighlightTool(),
                     new MeshPickFromScreenTool(),
@@ -40,7 +41,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics
                     new EnableMeshReadWriteTool(),
                 });
 
-                Bootstrap.RecordEntry("[mesh-analytics] registered 12 mesh tools (8 in-process + 3 picking/sidecar + 1 enable_read_write)");
+                Bootstrap.RecordEntry("[mesh-analytics] registered 13 mesh tools (9 in-process + 3 picking/sidecar + 1 enable_read_write)");
             }
             catch (System.Exception e)
             {

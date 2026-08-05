@@ -140,6 +140,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             ("width", Integer()),
             ("height", Integer()),
             ("overlay", String()),
+            ("isolated", Boolean()),
+            ("elapsedMs", Number()),
             ("views", Array(Object(
                 ("index", Integer()),
                 ("preset", String()),

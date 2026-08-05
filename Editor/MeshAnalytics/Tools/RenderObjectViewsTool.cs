@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core;
 using Newtonsoft.Json.Linq;
@@ -7,6 +8,18 @@ using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 {
+    /// Fast, agent-facing object capture. The target is cloned to a temporary
+    /// hidden layer by default, so the result contains only the requested
+    /// hierarchy without changing the source scene or prefab.
+    public sealed class ScreenshotObjectTool : ObjectScreenshotToolBase
+    {
+        public override string Name => "screenshot_object";
+        public override string Description =>
+            "Quickly captures one GameObject or prefab asset without moving the Scene View or creating project cameras. Automatically frames the complete hierarchy and returns inline PNG images in one MCP call. Supports iso/front/back/top/left/right views, custom camera poses, resolution, and lit/wireframe/submesh overlays. Isolated capture is enabled by default and does not modify the source object.";
+
+        protected override bool DefaultIsolated => true;
+    }
+
     /// Renders a specific GameObject from N camera angles with optional
     /// material overlays. Returns PNG image content blocks plus per-view
     /// camera matrices so the LLM (or a follow-up tool) can correlate
@@ -15,47 +28,45 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
     /// Unlike `screenshot_scene_view`, this tool drives a private off-screen
     /// camera framed around the target's bounds — independent of the user's
     /// SceneView setup. Useful for "show me this house from front/back/iso".
-    public sealed class RenderObjectViewsTool : IMcpTool
+    public sealed class RenderObjectViewsTool : ObjectScreenshotToolBase
     {
-        public string Name => "render_object_views";
-        public string Description =>
+        public override string Name => "render_object_views";
+        public override string Description =>
             "Renders a GameObject from one or more camera angles (presets: front/back/top/iso/left/right) and returns each as a PNG. Overlay modes: lit_default (normal shading), wireframe (light unlit), submesh_color (per-submesh tint to reveal structure). Each view also returns camera-to-world and projection matrices for 2D→3D correlation.";
 
-        public JObject InputSchema => new JObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JObject
-            {
-                ["target"] = MeshToolSchemas.Target,
-                ["instanceId"] = new JObject { ["type"] = "integer" },
-                ["views"] = new JObject
-                {
-                    ["type"] = "array",
-                    ["items"] = new JObject
-                    {
-                        ["oneOf"] = new JArray
-                        {
-                            new JObject { ["type"] = "string", ["enum"] = new JArray { "iso", "front", "back", "top", "left", "right" } },
-                            new JObject { ["type"] = "object", ["properties"] = new JObject {
-                                ["cameraPos"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "number" }, ["minItems"] = 3, ["maxItems"] = 3 },
-                                ["lookAt"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "number" }, ["minItems"] = 3, ["maxItems"] = 3 },
-                            }},
-                        },
-                    },
-                    ["default"] = new JArray { "iso" },
-                    ["description"] = "List of preset strings or custom poses. Defaults to ['iso']. Max 6 views per call.",
-                },
-                ["width"] = new JObject { ["type"] = "integer", ["default"] = 1024, ["minimum"] = 64, ["maximum"] = 2048 },
-                ["height"] = new JObject { ["type"] = "integer", ["default"] = 768, ["minimum"] = 64, ["maximum"] = 2048 },
-                ["overlay"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "lit_default", "wireframe", "submesh_color" }, ["default"] = "lit_default" },
-            },
-            ["oneOf"] = MeshToolSchemas.TargetOrInstance,
-            ["additionalProperties"] = false,
-        };
+        // Keep world-space rendering as the compatibility default because
+        // mesh_pick_from_screen consumes these matrices against the source.
+        protected override bool DefaultIsolated => false;
+        protected override string ToolCategory => "render";
+    }
+
+    public abstract class ObjectScreenshotToolBase : IMcpTool
+    {
+        public abstract string Name { get; }
+        public abstract string Description { get; }
+        protected abstract bool DefaultIsolated { get; }
+        protected virtual string ToolCategory => "screenshot";
+
+        public JObject InputSchema => ObjectScreenshotSchemas.Build(DefaultIsolated);
 
         public JObject OutputSchema => MeshToolSchemas.RenderViewsOutput;
 
         public bool IsWrite => false;
+
+        public ToolDescriptor Descriptor => new ToolDescriptor
+        {
+            Name = Name,
+            Category = ToolCategory,
+            Capabilities = McpCapability.Read,
+            Risk = McpRiskLevel.Low,
+            ConfirmationPolicy = McpConfirmationPolicy.None,
+            EditorMode = McpEditorMode.Any,
+            IsIdempotent = true,
+            ExecutionRequirements = McpExecutionRequirement.MainThread,
+            // Rendering needs a graphics device even though it does not need
+            // a visible Scene View or Game View.
+            HeadlessSafe = false,
+        };
 
         public ToolResult Execute(JObject args)
         {
@@ -64,21 +75,28 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 
             int width = Mathf.Clamp((int?)args["width"] ?? 1024, 64, 2048);
             int height = Mathf.Clamp((int?)args["height"] ?? 768, 64, 2048);
+            bool isolated = (bool?)args["isolated"] ?? DefaultIsolated;
             var overlay = ParseOverlay((string)args["overlay"]);
             var requests = ParseViews(args["views"]);
 
-            // Hard cap to keep payload bounded for the LLM.
+            // Hard cap to keep payload bounded for the LLM while still
+            // batching the common six-view inspection into one round trip.
             if (requests.Count > 6) requests = requests.GetRange(0, 6);
             if (requests.Count == 0) requests.Add(new OffscreenRenderer.ViewRequest { Preset = OffscreenRenderer.ViewPreset.Iso });
 
             List<OffscreenRenderer.Result> renders;
+            var stopwatch = Stopwatch.StartNew();
             try
             {
-                renders = OffscreenRenderer.Render(go, requests, width, height, overlay, null);
+                renders = OffscreenRenderer.Render(go, requests, width, height, overlay, null, isolated);
             }
             catch (Exception e)
             {
                 return ToolResult.Error("RENDER_FAILED", e.Message);
+            }
+            finally
+            {
+                stopwatch.Stop();
             }
             if (renders.Count == 0)
                 return ToolResult.Error("NO_GEOMETRY", $"GameObject '{go.name}' has no enabled renderer to frame");
@@ -91,7 +109,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
             content.Add(new JObject
             {
                 ["type"] = "text",
-                ["text"] = $"{renders.Count} view(s) of '{go.name}' ({width}×{height}, overlay={overlay.ToString().ToLowerInvariant()})",
+                ["text"] = $"{renders.Count} object screenshot(s) of '{go.name}' ({width}×{height}, isolated={isolated.ToString().ToLowerInvariant()}, overlay={overlay.ToString().ToLowerInvariant()})",
             });
             for (int i = 0; i < renders.Count; i++)
             {
@@ -123,13 +141,15 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
 
             return new ToolResult
             {
-                Text = $"rendered {renders.Count} view(s) of '{go.name}'",
+                Text = $"captured {renders.Count} view(s) of '{go.name}'",
                 Json = new JObject
                 {
                     ["target"] = MeshResolver.TargetData(go),
                     ["width"] = width,
                     ["height"] = height,
                     ["overlay"] = overlay.ToString().ToLowerInvariant(),
+                    ["isolated"] = isolated,
+                    ["elapsedMs"] = stopwatch.Elapsed.TotalMilliseconds,
                     ["views"] = metaArr,
                 },
                 ContentBlocks = content,
@@ -197,5 +217,87 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 m.m30, m.m31, m.m32, m.m33,
             };
         }
+    }
+
+    internal static class ObjectScreenshotSchemas
+    {
+        public static JObject Build(bool defaultIsolated) => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = Properties(defaultIsolated),
+            // Some MCP clients project the oneOf branches as the callable
+            // signature. Repeat all options in each locator branch so views,
+            // resolution, overlay, and isolation remain callable.
+            ["oneOf"] = new JArray
+            {
+                LocatorBranch("target", defaultIsolated),
+                LocatorBranch("instanceId", defaultIsolated),
+            },
+            ["additionalProperties"] = false,
+        };
+
+        private static JObject LocatorBranch(string requiredProperty, bool defaultIsolated) => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = Properties(defaultIsolated),
+            ["required"] = new JArray { requiredProperty },
+            ["additionalProperties"] = false,
+        };
+
+        private static JObject Properties(bool defaultIsolated) => new JObject
+        {
+            ["target"] = MeshToolSchemas.Target,
+            ["instanceId"] = new JObject
+            {
+                ["type"] = "integer",
+                ["description"] = "Session-local GameObject instance id fallback.",
+            },
+            ["views"] = new JObject
+            {
+                ["type"] = "array",
+                ["items"] = new JObject
+                {
+                    ["oneOf"] = new JArray
+                    {
+                        new JObject
+                        {
+                            ["type"] = "string",
+                            ["enum"] = new JArray { "iso", "front", "back", "top", "left", "right" },
+                        },
+                        new JObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JObject
+                            {
+                                ["cameraPos"] = Vector3Schema(),
+                                ["lookAt"] = Vector3Schema(),
+                            },
+                            ["required"] = new JArray { "cameraPos" },
+                            ["additionalProperties"] = false,
+                        },
+                    },
+                },
+                ["default"] = new JArray { "iso" },
+                ["maxItems"] = 6,
+                ["description"] = "Preset strings or custom poses. Defaults to one isometric shot; up to six views are rendered in one MCP call.",
+            },
+            ["width"] = new JObject { ["type"] = "integer", ["default"] = 1024, ["minimum"] = 64, ["maximum"] = 2048 },
+            ["height"] = new JObject { ["type"] = "integer", ["default"] = 768, ["minimum"] = 64, ["maximum"] = 2048 },
+            ["overlay"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "lit_default", "wireframe", "submesh_color" }, ["default"] = "lit_default" },
+            ["isolated"] = new JObject
+            {
+                ["type"] = "boolean",
+                ["default"] = defaultIsolated,
+                ["description"] = "Render a temporary hidden clone on an isolated layer. The source scene object or prefab is never modified.",
+            },
+        };
+
+        private static JObject Vector3Schema() => new JObject
+        {
+            ["type"] = "array",
+            ["items"] = new JObject { ["type"] = "number" },
+            ["minItems"] = 3,
+            ["maxItems"] = 3,
+        };
     }
 }

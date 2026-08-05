@@ -2,7 +2,8 @@
   "name": "com.maicon.scene-analyzer.Editor.Tests",
   "rootNamespace": "Maicon.SceneAnalyzer.Editor.Tests",
   "references": [
-    "com.maicon.scene-analyzer.Editor"
+    "com.maicon.scene-analyzer.Editor",
+    "com.maicon.scene-analyzer.Editor.MeshAnalytics"
   ],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],

@@ -11,7 +11,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         public const string AgentId = "unity-build";
         public const string SelectionId = "custom:unity-build";
         public const string ManagedBy = "com.maicon.scene-analyzer";
-        public const string ManagedVersion = "0.17.7";
+        public const string ManagedVersion = "0.17.8";
 
         private const string Prompt = @"# Unity Build agent
 
@@ -25,6 +25,7 @@ You are CodeStudio's Unity implementation agent. You inherit the native build ag
 - Use native CodeStudio tools for C# and text assets. After source changes, return to Unity MCP for refresh/compilation diagnostics; do not infer compilation success from a filesystem write.
 - Use `ext_unity__apply_changeset` for coherent multi-object scene edits, preview it first when supported, preserve Undo, and save explicitly with `ext_unity__save_scene` only when the requested result is ready.
 - For a new level, create a new scene rather than overwriting the user's active scene. Build a playable hierarchy with explicit roots, lighting, camera/spawn, traversal geometry, boundaries, landmarks, and documented scene contracts.
+- For object-specific visual inspection, call `ext_unity__screenshot_object` directly. Batch the needed iso/front/back/top/side views in one call; do not create helper menus, temporary project cameras, or repeatedly reposition the user's Scene View just to inspect an object.
 - Validate with `ext_unity__read_console`, compilation checks, scene queries, and screenshots. Enter Play Mode only when it adds evidence; exit it before finishing.
 - Do not claim success from narration. Cite the scene path, important object names, validation calls, console state, and observable screenshot/play evidence.
 
@@ -65,6 +66,7 @@ Provide short visible progress updates between meaningful tool batches. A long U
                     "ext_unity__wait_for_compile_clean",
                     "ext_unity__read_console",
                     "ext_unity__run_tests",
+                    "ext_unity__screenshot_object",
                     "ext_unity__screenshot_scene_view",
                     "ext_unity__screenshot_game_view",
                     "ext_unity__validate_build",

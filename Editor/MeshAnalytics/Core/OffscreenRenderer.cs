@@ -57,7 +57,20 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         /// triangles in saturated orange and dims the rest, used by
         /// render_region_highlight. Pass null for plain renders.
         public static List<Result> Render(GameObject target, IEnumerable<ViewRequest> views,
-            int width, int height, Overlay overlay, MeshRegion highlightRegion)
+            int width, int height, Overlay overlay, MeshRegion highlightRegion,
+            bool isolateTarget = false)
+        {
+            if (target == null) return new List<Result>();
+            if (!isolateTarget)
+                return RenderInternal(target, views, width, height, overlay, highlightRegion, ~0);
+
+            using var isolated = new IsolatedRenderTarget(target);
+            return RenderInternal(isolated.Root, views, width, height, overlay, highlightRegion,
+                isolated.CullingMask);
+        }
+
+        private static List<Result> RenderInternal(GameObject target, IEnumerable<ViewRequest> views,
+            int width, int height, Overlay overlay, MeshRegion highlightRegion, int cullingMask)
         {
             var results = new List<Result>();
             if (target == null) return results;
@@ -75,6 +88,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             camera.fieldOfView = 45f;
             camera.nearClipPlane = 0.05f;
             camera.farClipPlane = Mathf.Max(100f, bounds.size.magnitude * 10f);
+            camera.cullingMask = cullingMask;
             camera.enabled = false;            // we drive it via Render()
 
             // Material swaps for overlays. We avoid global render-pipeline
@@ -146,6 +160,59 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
                 UnityEngine.Object.DestroyImmediate(camGo);
             }
             return results;
+        }
+
+        /// A disposable render-only clone keeps screenshot_object isolated
+        /// without touching the source object's layer, transform, enabled
+        /// state, or prefab asset. We pick an unused user layer when possible
+        /// and scope the private camera to that layer.
+        private sealed class IsolatedRenderTarget : IDisposable
+        {
+            private readonly int _layer;
+            public GameObject Root { get; }
+            public int CullingMask => 1 << _layer;
+
+            public IsolatedRenderTarget(GameObject source)
+            {
+                _layer = FindIsolationLayer();
+                Root = UnityEngine.Object.Instantiate(source);
+                if (Root == null)
+                    throw new InvalidOperationException($"could not clone '{source.name}' for isolated rendering");
+
+                Root.name = "__McpObjectScreenshotClone";
+                foreach (var transform in Root.GetComponentsInChildren<Transform>(true))
+                {
+                    transform.gameObject.layer = _layer;
+                    transform.gameObject.hideFlags = HideFlags.HideAndDontSave;
+                }
+            }
+
+            public void Dispose()
+            {
+                if (Root != null) UnityEngine.Object.DestroyImmediate(Root);
+            }
+
+            private static int FindIsolationLayer()
+            {
+                var usage = new int[32];
+                foreach (var renderer in UnityEngine.Object.FindObjectsByType<Renderer>(
+                             FindObjectsInactive.Include, FindObjectsSortMode.None))
+                {
+                    if (renderer == null || !renderer.gameObject.scene.IsValid()) continue;
+                    usage[renderer.gameObject.layer]++;
+                }
+
+                int bestLayer = 31;
+                int bestUsage = int.MaxValue;
+                for (int layer = 31; layer >= 8; layer--)
+                {
+                    if (usage[layer] == 0) return layer;
+                    if (usage[layer] >= bestUsage) continue;
+                    bestUsage = usage[layer];
+                    bestLayer = layer;
+                }
+                return bestLayer;
+            }
         }
 
         private static void RenderCamera(Camera camera, RenderTexture destination)

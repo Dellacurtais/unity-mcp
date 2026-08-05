@@ -1077,7 +1077,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(UnityBuildAgentManifest.AgentId, Is.EqualTo("unity-build"));
             Assert.That(UnityBuildAgentManifest.SelectionId, Is.EqualTo("custom:unity-build"));
             Assert.That((string)manifest["managedBy"], Is.EqualTo("com.maicon.scene-analyzer"));
-            Assert.That((string)manifest["managedVersion"], Is.EqualTo("0.17.7"));
+            Assert.That((string)manifest["managedVersion"], Is.EqualTo("0.17.8"));
             Assert.That((string)manifest["baseAgentId"], Is.EqualTo("build"));
             Assert.That(manifest["toolNames"].Type, Is.EqualTo(JTokenType.Null),
                 "null inherits the native build tool registry instead of replacing it");
@@ -1089,7 +1089,9 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             CollectionAssert.Contains(pins, "ext_unity__get_server_health");
             CollectionAssert.Contains(pins, "ext_unity__create_scene");
             CollectionAssert.Contains(pins, "ext_unity__save_scene");
+            CollectionAssert.Contains(pins, "ext_unity__screenshot_object");
             StringAssert.Contains("real `ext_unity__*` round-trip", (string)manifest["prompt"]);
+            StringAssert.Contains("do not create helper menus", (string)manifest["prompt"]);
         }
 
         [Test]
