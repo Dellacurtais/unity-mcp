@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add Scene View marquee face selection to Asset Modeler, with contained/crossing drag directions, additive/removal modifiers, connected-island double-click, and select-all/invert/connected shortcuts.
 - Add `screenshot_object`, a fast direct MCP capture for scene objects and prefab assets with automatic framing, optional batched views, inline PNG output, and non-destructive isolation by default.
 - Add the Asset Modeler Phase 0 foundation: editable mesh documents, full channel snapshots, source/revision fingerprints, operation contracts, synthetic fixtures, benchmark harness, and isolated Editor/runtime assemblies.
 - Add the first Smart Body Split vertical slice for rigged or static humanoid-shaped meshes, with six-part semantic proposals, Scene View preview, exact rig/UV/material/blend-shape preserving extraction, modular body-part assets, fidelity validation, Undo-aware scene output, and four guarded MCP tools.
@@ -20,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserve views, resolution, overlay, and isolation in projected MCP signatures for object screenshots, and pin the canonical capture tool in the managed Unity Build agent so agents do not need custom menu methods or temporary cameras.
 - Treat Unity's expected bone-weight quantization and influence ordering as numerically equivalent during Smart Body Split validation, while still rejecting meaningful rig-weight drift.
 - Preserve Smart Body Split `preset`, `outputFolder`, preview hashes, and `closeCutSurfaces` in MCP client signatures that project `oneOf` branches directly; apply results now also report whether intelligent closure was requested alongside generated cap counts.
+
+## [0.17.9] - 2026-08-01
+
+### Changed
+
+- Bump package, C# fallback, Python broker, and release validator versions to `0.17.9`.
 
 ## [0.17.8] - 2026-08-01
 
