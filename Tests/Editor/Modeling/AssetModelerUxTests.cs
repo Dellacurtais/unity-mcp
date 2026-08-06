@@ -84,5 +84,60 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
                 UnityEngine.Object.DestroyImmediate(mesh);
             }
         }
+
+        [Test]
+        public void SceneMarqueePicker_DistinguishesContainedAndCrossingFaces()
+        {
+            var mesh = new Mesh();
+            try
+            {
+                mesh.vertices = new[]
+                {
+                    new Vector3(1f, 1f, 0f), new Vector3(2f, 1f, 0f), new Vector3(1f, 2f, 0f),
+                    new Vector3(2.5f, 2.5f, 0f), new Vector3(4f, 2.5f, 0f), new Vector3(2.5f, 4f, 0f),
+                    new Vector3(5f, 5f, 0f), new Vector3(6f, 5f, 0f), new Vector3(5f, 6f, 0f),
+                };
+                mesh.triangles = new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
+                var topology = HalfEdgeTopology.Build(mesh);
+                var rect = new Rect(0f, 0f, 3f, 3f);
+                Vector3 Project(Vector3 point) => new Vector3(point.x, point.y, 1f);
+
+                var contained = AssetModelerSceneController.CollectFacesInGuiRect(
+                    rect, false, Matrix4x4.identity, topology, mesh.vertices, Project);
+                var crossing = AssetModelerSceneController.CollectFacesInGuiRect(
+                    rect, true, Matrix4x4.identity, topology, mesh.vertices, Project);
+
+                Assert.That(contained, Is.EqualTo(new[] { 0 }));
+                Assert.That(crossing, Is.EqualTo(new[] { 0, 1 }));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
+        public void SceneConnectedSelection_ExpandsOnlySeededMeshIsland()
+        {
+            var mesh = new Mesh();
+            try
+            {
+                mesh.vertices = new[]
+                {
+                    new Vector3(0f, 0f, 0f), new Vector3(1f, 0f, 0f), new Vector3(0f, 1f, 0f), new Vector3(1f, 1f, 0f),
+                    new Vector3(3f, 0f, 0f), new Vector3(4f, 0f, 0f), new Vector3(3f, 1f, 0f),
+                };
+                mesh.triangles = new[] { 0, 1, 2, 1, 3, 2, 4, 5, 6 };
+                var topology = HalfEdgeTopology.Build(mesh);
+
+                var connected = AssetModelerSceneController.CollectConnectedFaces(topology, new[] { 0 });
+
+                Assert.That(connected, Is.EqualTo(new[] { 0, 1 }));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(mesh);
+            }
+        }
     }
 }

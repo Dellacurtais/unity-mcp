@@ -455,7 +455,19 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             int selectedCount = _document != null && _document.Selection.Kind == MeshElementKind.Face
                 ? _document.Selection.Indices.Count
                 : 0;
-            EditorGUILayout.LabelField($"{selectedCount} face(s) selecionada(s)  •  Shift adiciona  •  Ctrl remove", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"{selectedCount} face(s) selecionada(s)", EditorStyles.miniLabel);
+            EditorGUILayout.HelpBox(
+                "Clique seleciona • duplo clique pega a ilha conectada • arraste → seleciona área • esquerda→direita exige faces inteiras • direita→esquerda inclui faces cruzadas • Shift adiciona • Ctrl/Cmd remove.",
+                MessageType.None);
+            using (new EditorGUI.DisabledScope(_document == null))
+            {
+                EditorGUILayout.BeginHorizontal();
+                if (GUILayout.Button("Tudo", EditorStyles.miniButtonLeft)) SelectAllFaces();
+                if (GUILayout.Button("Inverter", EditorStyles.miniButtonMid)) InvertFaceSelection();
+                using (new EditorGUI.DisabledScope(selectedCount == 0))
+                    if (GUILayout.Button("Conectadas", EditorStyles.miniButtonRight)) SelectConnectedFaces();
+                EditorGUILayout.EndHorizontal();
+            }
             _showAdvancedSelection = EditorGUILayout.Foldout(_showAdvancedSelection, "Seleção avançada por IDs e regiões", true);
             if (_showAdvancedSelection)
             {
@@ -805,18 +817,72 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             SceneView.RepaintAll();
         }
 
-        internal void SelectFaceFromScene(int faceIndex, bool additive, bool toggle)
+        internal void SelectFaceFromScene(int faceIndex, bool additive, bool remove)
+            => SelectFacesFromScene(new[] { faceIndex }, additive, remove, $"Face {faceIndex}");
+
+        internal void SelectFacesFromScene(IEnumerable<int> faceIndices, bool additive, bool remove, string source)
         {
             try
             {
                 RequireDocument();
                 var selected = new SortedSet<int>();
-                if (additive || toggle)
+                if (additive || remove)
                     for (int i = 0; i < _document.Selection.Indices.Count; i++) selected.Add(_document.Selection.Indices[i]);
-                if (toggle && selected.Contains(faceIndex)) selected.Remove(faceIndex);
-                else selected.Add(faceIndex);
+                var incoming = new SortedSet<int>();
+                if (faceIndices != null)
+                    foreach (int faceIndex in faceIndices)
+                        if (faceIndex >= 0) incoming.Add(faceIndex);
+                if (remove) selected.ExceptWith(incoming);
+                else selected.UnionWith(incoming);
                 SetFaceSelection(selected);
-                _status = $"Face {faceIndex} selecionada no Scene View.";
+                _status = $"{source}: {incoming.Count} face(s); {selected.Count} selecionada(s) no total.";
+                _statusType = MessageType.Info;
+            }
+            catch (Exception exception) { Failure(exception); }
+        }
+
+        private void SelectAllFaces()
+        {
+            try
+            {
+                RequireDocument();
+                var topology = HalfEdgeTopology.Build(_document.WorkingMesh);
+                var faces = new int[topology.Faces.Count];
+                for (int i = 0; i < faces.Length; i++) faces[i] = i;
+                SetFaceSelection(faces);
+                _status = $"Todas as {faces.Length} faces foram selecionadas.";
+                _statusType = MessageType.Info;
+            }
+            catch (Exception exception) { Failure(exception); }
+        }
+
+        private void InvertFaceSelection()
+        {
+            try
+            {
+                RequireDocument();
+                var topology = HalfEdgeTopology.Build(_document.WorkingMesh);
+                var current = new HashSet<int>(_document.Selection.Kind == MeshElementKind.Face
+                    ? _document.Selection.Indices
+                    : Array.Empty<int>());
+                var inverted = new List<int>();
+                for (int i = 0; i < topology.Faces.Count; i++) if (!current.Contains(i)) inverted.Add(i);
+                SetFaceSelection(inverted);
+                _status = $"Seleção invertida: {inverted.Count} face(s).";
+                _statusType = MessageType.Info;
+            }
+            catch (Exception exception) { Failure(exception); }
+        }
+
+        private void SelectConnectedFaces()
+        {
+            try
+            {
+                RequireDocument();
+                var topology = HalfEdgeTopology.Build(_document.WorkingMesh);
+                var connected = AssetModelerSceneController.CollectConnectedFaces(topology, CurrentFaceSelection());
+                SetFaceSelection(connected);
+                _status = $"Ilhas conectadas expandidas para {connected.Length} face(s).";
                 _statusType = MessageType.Info;
             }
             catch (Exception exception) { Failure(exception); }
