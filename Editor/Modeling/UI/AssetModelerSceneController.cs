@@ -33,6 +33,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             AssemblyReloadEvents.beforeAssemblyReload += Clear;
         }
 
+        internal static AssetModelerWindow AttachedWindow => _window;
+        internal static HalfEdgeTopology CurrentTopology => _topology;
+        internal static Vector3[] CurrentVertices => _vertices;
+
         public static void Attach(AssetModelerWindow window)
         {
             _window = window;
@@ -62,7 +66,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         private static void Draw(SceneView sceneView)
         {
             if (_window == null) return;
-            DrawToolbar();
+            bool nativeToolActive = SceneUx.AssetModelerToolContext.IsActive;
+            if (!nativeToolActive) DrawToolbar();
+            if (nativeToolActive && SceneUx.AssetModelerModelingState.Mode != SceneUx.AssetModelerEditMode.Face) return;
             if (!_window.SceneFacePickingActive) return;
             var document = _window.SceneDocument;
             var renderer = _window.SceneRenderer;
@@ -256,7 +262,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             if (GUILayout.Toggle(Tools.current == tool, label, EditorStyles.miniButton)) Tools.current = tool;
         }
 
-        private static void RefreshGeometry(MeshEditDocument document, Renderer renderer)
+        internal static void RefreshGeometry(MeshEditDocument document, Renderer renderer)
         {
             var mesh = document.WorkingMesh;
             if (_cachedMesh != mesh || _topology == null || _topologyRevision != document.Revision.Topology)
@@ -485,7 +491,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             return distance > 1e-6f;
         }
 
-        private static void DrawFaceSelection(
+        internal static void DrawFaceSelection(
             Matrix4x4 localToWorld,
             HalfEdgeTopology topology,
             IReadOnlyList<Vector3> vertices,

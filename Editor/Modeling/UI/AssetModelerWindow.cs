@@ -26,6 +26,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         [SerializeField] private bool _sceneFaceSelection;
         [SerializeField] private bool _showContextDetails;
         [SerializeField] private bool _showAdvancedSelection;
+        [SerializeField] private bool _showAdvancedIds;
         private Vector2 _scroll;
         private string _status;
         private MessageType _statusType = MessageType.Info;
@@ -471,20 +472,58 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                     break;
                 case AssetModelerTopologyTool.ExtrudeEdges:
                     EditorGUILayout.LabelField("Extrudar arestas de borda", EditorStyles.boldLabel);
-                    _edgePairs = EditorGUILayout.TextField(new GUIContent("Pares de vértices", "Ex.: 0,1, 1,2."), _edgePairs);
+                    EditorGUILayout.HelpBox("Selecione arestas no modo Aresta do Scene View (duplo clique = loop, Alt+duplo clique = ring). Com a seleção vazia, use IDs no modo avançado.", MessageType.Info);
                     _extrudeDistance = EditorGUILayout.FloatField("Distância", _extrudeDistance);
+                    DrawAdvancedIds(() => _edgePairs = EditorGUILayout.TextField(new GUIContent("Pares de vértices", "Ex.: 0,1, 1,2."), _edgePairs));
                     break;
                 case AssetModelerTopologyTool.BridgeLoops:
                     EditorGUILayout.LabelField("Conectar dois loops", EditorStyles.boldLabel);
-                    _loopA = EditorGUILayout.TextField("Loop A", _loopA);
-                    _loopB = EditorGUILayout.TextField("Loop B", _loopB);
+                    EditorGUILayout.HelpBox("Informe dois loops de vértices ordenados no modo avançado.", MessageType.Info);
+                    DrawAdvancedIds(() =>
+                    {
+                        _loopA = EditorGUILayout.TextField("Loop A", _loopA);
+                        _loopB = EditorGUILayout.TextField("Loop B", _loopB);
+                    });
                     break;
                 case AssetModelerTopologyTool.FillHole:
                     EditorGUILayout.LabelField("Fechar buraco", EditorStyles.boldLabel);
-                    _holeLoop = EditorGUILayout.TextField("Loop de contorno", _holeLoop);
+                    EditorGUILayout.HelpBox("Com o campo avançado vazio, o maior loop de borda da mesh é detectado automaticamente.", MessageType.Info);
+                    DrawAdvancedIds(() => _holeLoop = EditorGUILayout.TextField("Loop de contorno", _holeLoop));
                     break;
             }
             DrawOperationButtons(CreateCurrentMeshOperation, AssetModelerWorkspaceCatalog.TopologyToolLabels[(int)_topologyTool]);
+        }
+
+        private void DrawAdvancedIds(Action draw)
+        {
+            _showAdvancedIds = EditorGUILayout.Foldout(_showAdvancedIds, "Avançado: seleção por IDs", true);
+            if (_showAdvancedIds) draw();
+        }
+
+        private int[] ResolveEdgePairs()
+        {
+            var pairs = ParseIndicesPreserveOrder(_edgePairs);
+            if (pairs.Length > 0) return pairs;
+            if (_document != null
+                && _document.Selection.Kind == MeshElementKind.Edge
+                && _document.Selection.TopologyRevision == _document.Revision.Topology)
+            {
+                var values = new int[_document.Selection.Indices.Count];
+                for (int i = 0; i < values.Length; i++) values[i] = _document.Selection.Indices[i];
+                return values;
+            }
+            return pairs;
+        }
+
+        private int[] ResolveHoleLoop()
+        {
+            var loop = ParseIndices(_holeLoop);
+            if (loop.Length > 0) return loop;
+            RequireDocument();
+            var topology = HalfEdgeTopology.Build(_document.WorkingMesh);
+            foreach (var candidate in topology.BoundaryLoops())
+                if (candidate.Length > loop.Length) loop = candidate;
+            return loop;
         }
 
         private void DrawFaceSelectionPanel()
@@ -661,9 +700,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                         case AssetModelerTopologyTool.ExtrudeFaces: return new ExtrudeFacesOperation(CurrentFaceSelection(), _extrudeDistance);
                         case AssetModelerTopologyTool.Bevel: return new BevelFacesOperation(CurrentFaceSelection(), _bevelInset, _bevelHeight);
                         case AssetModelerTopologyTool.AdaptiveRefine: return new AdaptiveRefineOperation(_maximumEdgeLength);
-                        case AssetModelerTopologyTool.ExtrudeEdges: return new ExtrudeBoundaryEdgesOperation(ParseIndicesPreserveOrder(_edgePairs), _extrudeDistance);
+                        case AssetModelerTopologyTool.ExtrudeEdges: return new ExtrudeBoundaryEdgesOperation(ResolveEdgePairs(), _extrudeDistance);
                         case AssetModelerTopologyTool.BridgeLoops: return new BridgeLoopsOperation(ParseIndices(_loopA), ParseIndices(_loopB));
-                        case AssetModelerTopologyTool.FillHole: return new FillHoleOperation(ParseIndices(_holeLoop));
+                        case AssetModelerTopologyTool.FillHole: return new FillHoleOperation(ResolveHoleLoop());
                     }
                     break;
                 case AssetModelerWorkspace.Deform:
@@ -976,6 +1015,71 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             try { ApplyOperation(CreateCurrentMeshOperation()); }
             catch (Exception exception) { Failure(exception); }
             Repaint();
+        }
+
+        internal AssetModelerTopologyTool SceneTopologyTool => _topologyTool;
+        internal MeshDeformMode SceneDeformMode => _deformMode;
+        internal int SceneDeformAxis => _axis;
+        internal float SceneExtrudeDistance { get => _extrudeDistance; set { _extrudeDistance = value; Repaint(); } }
+        internal float SceneBevelInset { get => _bevelInset; set { _bevelInset = value; Repaint(); } }
+        internal float SceneDeformRadius { get => _deformRadius; set { _deformRadius = value; Repaint(); } }
+        internal float SceneDeformStrength { get => _deformStrength; set { _deformStrength = value; Repaint(); } }
+        internal Vector3 SceneDeformDirection { get => _deformDirection; set { _deformDirection = value; Repaint(); } }
+        internal Vector3[] SceneSplinePoints { get => ParseSplinePoints(); set { _splinePoints = FormatSplinePoints(value); Repaint(); } }
+
+        internal void SceneStatus(string message, MessageType type)
+        {
+            _status = message;
+            _statusType = type;
+            Repaint();
+        }
+
+        internal void SceneSelectRegion(string name)
+        {
+            _regionName = name;
+            UseRegion();
+        }
+
+        internal void SceneSelectElements(MeshElementKind kind, IEnumerable<int> indices, bool additive, bool remove, string source)
+        {
+            try
+            {
+                RequireDocument();
+                var selected = new SortedSet<int>();
+                if (additive || remove)
+                    for (int i = 0; i < _document.Selection.Indices.Count; i++) selected.Add(_document.Selection.Indices[i]);
+                var incoming = new SortedSet<int>();
+                if (indices != null) foreach (int index in indices) if (index >= 0) incoming.Add(index);
+                if (remove) selected.ExceptWith(incoming);
+                else selected.UnionWith(incoming);
+                Undo.RecordObject(_document, "Select mesh elements");
+                _document.Selection.SetSelection(kind, selected, _document.Revision.Topology);
+                if (kind == MeshElementKind.Face) _faceSelection = string.Join(",", _document.Selection.Indices);
+                EditorUtility.SetDirty(_document);
+                _status = $"{source}: {incoming.Count} elemento(s); {selected.Count} selecionado(s) no total.";
+                _statusType = MessageType.Info;
+                Repaint();
+                SceneView.RepaintAll();
+            }
+            catch (Exception exception) { Failure(exception); }
+        }
+
+        private Vector3[] ParseSplinePoints()
+        {
+            var flat = ParseVectorList(_splinePoints);
+            var result = new Vector3[flat.Length / 3];
+            for (int i = 0; i < result.Length; i++)
+                result[i] = new Vector3(flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]);
+            return result;
+        }
+
+        private static string FormatSplinePoints(Vector3[] points)
+        {
+            if (points == null || points.Length == 0) return string.Empty;
+            var parts = new string[points.Length];
+            for (int i = 0; i < points.Length; i++)
+                parts[i] = string.Format(CultureInfo.InvariantCulture, "{0},{1},{2}", points[i].x, points[i].y, points[i].z);
+            return string.Join("; ", parts);
         }
 
         private string UniqueFbxPath()
