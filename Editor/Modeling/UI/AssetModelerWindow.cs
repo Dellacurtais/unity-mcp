@@ -34,8 +34,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         private Vector3 _translation;
         private Vector3 _rotation;
         private Vector3 _scale = Vector3.one;
+        private bool _transformSelectedOnly;
         private int _axis;
         private bool _mirrorCopy = true;
+        private float _mirrorPlane;
+        private bool _mirrorWeldSeam;
         private float _weldTolerance = 0.00001f;
         private float _cleanupEpsilon = 1e-12f;
         private string _faceSelection = string.Empty;
@@ -69,9 +72,13 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         private int _fitRefinementPasses = 2;
 
         private SceneArraySettings _array = new SceneArraySettings();
+        private int _alignAxis;
         private string _outputFolder = AssetModelerAssetPaths.DefaultRoot;
         private string _fbxPath = "Assets/AssetModeler/Exports/model.fbx";
         private bool _compactMergeMaterials = true;
+        private string _mergeName = "MergedMesh";
+        private bool _mergeRemoveSources;
+        private string _lastExportPath;
 
         [MenuItem("Window/Asset Modeler (Unity MCP)", false, 1200)]
         public static void OpenWindow()
@@ -244,18 +251,6 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             EditorGUILayout.LabelField(AssetModelerWorkspaceCatalog.Label(_navigation.Workspace), new GUIStyle(EditorStyles.boldLabel) { fontSize = 14 });
             EditorGUILayout.LabelField(AssetModelerWorkspaceCatalog.Description(_navigation.Workspace), EditorStyles.wordWrappedMiniLabel);
             EditorGUILayout.Space(5f);
-            if (_navigation.Workspace == AssetModelerWorkspace.Objects) DrawNativeTools();
-        }
-
-        private void DrawNativeTools()
-        {
-            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-            if (GUILayout.Toggle(Tools.current == Tool.Move, "Mover", EditorStyles.toolbarButton)) Tools.current = Tool.Move;
-            if (GUILayout.Toggle(Tools.current == Tool.Rotate, "Rotação", EditorStyles.toolbarButton)) Tools.current = Tool.Rotate;
-            if (GUILayout.Toggle(Tools.current == Tool.Scale, "Escala", EditorStyles.toolbarButton)) Tools.current = Tool.Scale;
-            if (GUILayout.Toggle(Tools.current == Tool.Rect, "Bounds", EditorStyles.toolbarButton)) Tools.current = Tool.Rect;
-            GUILayout.FlexibleSpace();
-            EditorGUILayout.EndHorizontal();
         }
 
         private void DrawSession()
@@ -315,12 +310,28 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                     _translation = EditorGUILayout.Vector3Field("Mover", _translation);
                     _rotation = EditorGUILayout.Vector3Field("Rotacionar", _rotation);
                     _scale = EditorGUILayout.Vector3Field("Escala", _scale);
+                    EditorGUILayout.BeginHorizontal();
+                    if (GUILayout.Button("Resetar")) { _translation = Vector3.zero; _rotation = Vector3.zero; _scale = Vector3.one; }
+                    if (GUILayout.Button("+90° X")) _rotation += new Vector3(90f, 0f, 0f);
+                    if (GUILayout.Button("+90° Y")) _rotation += new Vector3(0f, 90f, 0f);
+                    if (GUILayout.Button("+90° Z")) _rotation += new Vector3(0f, 0f, 90f);
+                    if (GUILayout.Button("Escala uniforme")) _scale = new Vector3(_scale.x, _scale.x, _scale.x);
+                    EditorGUILayout.EndHorizontal();
+                    _transformSelectedOnly = EditorGUILayout.ToggleLeft("Apenas vértices selecionados", _transformSelectedOnly);
+                    if (_transformSelectedOnly)
+                        _vertexSelection = EditorGUILayout.TextField(new GUIContent("Vértices afetados", "Ex.: 0,1,4-8. Vazio aplica em todos."), _vertexSelection);
+                    using (new EditorGUI.DisabledScope(_target == null))
+                        if (GUILayout.Button("Centralizar pivot"))
+                            Run(() => { SceneObjectOperations.CenterPivot(_target); return null; }, "Pivot centralizado nos bounds da mesh.");
                     DrawOperationButtons(CreateCurrentMeshOperation, "Transformação");
                     break;
                 case AssetModelerObjectTool.Mirror:
                     EditorGUILayout.LabelField("Espelhar mesh", EditorStyles.boldLabel);
                     _axis = GUILayout.Toolbar(_axis, new[] { "X", "Y", "Z" });
+                    _mirrorPlane = EditorGUILayout.FloatField(new GUIContent("Plano (offset)", "Posição do plano de espelhamento no eixo escolhido, no espaço local da mesh."), _mirrorPlane);
                     _mirrorCopy = EditorGUILayout.ToggleLeft("Manter original e criar lado espelhado", _mirrorCopy);
+                    using (new EditorGUI.DisabledScope(!_mirrorCopy))
+                        _mirrorWeldSeam = EditorGUILayout.ToggleLeft(new GUIContent("Soldar emenda", "Une vértices próximos após o espelho com cópia, fechando a costura central."), _mirrorWeldSeam);
                     DrawOperationButtons(CreateCurrentMeshOperation, "Espelho");
                     break;
                 case AssetModelerObjectTool.Array:
@@ -330,18 +341,33 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                     EditorGUILayout.LabelField("Combinar meshes", EditorStyles.boldLabel);
                     EditorGUILayout.HelpBox("Selecione dois ou mais objetos estáticos na Hierarchy. O resultado será um único objeto e um único asset de mesh.", MessageType.Info);
                     _compactMergeMaterials = EditorGUILayout.ToggleLeft("Unir slots que usam o mesmo material", _compactMergeMaterials);
+                    _mergeName = EditorGUILayout.TextField("Nome do resultado", _mergeName);
+                    _mergeRemoveSources = EditorGUILayout.ToggleLeft(new GUIContent("Remover objetos originais", "Destrói os objetos de origem após combinar (desfazível via Undo)."), _mergeRemoveSources);
                     EditorGUILayout.LabelField($"Selecionados: {Selection.gameObjects.Length}", EditorStyles.miniLabel);
                     using (new EditorGUI.DisabledScope(Selection.gameObjects.Length < 2))
                         if (GUILayout.Button("Combinar objetos selecionados", GUILayout.Height(30f)))
-                            Run(() => SceneObjectOperations.MergeStaticMeshes(Selection.gameObjects, _outputFolder, _compactMergeMaterials), "Meshes combinadas em um único asset.");
+                            Run(() => SceneObjectOperations.MergeStaticMeshes(Selection.gameObjects, _outputFolder, _compactMergeMaterials, _mergeName, _mergeRemoveSources), "Meshes combinadas em um único asset.");
                     break;
                 case AssetModelerObjectTool.Export:
                     EditorGUILayout.LabelField("Exportar FBX", EditorStyles.boldLabel);
+                    EditorGUILayout.BeginHorizontal();
                     _fbxPath = EditorGUILayout.TextField("Arquivo", _fbxPath);
+                    if (GUILayout.Button("Nome único", GUILayout.Width(90f))) _fbxPath = UniqueFbxPath();
+                    EditorGUILayout.EndHorizontal();
                     EditorGUILayout.HelpBox("A exportação usa o pacote oficial FBX Exporter da Unity e mantém a hierarquia selecionada.", MessageType.Info);
                     using (new EditorGUI.DisabledScope(_target == null || !FbxExportAdapter.IsAvailable))
                         if (GUILayout.Button(FbxExportAdapter.IsAvailable ? "Exportar objeto" : "Instale com.unity.formats.fbx", GUILayout.Height(30f)))
-                            Run(() => FbxExportAdapter.Export(_target, _fbxPath), "FBX exportado.");
+                            Run(() => { _lastExportPath = FbxExportAdapter.Export(_target, _fbxPath); return _lastExportPath; }, "FBX exportado.");
+                    if (FbxExportAdapter.IsAvailable && Selection.gameObjects.Length > 1)
+                        if (GUILayout.Button($"Exportar {Selection.gameObjects.Length} selecionados", GUILayout.Height(26f)))
+                            Run(() => ExportSelectedObjects(), "Seleção exportada em FBX.");
+                    if (!FbxExportAdapter.IsAvailable)
+                        using (new EditorGUI.DisabledScope(_target == null))
+                            if (GUILayout.Button("Salvar mesh como .asset (fallback)", GUILayout.Height(26f)))
+                                Run(() => SaveMeshAssetFallback(), "Mesh salva como asset editável.");
+                    using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_lastExportPath)))
+                        if (GUILayout.Button("Revelar na pasta"))
+                            EditorUtility.RevealInFinder(_lastExportPath);
                     break;
             }
         }
@@ -357,6 +383,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             _array.Mode = (SceneArrayMode)GUILayout.Toolbar((int)_array.Mode, new[] { "Linear", "Radial", "Grade" });
             _array.Count = Mathf.Max(1, EditorGUILayout.IntField("Quantidade", _array.Count));
             _array.AttachedByBounds = EditorGUILayout.ToggleLeft("Encostar automaticamente pelos bounds", _array.AttachedByBounds);
+            _array.IncludeSource = EditorGUILayout.ToggleLeft(new GUIContent("Incluir original na contagem", "Quando ativo, a quantidade inclui o objeto de origem; quando inativo, todas as cópias são novas."), _array.IncludeSource);
             if (_array.Mode == SceneArrayMode.Linear)
                 _array.Step = EditorGUILayout.Vector3Field(_array.AttachedByBounds ? "Direção" : "Passo", _array.Step);
             else if (_array.Mode == SceneArrayMode.Grid)
@@ -373,6 +400,27 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             using (new EditorGUI.DisabledScope(_target == null))
                 if (GUILayout.Button("Criar Array", GUILayout.Height(32f)))
                     Run(() => SceneObjectOperations.CreateArray(_target, _array), "Array criado.");
+            DrawAlignDistributeSection();
+        }
+
+        private void DrawAlignDistributeSection()
+        {
+            EditorGUILayout.Space(8f);
+            EditorGUILayout.LabelField("Alinhar / Distribuir seleção", EditorStyles.boldLabel);
+            _alignAxis = GUILayout.Toolbar(_alignAxis, new[] { "X", "Y", "Z" });
+            var selected = Selection.transforms;
+            EditorGUILayout.LabelField($"Selecionados: {selected.Length}", EditorStyles.miniLabel);
+            using (new EditorGUI.DisabledScope(selected.Length < 2))
+            {
+                EditorGUILayout.BeginHorizontal();
+                if (GUILayout.Button("Mínimo")) Run(() => { SceneObjectOperations.Align(selected, _alignAxis, false, true); return null; }, "Objetos alinhados no mínimo.");
+                if (GUILayout.Button("Centro")) Run(() => { SceneObjectOperations.Align(selected, _alignAxis, false, false); return null; }, "Objetos alinhados no centro.");
+                if (GUILayout.Button("Máximo")) Run(() => { SceneObjectOperations.Align(selected, _alignAxis, true, false); return null; }, "Objetos alinhados no máximo.");
+                EditorGUILayout.EndHorizontal();
+            }
+            using (new EditorGUI.DisabledScope(selected.Length < 3))
+                if (GUILayout.Button("Distribuir uniformemente", GUILayout.Height(24f)))
+                    Run(() => { SceneObjectOperations.Distribute(selected, _alignAxis); return null; }, "Objetos distribuídos uniformemente.");
         }
 
         private void DrawTopology()
@@ -593,9 +641,16 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             {
                 case AssetModelerWorkspace.Objects:
                     if (_objectTool == AssetModelerObjectTool.Transform)
-                        return new TransformVerticesOperation(Matrix4x4.TRS(_translation, Quaternion.Euler(_rotation), _scale));
+                        return new TransformVerticesOperation(
+                            Matrix4x4.TRS(_translation, Quaternion.Euler(_rotation), _scale),
+                            _transformSelectedOnly ? ParseIndices(_vertexSelection) : null);
                     if (_objectTool == AssetModelerObjectTool.Mirror)
-                        return new MirrorMeshOperation(_axis, 0f, _mirrorCopy);
+                    {
+                        var mirror = new MirrorMeshOperation(_axis, _mirrorPlane, _mirrorCopy);
+                        if (_mirrorCopy && _mirrorWeldSeam)
+                            return new SequencedMeshOperation(mirror, new WeldVerticesOperation(_weldTolerance, true));
+                        return mirror;
+                    }
                     break;
                 case AssetModelerWorkspace.Topology:
                     switch (_topologyTool)
@@ -923,6 +978,48 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             Repaint();
         }
 
+        private string UniqueFbxPath()
+        {
+            var folder = ExportFolder();
+            var baseName = _target != null ? AssetModelerAssetPaths.SafeName(_target.name, "model") : "model";
+            var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+            return AssetModelerAssetPaths.UniqueAssetPath(folder, baseName + "_" + stamp, ".fbx");
+        }
+
+        private string ExportFolder()
+        {
+            var folder = System.IO.Path.GetDirectoryName(_fbxPath ?? string.Empty)?.Replace('\\', '/');
+            if (string.IsNullOrEmpty(folder) || !folder.StartsWith("Assets", StringComparison.Ordinal))
+                folder = "Assets/AssetModeler/Exports";
+            return folder;
+        }
+
+        private object ExportSelectedObjects()
+        {
+            var folder = ExportFolder();
+            var selected = Selection.gameObjects;
+            for (int i = 0; i < selected.Length; i++)
+            {
+                var path = AssetModelerAssetPaths.UniqueAssetPath(folder, AssetModelerAssetPaths.SafeName(selected[i].name, "model"), ".fbx");
+                _lastExportPath = FbxExportAdapter.Export(selected[i], path);
+            }
+            return null;
+        }
+
+        private object SaveMeshAssetFallback()
+        {
+            var filter = _target != null ? _target.GetComponentInChildren<MeshFilter>() : null;
+            if (filter == null || filter.sharedMesh == null)
+                throw new InvalidOperationException("O objeto não possui MeshFilter com mesh para salvar.");
+            var path = AssetModelerAssetPaths.UniqueAssetPath(ExportFolder(), AssetModelerAssetPaths.SafeName(_target.name), ".asset");
+            var copy = UnityEngine.Object.Instantiate(filter.sharedMesh);
+            copy.name = AssetModelerAssetPaths.SafeName(_target.name);
+            AssetDatabase.CreateAsset(copy, path);
+            AssetDatabase.SaveAssets();
+            _lastExportPath = path;
+            return path;
+        }
+
         private void FrameTarget()
         {
             if (_target == null) return;
@@ -1031,6 +1128,60 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                 result.Add(index);
             }
             return result.ToArray();
+        }
+
+        private sealed class SequencedMeshOperation : IMeshOperation
+        {
+            private readonly IMeshOperation _first;
+            private readonly IMeshOperation _second;
+
+            public MeshOperationDescriptor Descriptor { get; }
+
+            public SequencedMeshOperation(IMeshOperation first, IMeshOperation second)
+            {
+                _first = first ?? throw new ArgumentNullException(nameof(first));
+                _second = second ?? throw new ArgumentNullException(nameof(second));
+                var baseDescriptor = first.Descriptor;
+                Descriptor = new MeshOperationDescriptor(
+                    baseDescriptor.Id + "+weld",
+                    baseDescriptor.DisplayName + " + solda",
+                    true,
+                    baseDescriptor.SupportsSkinnedMesh,
+                    baseDescriptor.SupportsBlendShapes,
+                    baseDescriptor.RequiresPreview,
+                    baseDescriptor.Cancelable);
+            }
+
+            public MeshValidationReport Validate(MeshOperationContext context)
+            {
+                var combined = new MeshValidationReport();
+                Append(combined, _first.Validate(context));
+                Append(combined, _second.Validate(context));
+                return combined;
+            }
+
+            public MeshOperationResult Preview(MeshOperationContext context)
+            {
+                _first.Preview(context);
+                return _second.Preview(context);
+            }
+
+            public MeshOperationResult Apply(MeshOperationContext context)
+            {
+                _first.Apply(context);
+                return _second.Apply(context);
+            }
+
+            private static void Append(MeshValidationReport target, MeshValidationReport source)
+            {
+                if (source == null) return;
+                for (int i = 0; i < source.Issues.Count; i++)
+                {
+                    var issue = source.Issues[i];
+                    if (issue.IsError) target.Error(issue.Code, issue.Message);
+                    else target.Warning(issue.Code, issue.Message);
+                }
+            }
         }
     }
 }

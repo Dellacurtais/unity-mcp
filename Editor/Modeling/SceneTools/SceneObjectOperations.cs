@@ -133,7 +133,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneTools
         public static GameObject MergeStaticMeshes(
             IReadOnlyList<GameObject> roots,
             string outputFolder,
-            bool compactMaterials = false)
+            bool compactMaterials = false,
+            string resultName = null,
+            bool removeSources = false)
         {
             if (roots == null || roots.Count == 0) throw new ArgumentException("Select at least one object to merge.", nameof(roots));
             var filters = new List<MeshFilter>();
@@ -147,7 +149,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneTools
             filters.RemoveAll(filter => filter == null || filter.sharedMesh == null || filter.GetComponent<MeshRenderer>() == null);
             if (filters.Count == 0) throw new InvalidOperationException("No static MeshFilter/MeshRenderer pairs were found.");
 
-            var root = new GameObject("MergedMesh");
+            var rootName = string.IsNullOrWhiteSpace(resultName) ? "MergedMesh" : resultName.Trim();
+            var root = new GameObject(rootName);
             root.transform.SetPositionAndRotation(roots[0].transform.position, roots[0].transform.rotation);
             root.transform.localScale = Vector3.one;
             var rootWorldToLocal = root.transform.worldToLocalMatrix;
@@ -188,7 +191,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneTools
                 }
             }
 
-            var mesh = new Mesh { name = "MergedMesh", indexFormat = IndexFormat.UInt32 };
+            var mesh = new Mesh { name = rootName, indexFormat = IndexFormat.UInt32 };
             var temporaryMeshes = new List<Mesh>();
             try
             {
@@ -226,9 +229,16 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneTools
             AssetDatabase.CreateAsset(mesh, meshPath);
             root.AddComponent<MeshFilter>().sharedMesh = mesh;
             root.AddComponent<MeshRenderer>().sharedMaterials = materials.ToArray();
+            root.layer = roots[0].layer;
+            try { root.tag = roots[0].tag; }
+            catch (UnityException) { }
+            GameObjectUtility.SetStaticEditorFlags(root, GameObjectUtility.GetStaticEditorFlags(roots[0]));
             Undo.RegisterCreatedObjectUndo(root, "Merge meshes");
             AssetDatabase.SaveAssets();
             Selection.activeGameObject = root;
+            if (removeSources)
+                for (int i = 0; i < roots.Count; i++)
+                    if (roots[i] != null) Undo.DestroyObjectImmediate(roots[i]);
             return root;
         }
 

@@ -78,7 +78,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             switch (workspace)
             {
                 case AssetModelerWorkspace.Session: return "Crie, valide e finalize uma cópia editável sem alterar o FBX importado.";
-                case AssetModelerWorkspace.Objects: return "Transforme, espelhe, duplique, combine ou exporte objetos da cena.";
+                case AssetModelerWorkspace.Objects: return "Espelhe, duplique em array, alinhe, combine ou exporte objetos da cena.";
                 case AssetModelerWorkspace.Topology: return "Selecione faces no Scene View e execute uma operação de malha por vez.";
                 case AssetModelerWorkspace.Deform: return "Modele com soft selection, curvas, Laplacian e ARAP com preview.";
                 case AssetModelerWorkspace.SurfaceFit: return "Ajuste roupa ou acessórios sobre outra superfície mantendo distância.";
