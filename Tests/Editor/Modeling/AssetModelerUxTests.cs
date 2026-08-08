@@ -1,7 +1,13 @@
 using System;
+using System.Linq;
+using Maicon.SceneAnalyzer.Editor.Modeling.Commands;
 using Maicon.SceneAnalyzer.Editor.Modeling.Core;
+using Maicon.SceneAnalyzer.Editor.Modeling.Operations.Transform;
+using Maicon.SceneAnalyzer.Editor.Modeling.SceneTools;
+using Maicon.SceneAnalyzer.Editor.Modeling.SceneUx;
 using Maicon.SceneAnalyzer.Editor.Modeling.UI;
 using NUnit.Framework;
+using Unity.Collections;
 using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
@@ -138,6 +144,163 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
             {
                 UnityEngine.Object.DestroyImmediate(mesh);
             }
+        }
+
+        [Test]
+        public void EdgeSelection_PreservesCanonicalPairsAcrossRegionsAndRemap()
+        {
+            var selection = new MeshSelectionState();
+            selection.SetSelection(MeshElementKind.Edge, new[] { 2, 1, 1, 2, 3, 4, 99 }, 3);
+
+            Assert.That(selection.Indices, Is.EqualTo(new[] { 1, 2, 3, 4 }));
+            selection.SaveRegion("Edges");
+            Assert.That(selection.Regions[0].Indices, Is.EqualTo(new[] { 1, 2, 3, 4 }));
+
+            selection.RemapTopologyPreservingVertices(4, 4);
+
+            Assert.That(selection.Indices, Is.EqualTo(new[] { 1, 2 }));
+            Assert.That(selection.Regions[0].Indices, Is.EqualTo(new[] { 1, 2 }));
+        }
+
+        [Test]
+        public void BoundaryEdgeLoop_ReturnsClosedEdgePairsInsteadOfVertexSequence()
+        {
+            var mesh = new Mesh();
+            try
+            {
+                mesh.vertices = new[] { Vector3.zero, Vector3.right, Vector3.one, Vector3.up };
+                mesh.triangles = new[] { 0, 1, 2, 0, 2, 3 };
+                var topology = HalfEdgeTopology.Build(mesh);
+
+                var encoded = AssetModelerModelingTool.CollectEdgeLoop(
+                    topology, mesh.vertices, new MeshEdgeKey(0, 1));
+                var actual = MeshSelectionEncoding.EdgePairs(encoded);
+
+                Assert.That(encoded, Has.Length.EqualTo(8));
+                Assert.That(actual, Is.EquivalentTo(topology.BoundaryEdges));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
+        public void UvSeamDiagnostic_FindsDuplicatedGeometricEdgeWithDifferentUvs()
+        {
+            var mesh = new Mesh();
+            try
+            {
+                mesh.vertices = new[]
+                {
+                    Vector3.zero, Vector3.right, Vector3.up,
+                    Vector3.right, Vector3.one, Vector3.up,
+                };
+                mesh.uv = new[]
+                {
+                    Vector2.zero, Vector2.right, Vector2.up,
+                    new Vector2(0.2f, 0f), Vector2.one, new Vector2(0.2f, 1f),
+                };
+                mesh.triangles = new[] { 0, 1, 2, 3, 4, 5 };
+
+                var seams = AssetModelerMeshDiagnostics.FindUvSeams(mesh, HalfEdgeTopology.Build(mesh));
+
+                Assert.That(seams, Does.Contain(new MeshEdgeKey(1, 2)));
+                Assert.That(seams, Does.Contain(new MeshEdgeKey(3, 5)));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
+        public void AttachedLinearArray_UsesBoundsAsPitchWithoutHiddenGap()
+        {
+            var source = new GameObject("ArraySource");
+            var mesh = new Mesh();
+            try
+            {
+                mesh.vertices = new[]
+                {
+                    new Vector3(-1f, -0.5f, 0f), new Vector3(1f, -0.5f, 0f), new Vector3(0f, 0.5f, 0f),
+                };
+                mesh.triangles = new[] { 0, 1, 2 };
+                source.AddComponent<MeshFilter>().sharedMesh = mesh;
+                source.AddComponent<MeshRenderer>();
+                var settings = new SceneArraySettings
+                {
+                    Mode = SceneArrayMode.Linear,
+                    Count = 3,
+                    Step = Vector3.right,
+                    AttachedByBounds = true,
+                };
+
+                var poses = SceneObjectOperations.BuildArrayTransforms(source, settings);
+
+                Assert.That(poses.Select(pose => pose.position.x), Is.EqualTo(new[] { 0f, 2f, 4f }).Within(1e-5f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(source);
+                UnityEngine.Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
+        public void MirrorAndWeld_ModifierRoundTripsThroughRegistryAndRebuild()
+        {
+            var source = new Mesh { name = "HalfMesh" };
+            var working = new Mesh { name = "HalfMesh_Working" };
+            var document = ScriptableObject.CreateInstance<MeshEditDocument>();
+            try
+            {
+                source.vertices = new[] { Vector3.zero, Vector3.right, Vector3.up };
+                source.uv = new[] { Vector2.zero, Vector2.right, Vector2.up };
+                source.triangles = new[] { 0, 1, 2 };
+                source.RecalculateNormals();
+                working.vertices = source.vertices;
+                working.uv = source.uv;
+                working.triangles = source.triangles;
+                working.normals = source.normals;
+                document.Initialize(null, source, working);
+                ModelingOperationCatalog.RegisterAll();
+                var operation = new MirrorAndWeldMeshOperation(0, 0f, 1e-5f, true);
+
+                string hash;
+                using (var preview = ModelingCommandService.Preview(document, operation, document.Revision))
+                    hash = preview.PreviewHash;
+                ModelingCommandService.Apply(document, operation, document.Revision, hash);
+                var rebuilt = ModelingCommandService.Rebuild(document);
+
+                Assert.That(document.ModifierStack, Has.Count.EqualTo(1));
+                Assert.That(document.ModifierStack[0].OperationId, Is.EqualTo("mesh.mirror_weld"));
+                Assert.That(rebuilt.IsValid, Is.True);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(document);
+                UnityEngine.Object.DestroyImmediate(working);
+                UnityEngine.Object.DestroyImmediate(source);
+            }
+        }
+
+        [Test]
+        public void BoneSelection_ConsidersAllModernBoneWeightInfluences()
+        {
+            var mesh = new Mesh();
+            try
+            {
+                mesh.vertices = new[] { Vector3.zero };
+                using (var counts = new NativeArray<byte>(new byte[] { 5 }, Allocator.Temp))
+                using (var weights = new NativeArray<BoneWeight1>(new[]
+                {
+                    new BoneWeight1 { boneIndex = 4, weight = 0.5f },
+                    new BoneWeight1 { boneIndex = 3, weight = 0.2f },
+                    new BoneWeight1 { boneIndex = 2, weight = 0.15f },
+                    new BoneWeight1 { boneIndex = 1, weight = 0.1f },
+                    new BoneWeight1 { boneIndex = 0, weight = 0.05f },
+                }, Allocator.Temp))
+                    mesh.SetBoneWeights(counts, weights);
+
+                Assert.That(AssetModelerModelingTool.CollectDominantVertices(mesh, 4), Is.EqualTo(new[] { 0 }));
+                Assert.That(AssetModelerModelingTool.CollectDominantVertices(mesh, 3), Is.Empty);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
     }
 }

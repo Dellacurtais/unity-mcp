@@ -4,6 +4,66 @@ using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
 {
+    internal static class MeshSelectionEncoding
+    {
+        internal static List<int> Normalize(MeshElementKind kind, IEnumerable<int> indices)
+        {
+            if (kind == MeshElementKind.Edge) return FlattenEdges(EdgePairs(indices));
+
+            var unique = new SortedSet<int>();
+            if (indices != null)
+                foreach (int index in indices)
+                    if (index >= 0) unique.Add(index);
+            return new List<int>(unique);
+        }
+
+        internal static List<MeshEdgeKey> EdgePairs(IEnumerable<int> indices)
+        {
+            var result = new List<MeshEdgeKey>();
+            if (indices == null) return result;
+
+            var pending = -1;
+            var seen = new HashSet<MeshEdgeKey>();
+            foreach (int index in indices)
+            {
+                if (pending < 0)
+                {
+                    pending = index;
+                    continue;
+                }
+
+                int first = pending;
+                pending = -1;
+                if (first < 0 || index < 0 || first == index) continue;
+                var edge = new MeshEdgeKey(first, index);
+                if (seen.Add(edge)) result.Add(edge);
+            }
+
+            result.Sort((left, right) =>
+            {
+                int first = left.A.CompareTo(right.A);
+                return first != 0 ? first : left.B.CompareTo(right.B);
+            });
+            return result;
+        }
+
+        internal static List<int> FlattenEdges(IEnumerable<MeshEdgeKey> edges)
+        {
+            var result = new List<int>();
+            if (edges == null) return result;
+            foreach (var edge in edges)
+            {
+                if (edge.A < 0 || edge.B < 0 || edge.A == edge.B) continue;
+                result.Add(edge.A);
+                result.Add(edge.B);
+            }
+            return result;
+        }
+
+        internal static int ElementCount(MeshElementKind kind, IReadOnlyCollection<int> encoded)
+            => kind == MeshElementKind.Edge ? (encoded?.Count ?? 0) / 2 : encoded?.Count ?? 0;
+    }
+
     [Serializable]
     public sealed class MeshNamedRegion
     {
@@ -24,11 +84,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
 
         internal void Replace(IEnumerable<int> indices)
         {
-            _indices.Clear();
-            if (indices == null) return;
-            var unique = new SortedSet<int>();
-            foreach (int index in indices) if (index >= 0) unique.Add(index);
-            _indices.AddRange(unique);
+            _indices = MeshSelectionEncoding.Normalize(_kind, indices);
         }
     }
 
@@ -99,10 +155,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
         public void SetSelection(MeshElementKind kind, IEnumerable<int> indices, uint topologyRevision)
         {
             _kind = kind;
-            _indices.Clear();
-            var unique = new SortedSet<int>();
-            if (indices != null) foreach (int index in indices) if (index >= 0) unique.Add(index);
-            _indices.AddRange(unique);
+            _indices = MeshSelectionEncoding.Normalize(kind, indices);
             _topologyRevision = topologyRevision;
         }
 
@@ -205,6 +258,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
 
         private static void RemoveEdgePairsOutOfRange(List<int> values, int count)
         {
+            if ((values.Count & 1) != 0) values.RemoveAt(values.Count - 1);
             for (int i = values.Count - 2; i >= 0; i -= 2)
                 if (values[i] < 0 || values[i] >= count || values[i + 1] < 0 || values[i + 1] >= count)
                 {

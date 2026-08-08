@@ -10,7 +10,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
     {
         public static bool IsActive => ToolManager.activeContextType == typeof(AssetModelerToolContext);
 
-        protected override Type GetEditorToolType(Tool tool) => typeof(AssetModelerModelingTool);
+        protected override Type GetEditorToolType(Tool tool)
+            => AssetModelerModelingState.Mode == AssetModelerEditMode.Object
+                ? base.GetEditorToolType(tool)
+                : typeof(AssetModelerModelingTool);
 
         public override void OnActivated()
         {

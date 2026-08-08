@@ -1,6 +1,6 @@
 # Scene Modeling UX 2.0 — implementação completa
 
-Atualizado em 2026-08-03. Este documento registra a fase **Scene Modeling UX 2.0** do Asset Modeler: a camada que transforma o plugin de "painel técnico que chama algoritmos" em uma experiência de modelagem nativa do Scene View da Unity. A especificação normativa permanece em `asset-modeler-complete-spec.md`; o estado das fases 0–8 em `asset-modeler-implementation-status.md`.
+Atualizado em 2026-08-08. Este documento registra a fase **Scene Modeling UX 2.0** do Asset Modeler: a camada que transforma o plugin de "painel técnico que chama algoritmos" em uma experiência de modelagem nativa do Scene View da Unity. A especificação normativa permanece em `asset-modeler-complete-spec.md`; o estado das fases 0–8 em `asset-modeler-implementation-status.md`.
 
 ## Consolidação prévia
 
@@ -32,7 +32,7 @@ Integrações:
 ### `AssetModelerToolContext` (`AssetModelerToolContext.cs`)
 
 - `[EditorToolContext("Asset Modeler", typeof(GameObject))]` registra o contexto na toolbar de ferramentas da Unity.
-- `GetEditorToolType` resolve sempre para `AssetModelerModelingTool`.
+- `GetEditorToolType` resolve Vertex/Edge/Face/Region/Bone para `AssetModelerModelingTool`; no modo Objeto delega ao contexto base para manter Move/Rotate/Scale nativos da Unity.
 - `IsActive` (`ToolManager.activeContextType`) é o gate usado pelo scene controller e pelos overlays.
 - Ativação programática via `AssetModelerModelingState.ActivateMode(mode)` (atalhos e overlay chamam `ToolManager.SetActiveContext`).
 
@@ -75,7 +75,7 @@ Ambos usam heurística geométrica como desempate — malhas puramente triangula
 
 ### Simetria
 
-`AssetModelerModelingState.ExpandSymmetric` expande seleções de vértices/arestas pelo plano local X=0, agrupando vértices por bucket quantizado `(|x|, y, z)` com tolerância 1e-4. Atalho **Alt+X**. Aplicada no clique de vértice e aresta.
+`AssetModelerModelingState.ExpandSymmetric` expande seleções de vértices pelo plano local X=0, agrupando vértices por bucket quantizado `(|x|, y, z)` com tolerância 1e-4 e validando a posição espelhada para evitar colisões. A expansão de arestas é feita por pares canônicos completos, sem converter endpoints em uma lista de vértices. Atalho **Alt+X**. Aplicada em clique, marquee, loop e ring.
 
 ## 3. Manipuladores no Scene View
 
@@ -89,9 +89,9 @@ Executam dentro do fluxo transacional existente: o arraste atualiza o parâmetro
 | **Grab** (Deform) | `PositionHandle`: o deslocamento vira direção + força da deformação |
 | **Spline** (Deform) | Um `PositionHandle` por ponto da curva, com polilinha conectando os pontos |
 | **Bend/Twist/Taper/Flatten** | Seta de eixo no centro dos bounds **com arraste**: o `Slider` ao longo do eixo define força/ângulo (com snap opcional) |
-| **Surface Fit** | Linha editável→alvo e `Slider` vertical no alvo controlando o clearance (escala de exibição 20× para valores pequenos), com label do valor |
+| **Surface Fit** | Linha editável→alvo e `Slider` vertical no alvo controlando o clearance em escala espacial real, com snap fino e label do valor |
 
-Throttle de preview: regenera somente quando o valor varia mais que `SnapStep/2` (com snap) ou 0.01 (sem snap), evitando rebuilds por frame em meshes densas.
+Throttle de preview: aplica imediatamente mudanças relevantes e consolida a alteração final com debounce de 120 ms. Assim meshes densas não são reconstruídas a cada evento, mas o preview nunca termina defasado do valor exibido.
 
 ### Snap, orientação e atalhos
 
@@ -101,14 +101,14 @@ Throttle de preview: regenera somente quando o valor varia mais que `SnapStep/2`
 
 ## 4. Diagnostics Overlay
 
-`AssetModelerMeshDiagnostics` computa sob demanda (cache por instância de topologia + mesh) e desenha com orçamento de 4000 linhas por categoria:
+`AssetModelerMeshDiagnostics` computa sob demanda (cache por instância de topologia + mesh + revisão geométrica/topológica) e desenha com orçamento de 4000 linhas por categoria:
 
 | Diagnóstico | Fonte | Cor |
 |---|---|---|
 | Bordas abertas (buracos) | `HalfEdgeTopology.BoundaryEdges` | azul |
 | Non-manifold | `HalfEdgeTopology.NonManifoldEdges` (>2 faces por aresta) | vermelho |
 | Normais invertidas | dot(normal geométrica, normal armazenada) < 0 por face | laranja |
-| UV seams | aresta interior cujos UVs de canto divergem entre as duas faces (ε = 1e-4) | magenta |
+| UV seams | arestas com endpoints geometricamente coincidentes, índices duplicados e UVs divergentes (ε = 1e-4) | magenta |
 
 Os contadores aparecem nos toggles do overlay; os destaques são desenhados pelo tool enquanto o contexto está ativo.
 

@@ -15,6 +15,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Commands
             _registered = true;
             MeshOperationRegistry.Register("mesh.transform_vertices", TransformVerticesOperation.Deserialize);
             MeshOperationRegistry.Register("mesh.mirror", MirrorMeshOperation.Deserialize);
+            MeshOperationRegistry.Register("mesh.mirror_weld", MirrorAndWeldMeshOperation.Deserialize);
             MeshOperationRegistry.Register("mesh.cleanup", CleanupMeshOperation.Deserialize);
             MeshOperationRegistry.Register("mesh.weld", WeldVerticesOperation.Deserialize);
             MeshOperationRegistry.Register("mesh.subdivide", SubdivideTrianglesOperation.Deserialize);

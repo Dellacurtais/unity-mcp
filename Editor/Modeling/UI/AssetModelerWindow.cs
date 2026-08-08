@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Modeling.Assets;
 using Maicon.SceneAnalyzer.Editor.Modeling.Commands;
 using Maicon.SceneAnalyzer.Editor.Modeling.Core;
@@ -731,10 +732,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                             _transformSelectedOnly ? ParseIndices(_vertexSelection) : null);
                     if (_objectTool == AssetModelerObjectTool.Mirror)
                     {
-                        var mirror = new MirrorMeshOperation(_axis, _mirrorPlane, _mirrorCopy);
                         if (_mirrorCopy && _mirrorWeldSeam)
-                            return new SequencedMeshOperation(mirror, new WeldVerticesOperation(_weldTolerance, true));
-                        return mirror;
+                            return new MirrorAndWeldMeshOperation(_axis, _mirrorPlane, _weldTolerance, true);
+                        return new MirrorMeshOperation(_axis, _mirrorPlane, _mirrorCopy);
                     }
                     break;
                 case AssetModelerWorkspace.Topology:
@@ -1033,10 +1033,12 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         internal Renderer SceneRenderer => _workingRenderer;
         internal AssetModelerWorkspace SceneWorkspace => _navigation?.Workspace ?? AssetModelerWorkspace.Home;
         internal bool SceneHasPreview => _preview != null;
-        internal bool SceneFacePickingActive => _sceneFaceSelection
-            && _navigation != null
-            && _navigation.Workspace == AssetModelerWorkspace.Topology
-            && AssetModelerWorkspaceCatalog.TopologyUsesFaces(_topologyTool)
+        internal bool SceneFacePickingActive => (_sceneFaceSelection
+                && _navigation != null
+                && _navigation.Workspace == AssetModelerWorkspace.Topology
+                && AssetModelerWorkspaceCatalog.TopologyUsesFaces(_topologyTool)
+                || SceneUx.AssetModelerToolContext.IsActive
+                && SceneUx.AssetModelerModelingState.Mode == SceneUx.AssetModelerEditMode.Face)
             && _document?.WorkingMesh != null
             && _workingRenderer != null;
         internal bool SceneSupportsPreview => _navigation != null
@@ -1093,18 +1095,35 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             try
             {
                 RequireDocument();
-                var selected = new SortedSet<int>();
-                if (additive || remove)
-                    for (int i = 0; i < _document.Selection.Indices.Count; i++) selected.Add(_document.Selection.Indices[i]);
-                var incoming = new SortedSet<int>();
-                if (indices != null) foreach (int index in indices) if (index >= 0) incoming.Add(index);
-                if (remove) selected.ExceptWith(incoming);
-                else selected.UnionWith(incoming);
+                bool canCombine = (additive || remove)
+                    && _document.Selection.Kind == kind
+                    && _document.Selection.TopologyRevision == _document.Revision.Topology;
+                var selected = canCombine
+                    ? MeshSelectionEncoding.Normalize(kind, _document.Selection.Indices)
+                    : new List<int>();
+                var incoming = MeshSelectionEncoding.Normalize(kind, indices);
+
+                if (kind == MeshElementKind.Edge)
+                {
+                    var edgeSet = new HashSet<MeshEdgeKey>(MeshSelectionEncoding.EdgePairs(selected));
+                    var incomingEdges = MeshSelectionEncoding.EdgePairs(incoming);
+                    if (remove) edgeSet.ExceptWith(incomingEdges);
+                    else edgeSet.UnionWith(incomingEdges);
+                    selected = MeshSelectionEncoding.FlattenEdges(edgeSet.OrderBy(edge => edge.A).ThenBy(edge => edge.B));
+                }
+                else
+                {
+                    var valueSet = new SortedSet<int>(selected);
+                    if (remove) valueSet.ExceptWith(incoming);
+                    else valueSet.UnionWith(incoming);
+                    selected = new List<int>(valueSet);
+                }
                 Undo.RecordObject(_document, "Select mesh elements");
                 _document.Selection.SetSelection(kind, selected, _document.Revision.Topology);
                 if (kind == MeshElementKind.Face) _faceSelection = string.Join(",", _document.Selection.Indices);
                 EditorUtility.SetDirty(_document);
-                _status = $"{source}: {incoming.Count} elemento(s); {selected.Count} selecionado(s) no total.";
+                _status = $"{source}: {MeshSelectionEncoding.ElementCount(kind, incoming)} elemento(s); "
+                    + $"{MeshSelectionEncoding.ElementCount(kind, selected)} selecionado(s) no total.";
                 _statusType = MessageType.Info;
                 Repaint();
                 SceneView.RepaintAll();
@@ -1282,58 +1301,5 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             return result.ToArray();
         }
 
-        private sealed class SequencedMeshOperation : IMeshOperation
-        {
-            private readonly IMeshOperation _first;
-            private readonly IMeshOperation _second;
-
-            public MeshOperationDescriptor Descriptor { get; }
-
-            public SequencedMeshOperation(IMeshOperation first, IMeshOperation second)
-            {
-                _first = first ?? throw new ArgumentNullException(nameof(first));
-                _second = second ?? throw new ArgumentNullException(nameof(second));
-                var baseDescriptor = first.Descriptor;
-                Descriptor = new MeshOperationDescriptor(
-                    baseDescriptor.Id + "+weld",
-                    baseDescriptor.DisplayName + " + solda",
-                    true,
-                    baseDescriptor.SupportsSkinnedMesh,
-                    baseDescriptor.SupportsBlendShapes,
-                    baseDescriptor.RequiresPreview,
-                    baseDescriptor.Cancelable);
-            }
-
-            public MeshValidationReport Validate(MeshOperationContext context)
-            {
-                var combined = new MeshValidationReport();
-                Append(combined, _first.Validate(context));
-                Append(combined, _second.Validate(context));
-                return combined;
-            }
-
-            public MeshOperationResult Preview(MeshOperationContext context)
-            {
-                _first.Preview(context);
-                return _second.Preview(context);
-            }
-
-            public MeshOperationResult Apply(MeshOperationContext context)
-            {
-                _first.Apply(context);
-                return _second.Apply(context);
-            }
-
-            private static void Append(MeshValidationReport target, MeshValidationReport source)
-            {
-                if (source == null) return;
-                for (int i = 0; i < source.Issues.Count; i++)
-                {
-                    var issue = source.Issues[i];
-                    if (issue.IsError) target.Error(issue.Code, issue.Message);
-                    else target.Warning(issue.Code, issue.Message);
-                }
-            }
-        }
     }
 }

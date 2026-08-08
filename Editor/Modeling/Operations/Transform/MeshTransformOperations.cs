@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Maicon.SceneAnalyzer.Editor.Modeling.Commands;
 using Maicon.SceneAnalyzer.Editor.Modeling.Core;
+using Maicon.SceneAnalyzer.Editor.Modeling.Operations.Topology;
 using Newtonsoft.Json;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -119,6 +120,15 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Operations.Transform
         public int axis;
         public float plane;
         public bool copy;
+    }
+
+    [Serializable]
+    internal sealed class MirrorAndWeldParameters
+    {
+        public int axis;
+        public float plane;
+        public float tolerance = 1e-5f;
+        public bool preserveSeams = true;
     }
 
     public sealed class MirrorMeshOperation : IRecordedMeshOperation
@@ -286,6 +296,79 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Operations.Transform
             for (int i = 0; i < subMeshes.Count; i++)
                 if (subMeshes[i].Topology == MeshTopology.Triangles) count += subMeshes[i].Indices.Length / 3;
             return count;
+        }
+    }
+
+    public sealed class MirrorAndWeldMeshOperation : IRecordedMeshOperation
+    {
+        private readonly int _axis;
+        private readonly float _plane;
+        private readonly float _tolerance;
+        private readonly bool _preserveSeams;
+
+        public MeshOperationDescriptor Descriptor { get; } = new MeshOperationDescriptor(
+            "mesh.mirror_weld", "Mirror mesh with welded seam", true, true, true, true, true);
+
+        public MirrorAndWeldMeshOperation(
+            int axis,
+            float plane = 0f,
+            float tolerance = 1e-5f,
+            bool preserveSeams = true)
+        {
+            _axis = axis;
+            _plane = plane;
+            _tolerance = tolerance;
+            _preserveSeams = preserveSeams;
+        }
+
+        public MeshValidationReport Validate(MeshOperationContext context)
+        {
+            var report = new MeshValidationReport();
+            Append(report, new MirrorMeshOperation(_axis, _plane, true).Validate(context));
+            Append(report, new WeldVerticesOperation(_tolerance, _preserveSeams).Validate(context));
+            return report;
+        }
+
+        public MeshOperationResult Preview(MeshOperationContext context) => Apply(context);
+
+        public MeshOperationResult Apply(MeshOperationContext context)
+        {
+            var mirror = new MirrorMeshOperation(_axis, _plane, true).Apply(context) ?? new MeshOperationResult();
+            var weld = new WeldVerticesOperation(_tolerance, _preserveSeams).Apply(context) ?? new MeshOperationResult();
+            return new MeshOperationResult
+            {
+                CreatedVertexCount = mirror.CreatedVertexCount + weld.CreatedVertexCount,
+                RemovedVertexCount = mirror.RemovedVertexCount + weld.RemovedVertexCount,
+                CreatedFaceCount = mirror.CreatedFaceCount + weld.CreatedFaceCount,
+                RemovedFaceCount = mirror.RemovedFaceCount + weld.RemovedFaceCount,
+            };
+        }
+
+        public string SerializeParameters()
+            => JsonConvert.SerializeObject(new MirrorAndWeldParameters
+            {
+                axis = _axis,
+                plane = _plane,
+                tolerance = _tolerance,
+                preserveSeams = _preserveSeams,
+            });
+
+        public static MirrorAndWeldMeshOperation Deserialize(string json)
+        {
+            var value = JsonConvert.DeserializeObject<MirrorAndWeldParameters>(json ?? "{}")
+                ?? new MirrorAndWeldParameters();
+            return new MirrorAndWeldMeshOperation(value.axis, value.plane, value.tolerance, value.preserveSeams);
+        }
+
+        private static void Append(MeshValidationReport target, MeshValidationReport source)
+        {
+            if (source == null) return;
+            for (int i = 0; i < source.Issues.Count; i++)
+            {
+                var issue = source.Issues[i];
+                if (issue.IsError) target.Error(issue.Code, issue.Message);
+                else target.Warning(issue.Code, issue.Message);
+            }
         }
     }
 }

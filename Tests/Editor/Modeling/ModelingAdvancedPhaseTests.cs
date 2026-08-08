@@ -263,6 +263,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
                 _objects.Add(root);
                 _objects.Add(mesh);
             }
+            roots[1].transform.SetParent(roots[0].transform, true);
 
             var merged = SceneObjectOperations.MergeStaticMeshes(roots, folder, true);
             _objects.Add(merged);

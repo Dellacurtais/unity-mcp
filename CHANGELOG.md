@@ -18,11 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Repair Scene Modeling UX 2.0 edge-pair storage, boundary-loop encoding, symmetric edge selection, native Object/Face mode activation, scale-aware signed manipulators, debounced preview refresh, modern bone-weight selection, revision-aware diagnostics and geometric UV-seam detection. Make Mirror + Weld modifier records rebuildable, remove hidden attached-array gaps, deduplicate hierarchical mesh merges, and preserve child world poses when centering pivots.
 - Preserve views, resolution, overlay, and isolation in projected MCP signatures for object screenshots, and pin the canonical capture tool in the managed Unity Build agent so agents do not need custom menu methods or temporary cameras.
 - Treat Unity's expected bone-weight quantization and influence ordering as numerically equivalent during Smart Body Split validation, while still rejecting meaningful rig-weight drift.
 - Preserve Smart Body Split `preset`, `outputFolder`, preview hashes, and `closeCutSurfaces` in MCP client signatures that project `oneOf` branches directly; apply results now also report whether intelligent closure was requested alongside generated cap counts.
 
-## [0.18.0] - 2026-08-01
+## [0.18.1] - 2026-08-08
+
+### Changed
+
+- Bump package, C# fallback, Python broker, and release validator versions to `0.18.1`.
+
+## [0.18.0] - 2026-08-08
 
 ### Changed
 

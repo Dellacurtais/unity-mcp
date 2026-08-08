@@ -139,19 +139,25 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneTools
         {
             if (roots == null || roots.Count == 0) throw new ArgumentException("Select at least one object to merge.", nameof(roots));
             var filters = new List<MeshFilter>();
+            var filterIds = new HashSet<int>();
+            GameObject primaryRoot = null;
             for (int rootIndex = 0; rootIndex < roots.Count; rootIndex++)
             {
                 if (roots[rootIndex] == null) continue;
+                if (primaryRoot == null) primaryRoot = roots[rootIndex];
                 if (roots[rootIndex].GetComponentInChildren<SkinnedMeshRenderer>(true) != null)
                     throw new InvalidOperationException("SKINNED_MERGE_REQUIRES_SHARED_SKELETON: use Smart Body Split/recombine for rigged meshes.");
-                filters.AddRange(roots[rootIndex].GetComponentsInChildren<MeshFilter>(true));
+                var rootFilters = roots[rootIndex].GetComponentsInChildren<MeshFilter>(true);
+                for (int filterIndex = 0; filterIndex < rootFilters.Length; filterIndex++)
+                    if (rootFilters[filterIndex] != null && filterIds.Add(rootFilters[filterIndex].GetInstanceID()))
+                        filters.Add(rootFilters[filterIndex]);
             }
             filters.RemoveAll(filter => filter == null || filter.sharedMesh == null || filter.GetComponent<MeshRenderer>() == null);
             if (filters.Count == 0) throw new InvalidOperationException("No static MeshFilter/MeshRenderer pairs were found.");
 
             var rootName = string.IsNullOrWhiteSpace(resultName) ? "MergedMesh" : resultName.Trim();
             var root = new GameObject(rootName);
-            root.transform.SetPositionAndRotation(roots[0].transform.position, roots[0].transform.rotation);
+            root.transform.SetPositionAndRotation(primaryRoot.transform.position, primaryRoot.transform.rotation);
             root.transform.localScale = Vector3.one;
             var rootWorldToLocal = root.transform.worldToLocalMatrix;
             var combines = new List<CombineInstance>();
@@ -229,10 +235,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneTools
             AssetDatabase.CreateAsset(mesh, meshPath);
             root.AddComponent<MeshFilter>().sharedMesh = mesh;
             root.AddComponent<MeshRenderer>().sharedMaterials = materials.ToArray();
-            root.layer = roots[0].layer;
-            try { root.tag = roots[0].tag; }
+            root.layer = primaryRoot.layer;
+            try { root.tag = primaryRoot.tag; }
             catch (UnityException) { }
-            GameObjectUtility.SetStaticEditorFlags(root, GameObjectUtility.GetStaticEditorFlags(roots[0]));
+            GameObjectUtility.SetStaticEditorFlags(root, GameObjectUtility.GetStaticEditorFlags(primaryRoot));
             Undo.RegisterCreatedObjectUndo(root, "Merge meshes");
             AssetDatabase.SaveAssets();
             Selection.activeGameObject = root;
@@ -252,16 +258,32 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneTools
                 throw new InvalidOperationException("SOURCE_ASSET_PROTECTED: create an editable copy before changing the mesh pivot.");
             var mesh = filter.sharedMesh;
             var center = mesh.bounds.center;
-            Undo.RegisterCompleteObjectUndo(new UnityEngine.Object[] { target.transform, mesh }, "Center mesh pivot");
+            var descendants = target.GetComponentsInChildren<Transform>(true);
+            var descendantPositions = new Vector3[descendants.Length];
+            var descendantRotations = new Quaternion[descendants.Length];
+            var undoObjects = new UnityEngine.Object[descendants.Length + 1];
+            undoObjects[0] = mesh;
+            for (int i = 0; i < descendants.Length; i++)
+            {
+                undoObjects[i + 1] = descendants[i];
+                descendantPositions[i] = descendants[i].position;
+                descendantRotations[i] = descendants[i].rotation;
+            }
+            Undo.RegisterCompleteObjectUndo(undoObjects, "Center mesh pivot");
             var vertices = mesh.vertices;
             for (int i = 0; i < vertices.Length; i++) vertices[i] -= center;
             mesh.vertices = vertices;
             target.transform.position += target.transform.TransformVector(center);
+            for (int i = 0; i < descendants.Length; i++)
+            {
+                if (descendants[i] == target.transform) continue;
+                descendants[i].SetPositionAndRotation(descendantPositions[i], descendantRotations[i]);
+            }
             mesh.RecalculateBounds();
             EditorUtility.SetDirty(mesh);
         }
 
-        private static List<Pose> BuildArrayTransforms(GameObject source, SceneArraySettings settings)
+        internal static List<Pose> BuildArrayTransforms(GameObject source, SceneArraySettings settings)
         {
             var result = new List<Pose>();
             if (settings.Mode == SceneArrayMode.Grid)
@@ -301,7 +323,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneTools
                 var attachedDistance = Mathf.Abs(direction.x) * bounds.size.x
                     + Mathf.Abs(direction.y) * bounds.size.y
                     + Mathf.Abs(direction.z) * bounds.size.z;
-                step = direction * (attachedDistance + step.magnitude);
+                step = direction * attachedDistance;
             }
             for (int i = 0; i < total; i++) result.Add(new Pose(source.transform.position + step * i, source.transform.rotation));
             return result;

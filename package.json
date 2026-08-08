@@ -1,6 +1,6 @@
 {
   "name": "com.maicon.scene-analyzer",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "displayName": "Unity MCP Transport",
   "description": "Production-grade Unity 6.1-6.3 MCP server for scene and asset authoring, project/build/test workflows, runtime gameplay validation, package-gated ecosystem integrations, structured health reporting, and registry-generated tool inventory. Includes stable Unity targets, Undo-safe mutations, explicit save operations, capability gates, and optional two-step confirmation for high-risk tools.",
   "unity": "6000.1",

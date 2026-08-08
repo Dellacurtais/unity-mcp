@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
 {
-    [EditorTool("Asset Modeler Modeling", typeof(AssetModelerToolContext))]
+    [EditorTool("Asset Modeler Modeling", null, typeof(AssetModelerToolContext))]
     internal sealed class AssetModelerModelingTool : EditorTool
     {
         private const float VertexPickRadiusPixels = 14f;
@@ -28,6 +28,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
         private MeshEdgeKey? _hoveredEdge;
         private int _hoveredBone = -1;
         private float _lastPreviewValue = float.NaN;
+        private float _pendingPreviewValue = float.NaN;
+        private double _lastPreviewTime;
+        private AssetModelerWindow _pendingPreviewOwner;
+        private bool _previewUpdateRegistered;
         private bool _pointerCaptured;
         private bool _marqueeActive;
         private Vector2 _marqueeStart;
@@ -43,6 +47,13 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
 
         public override GUIContent toolbarIcon
             => _icon ?? (_icon = new GUIContent("Asset Modeler", EditorGUIUtility.IconContent("EditCollider").image, "Asset Modeler modeling tool"));
+
+        public override void OnWillBeDeactivated()
+        {
+            FlushPendingPreview(true);
+            UnregisterPreviewUpdate();
+            base.OnWillBeDeactivated();
+        }
 
         public override void OnToolGUI(EditorWindow window)
         {
@@ -83,7 +94,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             }
 
             DrawManipulators(sceneView, modeler, localToWorld, topology, vertices, mode);
-            AssetModelerMeshDiagnostics.Draw(renderer, topology, vertices);
+            AssetModelerMeshDiagnostics.Draw(renderer, topology, vertices, document.Revision);
         }
 
         private void DoVertexMode(SceneView sceneView, AssetModelerWindow modeler, Matrix4x4 localToWorld, Vector3[] vertices)
@@ -92,7 +103,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             int controlId = GUIUtility.GetControlID(FocusType.Passive);
             if (current.type == EventType.Layout) HandleUtility.AddDefaultControl(controlId);
 
-            int hovered = PickVertex(current.mousePosition, localToWorld, vertices);
+            int hovered = PickVertex(current.mousePosition, localToWorld, vertices, sceneView.camera);
             if (hovered != _hoveredVertex) { _hoveredVertex = hovered; sceneView.Repaint(); }
 
             var pointer = HandlePointer(sceneView, current, controlId, out var marqueeRect, out bool marqueeCrossing);
@@ -126,11 +137,13 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 {
                     int index = selected[i];
                     if (index >= 0 && index < vertices.Length)
-                        Handles.DotHandleCap(0, vertices[index], Quaternion.identity, HandleUtility.GetHandleSize(vertices[index]) * 0.05f, EventType.Repaint);
+                        Handles.DotHandleCap(0, vertices[index], Quaternion.identity,
+                            HandleUtility.GetHandleSize(localToWorld.MultiplyPoint3x4(vertices[index])) * 0.05f, EventType.Repaint);
                 }
                 if (_hoveredVertex >= 0 && _hoveredVertex < vertices.Length)
                     using (new Handles.DrawingScope(HoverColor))
-                        Handles.DotHandleCap(0, vertices[_hoveredVertex], Quaternion.identity, HandleUtility.GetHandleSize(vertices[_hoveredVertex]) * 0.08f, EventType.Repaint);
+                        Handles.DotHandleCap(0, vertices[_hoveredVertex], Quaternion.identity,
+                            HandleUtility.GetHandleSize(localToWorld.MultiplyPoint3x4(vertices[_hoveredVertex])) * 0.08f, EventType.Repaint);
             }
         }
 
@@ -140,19 +153,21 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             int controlId = GUIUtility.GetControlID(FocusType.Passive);
             if (current.type == EventType.Layout) HandleUtility.AddDefaultControl(controlId);
 
-            MeshEdgeKey? hovered = PickEdge(current.mousePosition, localToWorld, topology, vertices);
+            MeshEdgeKey? hovered = PickEdge(current.mousePosition, localToWorld, topology, vertices, sceneView.camera);
             if (!Nullable.Equals(hovered, _hoveredEdge)) { _hoveredEdge = hovered; sceneView.Repaint(); }
 
             if (current.type == EventType.KeyDown && hovered.HasValue)
             {
                 if (current.keyCode == KeyCode.L)
                 {
-                    modeler.SceneSelectElements(MeshElementKind.Edge, CollectEdgeLoop(topology, vertices, hovered.Value), current.shift, false, "Loop");
+                    var loop = AssetModelerModelingState.ExpandSymmetricEdges(vertices, CollectEdgeLoop(topology, vertices, hovered.Value));
+                    modeler.SceneSelectElements(MeshElementKind.Edge, loop, current.shift, false, "Loop");
                     current.Use();
                 }
                 else if (current.keyCode == KeyCode.R)
                 {
-                    modeler.SceneSelectElements(MeshElementKind.Edge, CollectEdgeRing(topology, vertices, hovered.Value), current.shift, false, "Ring");
+                    var ring = AssetModelerModelingState.ExpandSymmetricEdges(vertices, CollectEdgeRing(topology, vertices, hovered.Value));
+                    modeler.SceneSelectElements(MeshElementKind.Edge, ring, current.shift, false, "Ring");
                     current.Use();
                 }
             }
@@ -162,7 +177,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             {
                 bool remove = current.control || current.command;
                 bool additive = current.shift && !remove;
-                var picked = CollectEdgesInRect(marqueeRect, marqueeCrossing, localToWorld, topology, vertices, sceneView.camera);
+                var picked = AssetModelerModelingState.ExpandSymmetricEdges(
+                    vertices,
+                    CollectEdgesInRect(marqueeRect, marqueeCrossing, localToWorld, topology, vertices, sceneView.camera));
                 modeler.SceneSelectElements(MeshElementKind.Edge, picked, additive, remove, marqueeCrossing ? "Área cruzada" : "Área contida");
             }
             else if (pointer == PointerResult.Click && hovered.HasValue)
@@ -173,12 +190,12 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 string source;
                 if (current.clickCount >= 2)
                 {
-                    pairs = CollectEdgeLoop(topology, vertices, hovered.Value);
+                    pairs = AssetModelerModelingState.ExpandSymmetricEdges(vertices, CollectEdgeLoop(topology, vertices, hovered.Value));
                     source = "Loop";
                 }
                 else
                 {
-                    pairs = AssetModelerModelingState.ExpandSymmetric(vertices, new[] { hovered.Value.A, hovered.Value.B });
+                    pairs = AssetModelerModelingState.ExpandSymmetricEdges(vertices, new[] { hovered.Value.A, hovered.Value.B });
                     source = $"Aresta {hovered.Value}";
                 }
                 modeler.SceneSelectElements(MeshElementKind.Edge, pairs, additive, remove, source);
@@ -281,7 +298,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 {
                     int index = selected[i];
                     if (index >= 0 && index < vertices.Length)
-                        Handles.DotHandleCap(0, vertices[index], Quaternion.identity, HandleUtility.GetHandleSize(vertices[index]) * 0.05f, EventType.Repaint);
+                        Handles.DotHandleCap(0, vertices[index], Quaternion.identity,
+                            HandleUtility.GetHandleSize(renderer.localToWorldMatrix.MultiplyPoint3x4(vertices[index])) * 0.05f, EventType.Repaint);
                 }
             }
         }
@@ -359,16 +377,19 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 if (selected.Count > 0 && TrySelectionFrame(topology, vertices, selected, out var centroid, out var normal))
                 {
                     var tool = modeler.SceneTopologyTool;
+                    var worldNormal = localToWorld.MultiplyVector(normal);
+                    float normalScale = Mathf.Max(worldNormal.magnitude, 1e-5f);
+                    var worldDirection = worldNormal / normalScale;
                     if (tool == AssetModelerTopologyTool.ExtrudeFaces)
-                        DistanceSlider(modeler, localToWorld.MultiplyPoint3x4(centroid), localToWorld.MultiplyVector(normal).normalized,
-                            modeler.SceneExtrudeDistance, value => modeler.SceneExtrudeDistance = value, modeler);
+                        DistanceSlider(modeler, localToWorld.MultiplyPoint3x4(centroid), worldDirection,
+                            normalScale, modeler.SceneExtrudeDistance, true, value => modeler.SceneExtrudeDistance = value);
                     else if (tool == AssetModelerTopologyTool.Bevel)
-                        DistanceSlider(modeler, localToWorld.MultiplyPoint3x4(centroid), localToWorld.MultiplyVector(normal).normalized,
-                            modeler.SceneBevelInset * SelectionScale(vertices, selected, topology), value =>
+                        DistanceSlider(modeler, localToWorld.MultiplyPoint3x4(centroid), worldDirection,
+                            normalScale, modeler.SceneBevelInset * SelectionScale(vertices, selected, topology), false, value =>
                             {
                                 float scale = Mathf.Max(SelectionScale(vertices, selected, topology), 1e-5f);
                                 modeler.SceneBevelInset = Mathf.Clamp(value / scale, 0f, 0.95f);
-                            }, modeler);
+                            });
                 }
                 return;
             }
@@ -376,9 +397,14 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             if (workspace == AssetModelerWorkspace.Deform)
             {
                 var boundsCenter = localToWorld.MultiplyPoint3x4(BoundsCenter(vertices));
+                float unitScale = LocalUnitScale(localToWorld);
                 EditorGUI.BeginChangeCheck();
-                float radius = Handles.RadiusHandle(Quaternion.identity, boundsCenter, modeler.SceneDeformRadius, true);
-                if (EditorGUI.EndChangeCheck()) modeler.SceneDeformRadius = Mathf.Max(0.001f, radius);
+                float radius = Handles.RadiusHandle(Quaternion.identity, boundsCenter, modeler.SceneDeformRadius * unitScale, true);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    modeler.SceneDeformRadius = Mathf.Max(0.001f, radius / unitScale);
+                    ThrottledPreview(modeler, modeler.SceneDeformRadius);
+                }
 
                 var deformMode = modeler.SceneDeformMode;
                 if (deformMode == MeshDeformMode.Grab)
@@ -388,8 +414,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                     if (EditorGUI.EndChangeCheck())
                     {
                         var delta = moved - boundsCenter;
-                        modeler.SceneDeformDirection = localToWorld.inverse.MultiplyVector(delta);
-                        modeler.SceneDeformStrength = Mathf.Max(0f, localToWorld.inverse.MultiplyVector(delta).magnitude);
+                        var localDelta = localToWorld.inverse.MultiplyVector(delta);
+                        modeler.SceneDeformDirection = localDelta.sqrMagnitude > 1e-12f ? localDelta.normalized : Vector3.zero;
+                        modeler.SceneDeformStrength = localDelta.magnitude;
                         ThrottledPreview(modeler, modeler.SceneDeformStrength);
                     }
                 }
@@ -426,10 +453,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                         Handles.ConeHandleCap(0, boundsCenter + direction, Quaternion.LookRotation(direction), HandleUtility.GetHandleSize(boundsCenter) * 0.12f, EventType.Repaint);
                     }
                     EditorGUI.BeginChangeCheck();
-                    var slid = Handles.Slider(boundsCenter + direction * modeler.SceneDeformStrength, direction, HandleUtility.GetHandleSize(boundsCenter) * 1.2f, Handles.ArrowHandleCap, 0f);
+                    var slid = Handles.Slider(boundsCenter + direction * (modeler.SceneDeformStrength * unitScale), direction,
+                        HandleUtility.GetHandleSize(boundsCenter) * 1.2f, Handles.ArrowHandleCap, 0f);
                     if (EditorGUI.EndChangeCheck())
                     {
-                        float strength = Mathf.Max(0f, AssetModelerModelingState.SnapValue(Vector3.Dot(slid - boundsCenter, direction)));
+                        float strength = AssetModelerModelingState.SnapValue(Vector3.Dot(slid - boundsCenter, direction) / unitScale);
                         modeler.SceneDeformStrength = strength;
                         ThrottledPreview(modeler, strength);
                     }
@@ -444,12 +472,14 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 var targetCenter = fitTarget.bounds.center;
                 Handles.DrawAAPolyLine(2f, editableCenter, targetCenter);
                 float handleSize = HandleUtility.GetHandleSize(targetCenter);
-                const float displayScale = 20f;
+                float displayScale = LocalUnitScale(localToWorld);
                 EditorGUI.BeginChangeCheck();
                 var slid = Handles.Slider(targetCenter + Vector3.up * (modeler.SceneFitClearance * displayScale), Vector3.up, handleSize * 0.9f, Handles.ArrowHandleCap, 0f);
                 if (EditorGUI.EndChangeCheck())
                 {
-                    float clearance = Mathf.Max(0f, AssetModelerModelingState.SnapValue(Vector3.Dot(slid - targetCenter, Vector3.up) / displayScale));
+                    float clearance = Mathf.Max(0f, AssetModelerModelingState.SnapValue(
+                        Vector3.Dot(slid - targetCenter, Vector3.up) / displayScale,
+                        0.001f));
                     modeler.SceneFitClearance = clearance;
                     ThrottledPreview(modeler, clearance * displayScale);
                 }
@@ -457,24 +487,77 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             }
         }
 
-        private void DistanceSlider(AssetModelerWindow modeler, Vector3 position, Vector3 direction, float currentValue, Action<float> assign, AssetModelerWindow previewOwner)
+        private void DistanceSlider(
+            AssetModelerWindow modeler,
+            Vector3 position,
+            Vector3 direction,
+            float worldUnitsPerValue,
+            float currentValue,
+            bool allowNegative,
+            Action<float> assign)
         {
             float handleSize = HandleUtility.GetHandleSize(position) * 1.4f;
             EditorGUI.BeginChangeCheck();
-            var slid = Handles.Slider(position + direction * currentValue, direction, handleSize, Handles.ArrowHandleCap, 0f);
+            var slid = Handles.Slider(position + direction * (currentValue * worldUnitsPerValue), direction, handleSize, Handles.ArrowHandleCap, 0f);
             if (!EditorGUI.EndChangeCheck()) return;
-            float value = Mathf.Max(0f, Vector3.Dot(slid - position, direction));
+            float value = Vector3.Dot(slid - position, direction) / Mathf.Max(worldUnitsPerValue, 1e-5f);
+            if (!allowNegative) value = Mathf.Max(0f, value);
             value = AssetModelerModelingState.SnapValue(value);
             assign(value);
-            ThrottledPreview(previewOwner, value);
+            ThrottledPreview(modeler, value);
         }
 
         private void ThrottledPreview(AssetModelerWindow modeler, float value)
         {
+            if (modeler == null) return;
             float threshold = AssetModelerModelingState.SnapEnabled ? AssetModelerModelingState.SnapStep * 0.5f : 0.01f;
-            if (!float.IsNaN(_lastPreviewValue) && Mathf.Abs(value - _lastPreviewValue) < threshold) return;
+            double now = EditorApplication.timeSinceStartup;
+            if (float.IsNaN(_lastPreviewValue)
+                || Mathf.Abs(value - _lastPreviewValue) >= threshold
+                && now - _lastPreviewTime >= 0.12d)
+            {
+                ApplyPreview(modeler, value, now);
+                return;
+            }
+
+            _pendingPreviewOwner = modeler;
+            _pendingPreviewValue = value;
+            if (_previewUpdateRegistered) return;
+            _previewUpdateRegistered = true;
+            EditorApplication.update += FlushPreviewOnUpdate;
+        }
+
+        private void FlushPreviewOnUpdate() => FlushPendingPreview(false);
+
+        private void FlushPendingPreview(bool force)
+        {
+            if (_pendingPreviewOwner == null)
+            {
+                UnregisterPreviewUpdate();
+                return;
+            }
+            double now = EditorApplication.timeSinceStartup;
+            if (!force && now - _lastPreviewTime < 0.12d) return;
+            var owner = _pendingPreviewOwner;
+            float value = _pendingPreviewValue;
+            _pendingPreviewOwner = null;
+            _pendingPreviewValue = float.NaN;
+            UnregisterPreviewUpdate();
+            ApplyPreview(owner, value, now);
+        }
+
+        private void ApplyPreview(AssetModelerWindow modeler, float value, double now)
+        {
             _lastPreviewValue = value;
+            _lastPreviewTime = now;
             modeler.ScenePreviewCurrent();
+        }
+
+        private void UnregisterPreviewUpdate()
+        {
+            if (!_previewUpdateRegistered) return;
+            EditorApplication.update -= FlushPreviewOnUpdate;
+            _previewUpdateRegistered = false;
         }
 
         private static bool HandleSimpleClick(SceneView sceneView, Event current, int controlId)
@@ -641,20 +724,27 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
 
         private static float Cross2(Vector2 left, Vector2 right) => left.x * right.y - left.y * right.x;
 
-        private static int PickVertex(Vector2 mousePosition, Matrix4x4 localToWorld, Vector3[] vertices)
+        private static int PickVertex(Vector2 mousePosition, Matrix4x4 localToWorld, Vector3[] vertices, Camera camera)
         {
             int best = -1;
             float bestDistance = VertexPickRadiusPixels;
             for (int i = 0; i < vertices.Length; i++)
             {
-                var gui = HandleUtility.WorldToGUIPoint(localToWorld.MultiplyPoint3x4(vertices[i]));
+                var world = localToWorld.MultiplyPoint3x4(vertices[i]);
+                if (camera != null && camera.WorldToViewportPoint(world).z <= 0f) continue;
+                var gui = HandleUtility.WorldToGUIPoint(world);
                 float distance = Vector2.Distance(gui, mousePosition);
                 if (distance < bestDistance) { bestDistance = distance; best = i; }
             }
             return best;
         }
 
-        private static MeshEdgeKey? PickEdge(Vector2 mousePosition, Matrix4x4 localToWorld, HalfEdgeTopology topology, Vector3[] vertices)
+        private static MeshEdgeKey? PickEdge(
+            Vector2 mousePosition,
+            Matrix4x4 localToWorld,
+            HalfEdgeTopology topology,
+            Vector3[] vertices,
+            Camera camera)
         {
             MeshEdgeKey? best = null;
             float bestDistance = EdgePickRadiusPixels;
@@ -662,8 +752,13 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             {
                 var key = pair.Key;
                 if (key.A >= vertices.Length || key.B >= vertices.Length) continue;
-                var a = HandleUtility.WorldToGUIPoint(localToWorld.MultiplyPoint3x4(vertices[key.A]));
-                var b = HandleUtility.WorldToGUIPoint(localToWorld.MultiplyPoint3x4(vertices[key.B]));
+                var worldA = localToWorld.MultiplyPoint3x4(vertices[key.A]);
+                var worldB = localToWorld.MultiplyPoint3x4(vertices[key.B]);
+                if (camera != null
+                    && camera.WorldToViewportPoint(worldA).z <= 0f
+                    && camera.WorldToViewportPoint(worldB).z <= 0f) continue;
+                var a = HandleUtility.WorldToGUIPoint(worldA);
+                var b = HandleUtility.WorldToGUIPoint(worldB);
                 float distance = DistanceToSegment(mousePosition, a, b);
                 if (distance < bestDistance) { bestDistance = distance; best = key; }
             }
@@ -676,7 +771,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 for (int i = 0; i < loop.Length; i++)
                 {
                     int next = loop[(i + 1) % loop.Length];
-                    if (new MeshEdgeKey(loop[i], next).Equals(start)) return loop;
+                    if (!new MeshEdgeKey(loop[i], next).Equals(start)) continue;
+                    var boundary = new List<MeshEdgeKey>(loop.Length);
+                    for (int edge = 0; edge < loop.Length; edge++)
+                        boundary.Add(new MeshEdgeKey(loop[edge], loop[(edge + 1) % loop.Length]));
+                    return Flatten(boundary);
                 }
 
             var result = new List<MeshEdgeKey> { start };
@@ -782,19 +881,28 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             return result;
         }
 
-        private static int[] CollectDominantVertices(Mesh mesh, int boneIndex)
+        internal static int[] CollectDominantVertices(Mesh mesh, int boneIndex)
         {
-            var weights = mesh.boneWeights;
             var result = new List<int>();
-            for (int i = 0; i < weights.Length; i++)
+            using (var bonesPerVertex = mesh.GetBonesPerVertex())
+            using (var weights = mesh.GetAllBoneWeights())
             {
-                var weight = weights[i];
-                int dominant = weight.boneIndex0;
-                float strongest = weight.weight0;
-                if (weight.weight1 > strongest) { strongest = weight.weight1; dominant = weight.boneIndex1; }
-                if (weight.weight2 > strongest) { strongest = weight.weight2; dominant = weight.boneIndex2; }
-                if (weight.weight3 > strongest) { dominant = weight.boneIndex3; }
-                if (dominant == boneIndex) result.Add(i);
+                int offset = 0;
+                for (int vertex = 0; vertex < bonesPerVertex.Length; vertex++)
+                {
+                    int influenceCount = bonesPerVertex[vertex];
+                    int dominant = -1;
+                    float strongest = -1f;
+                    for (int influence = 0; influence < influenceCount && offset + influence < weights.Length; influence++)
+                    {
+                        var weight = weights[offset + influence];
+                        if (weight.weight <= strongest) continue;
+                        strongest = weight.weight;
+                        dominant = weight.boneIndex;
+                    }
+                    offset += influenceCount;
+                    if (dominant == boneIndex) result.Add(vertex);
+                }
             }
             return result.ToArray();
         }
@@ -871,6 +979,14 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
 
         private static Vector3 AxisVector(int axis)
             => axis == 0 ? Vector3.right : axis == 1 ? Vector3.up : Vector3.forward;
+
+        private static float LocalUnitScale(Matrix4x4 localToWorld)
+        {
+            float x = localToWorld.MultiplyVector(Vector3.right).magnitude;
+            float y = localToWorld.MultiplyVector(Vector3.up).magnitude;
+            float z = localToWorld.MultiplyVector(Vector3.forward).magnitude;
+            return Mathf.Max((x + y + z) / 3f, 1e-5f);
+        }
 
         private static float DistanceToSegment(Vector2 point, Vector2 a, Vector2 b)
         {

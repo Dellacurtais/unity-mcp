@@ -9,6 +9,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
     {
         private const int DrawBudget = 4000;
         private const float UvSeamEpsilon = 1e-4f;
+        private const float PositionEpsilon = 1e-5f;
 
         private static readonly Color BoundaryColor = new Color(0.25f, 0.55f, 1f, 1f);
         private static readonly Color NonManifoldColor = new Color(1f, 0.2f, 0.2f, 1f);
@@ -19,6 +20,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
         {
             public HalfEdgeTopology Topology;
             public Mesh Mesh;
+            public MeshRevision Revision;
             public List<MeshEdgeKey> UvSeams = new List<MeshEdgeKey>();
             public List<int> FlippedFaces = new List<int>();
         }
@@ -28,14 +30,18 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
         public static int UvSeamCount => _cache?.UvSeams.Count ?? 0;
         public static int FlippedCount => _cache?.FlippedFaces.Count ?? 0;
 
-        public static void Draw(Renderer renderer, HalfEdgeTopology topology, IReadOnlyList<Vector3> vertices)
+        public static void Draw(
+            Renderer renderer,
+            HalfEdgeTopology topology,
+            IReadOnlyList<Vector3> vertices,
+            MeshRevision revision)
         {
             if (renderer == null || topology == null || vertices == null) return;
             var state = AssetModelerModelingState.ShowBoundaries || AssetModelerModelingState.ShowNonManifold
                 || AssetModelerModelingState.ShowFlippedNormals || AssetModelerModelingState.ShowUvSeams;
             if (!state) return;
 
-            EnsureCache(renderer, topology);
+            EnsureCache(renderer, topology, revision);
             var localToWorld = renderer.localToWorldMatrix;
 
             if (AssetModelerModelingState.ShowBoundaries)
@@ -48,21 +54,24 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 DrawFlippedFaces(localToWorld, topology, vertices, _cache.FlippedFaces);
         }
 
-        public static void Refresh(Renderer renderer, HalfEdgeTopology topology)
+        public static void Refresh(Renderer renderer, HalfEdgeTopology topology, MeshRevision revision)
         {
             if (renderer == null || topology == null) { _cache = null; return; }
-            if (_cache != null && ReferenceEquals(_cache.Topology, topology)) return;
-            EnsureCache(renderer, topology);
+            if (_cache != null && ReferenceEquals(_cache.Topology, topology) && _cache.Revision.Equals(revision)) return;
+            EnsureCache(renderer, topology, revision);
         }
 
-        private static void EnsureCache(Renderer renderer, HalfEdgeTopology topology)
+        private static void EnsureCache(Renderer renderer, HalfEdgeTopology topology, MeshRevision revision)
         {
             var mesh = ResolveMesh(renderer);
-            if (_cache != null && ReferenceEquals(_cache.Topology, topology) && ReferenceEquals(_cache.Mesh, mesh)) return;
-            _cache = new Cache { Topology = topology, Mesh = mesh };
+            if (_cache != null
+                && ReferenceEquals(_cache.Topology, topology)
+                && ReferenceEquals(_cache.Mesh, mesh)
+                && _cache.Revision.Equals(revision)) return;
+            _cache = new Cache { Topology = topology, Mesh = mesh, Revision = revision };
             if (mesh == null) return;
             ComputeFlippedFaces(mesh, topology, _cache.FlippedFaces);
-            ComputeUvSeams(mesh, topology, _cache.UvSeams);
+            _cache.UvSeams.AddRange(FindUvSeams(mesh, topology));
         }
 
         private static Mesh ResolveMesh(Renderer renderer)
@@ -88,47 +97,101 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             }
         }
 
-        private static void ComputeUvSeams(Mesh mesh, HalfEdgeTopology topology, List<MeshEdgeKey> output)
+        internal static List<MeshEdgeKey> FindUvSeams(Mesh mesh, HalfEdgeTopology topology)
         {
+            var output = new List<MeshEdgeKey>();
+            if (mesh == null || topology == null) return output;
             var uv = mesh.uv;
-            if (uv == null || uv.Length != mesh.vertexCount) return;
-            var subMeshTriangles = new int[mesh.subMeshCount][];
-            for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
-                subMeshTriangles[subMesh] = mesh.GetTopology(subMesh) == MeshTopology.Triangles
-                    ? mesh.GetTriangles(subMesh)
-                    : Array.Empty<int>();
+            var vertices = mesh.vertices;
+            if (uv == null || uv.Length != mesh.vertexCount || vertices.Length != mesh.vertexCount) return output;
 
+            var groups = new Dictionary<GeometricEdgeKey, List<UvEdgeSample>>();
             foreach (var pair in topology.EdgeFaces)
             {
-                var faces = pair.Value;
-                if (faces.Length != 2) continue;
-                if (IsSeam(topology, subMeshTriangles, uv, faces[0], faces[1], pair.Key.A)
-                    || IsSeam(topology, subMeshTriangles, uv, faces[0], faces[1], pair.Key.B))
-                    output.Add(pair.Key);
+                var indexed = pair.Key;
+                if (indexed.A < 0 || indexed.B < 0 || indexed.A >= vertices.Length || indexed.B >= vertices.Length) continue;
+                var first = PositionKey.From(vertices[indexed.A]);
+                var second = PositionKey.From(vertices[indexed.B]);
+                bool forward = first.CompareTo(second) <= 0;
+                var geometric = forward ? new GeometricEdgeKey(first, second) : new GeometricEdgeKey(second, first);
+                var sample = forward
+                    ? new UvEdgeSample(indexed, uv[indexed.A], uv[indexed.B])
+                    : new UvEdgeSample(indexed, uv[indexed.B], uv[indexed.A]);
+                if (!groups.TryGetValue(geometric, out var samples)) groups.Add(geometric, samples = new List<UvEdgeSample>(2));
+                samples.Add(sample);
+            }
+
+            float squaredEpsilon = UvSeamEpsilon * UvSeamEpsilon;
+            var seams = new HashSet<MeshEdgeKey>();
+            foreach (var group in groups.Values)
+            {
+                if (group.Count < 2) continue;
+                for (int left = 0; left < group.Count - 1; left++)
+                for (int right = left + 1; right < group.Count; right++)
+                {
+                    if (group[left].Indexed.Equals(group[right].Indexed)) continue;
+                    bool differs = (group[left].First - group[right].First).sqrMagnitude > squaredEpsilon
+                        || (group[left].Second - group[right].Second).sqrMagnitude > squaredEpsilon;
+                    if (!differs) continue;
+                    seams.Add(group[left].Indexed);
+                    seams.Add(group[right].Indexed);
+                }
+            }
+            output.AddRange(seams);
+            output.Sort((left, right) => left.A != right.A ? left.A.CompareTo(right.A) : left.B.CompareTo(right.B));
+            return output;
+        }
+
+        private readonly struct UvEdgeSample
+        {
+            public MeshEdgeKey Indexed { get; }
+            public Vector2 First { get; }
+            public Vector2 Second { get; }
+
+            public UvEdgeSample(MeshEdgeKey indexed, Vector2 first, Vector2 second)
+            {
+                Indexed = indexed;
+                First = first;
+                Second = second;
             }
         }
 
-        private static bool IsSeam(
-            HalfEdgeTopology topology,
-            int[][] subMeshTriangles,
-            Vector2[] uv,
-            int faceA,
-            int faceB,
-            int vertex)
+        private readonly struct GeometricEdgeKey : IEquatable<GeometricEdgeKey>
         {
-            int cornerA = FindCorner(topology.Faces[faceA], subMeshTriangles, vertex);
-            int cornerB = FindCorner(topology.Faces[faceB], subMeshTriangles, vertex);
-            if (cornerA < 0 || cornerB < 0) return false;
-            return (uv[cornerA] - uv[cornerB]).sqrMagnitude > UvSeamEpsilon * UvSeamEpsilon;
+            private readonly PositionKey _first;
+            private readonly PositionKey _second;
+
+            public GeometricEdgeKey(PositionKey first, PositionKey second) { _first = first; _second = second; }
+            public bool Equals(GeometricEdgeKey other) => _first.Equals(other._first) && _second.Equals(other._second);
+            public override bool Equals(object obj) => obj is GeometricEdgeKey other && Equals(other);
+            public override int GetHashCode() => unchecked((_first.GetHashCode() * 397) ^ _second.GetHashCode());
         }
 
-        private static int FindCorner(HalfEdgeTopology.Face face, int[][] subMeshTriangles, int vertex)
+        private readonly struct PositionKey : IEquatable<PositionKey>, IComparable<PositionKey>
         {
-            var triangles = subMeshTriangles[face.SubMesh];
-            int start = face.TriangleIndex * 3;
-            for (int i = 0; i < 3; i++)
-                if (start + i < triangles.Length && triangles[start + i] == vertex) return triangles[start + i];
-            return -1;
+            private readonly int _x;
+            private readonly int _y;
+            private readonly int _z;
+
+            private PositionKey(int x, int y, int z) { _x = x; _y = y; _z = z; }
+
+            public static PositionKey From(Vector3 value)
+                => new PositionKey(
+                    Mathf.RoundToInt(value.x / PositionEpsilon),
+                    Mathf.RoundToInt(value.y / PositionEpsilon),
+                    Mathf.RoundToInt(value.z / PositionEpsilon));
+
+            public int CompareTo(PositionKey other)
+            {
+                int x = _x.CompareTo(other._x);
+                if (x != 0) return x;
+                int y = _y.CompareTo(other._y);
+                return y != 0 ? y : _z.CompareTo(other._z);
+            }
+
+            public bool Equals(PositionKey other) => _x == other._x && _y == other._y && _z == other._z;
+            public override bool Equals(object obj) => obj is PositionKey other && Equals(other);
+            public override int GetHashCode() => unchecked(((_x * 397) ^ _y) * 397 ^ _z);
         }
 
         private static void DrawEdges(

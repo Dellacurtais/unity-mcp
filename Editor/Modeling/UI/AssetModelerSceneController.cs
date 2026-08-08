@@ -81,7 +81,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             if (current.type == EventType.Layout)
                 HandleUtility.AddDefaultControl(controlId);
 
-            bool overToolbar = ToolbarRect.Contains(current.mousePosition);
+            bool overToolbar = !nativeToolActive && ToolbarRect.Contains(current.mousePosition);
             int hovered = -1;
             if (!overToolbar && !_marqueeActive)
             {
