@@ -215,15 +215,6 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                 WorkspaceButton("Vestir", AssetModelerWorkspace.SurfaceFit);
                 EditorGUILayout.EndHorizontal();
 
-                if (_window.SceneWorkspace == AssetModelerWorkspace.Objects)
-                {
-                    EditorGUILayout.BeginHorizontal();
-                    NativeToolButton("Mover", Tool.Move);
-                    NativeToolButton("Rotacionar", Tool.Rotate);
-                    NativeToolButton("Escalar", Tool.Scale);
-                    EditorGUILayout.EndHorizontal();
-                }
-
                 if (_window.SceneFacePickingActive)
                     EditorGUILayout.LabelField($"Faces • clique/arraste • {_window.SceneSelectedFaces.Count} selecionada(s)", EditorStyles.miniLabel);
                 else if (_window.SceneTarget == null)
@@ -255,11 +246,6 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             bool active = _window.SceneWorkspace == workspace;
             if (GUILayout.Toggle(active, label, EditorStyles.miniButton) && !active)
                 _window.SceneOpenWorkspace(workspace);
-        }
-
-        private static void NativeToolButton(string label, Tool tool)
-        {
-            if (GUILayout.Toggle(Tools.current == tool, label, EditorStyles.miniButton)) Tools.current = tool;
         }
 
         internal static void RefreshGeometry(MeshEditDocument document, Renderer renderer)
@@ -444,7 +430,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                 Mathf.Max(start.x, end.x),
                 Mathf.Max(start.y, end.y));
 
-        private static void DrawMarquee(Vector2 start, Vector2 end)
+        internal static void DrawMarquee(Vector2 start, Vector2 end)
         {
             var rect = NormalizeRect(start, end);
             bool crossing = end.x < start.x;

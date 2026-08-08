@@ -160,14 +160,35 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
         public void RemapTopologyPreservingVertices(uint topologyRevision, int vertexCount)
         {
             if (_kind == MeshElementKind.Vertex) RemoveOutOfRange(_indices, vertexCount);
+            else if (_kind == MeshElementKind.Edge) RemoveEdgePairsOutOfRange(_indices, vertexCount);
             else _indices.Clear();
             for (int i = _regions.Count - 1; i >= 0; i--)
             {
-                if (_regions[i].Kind != MeshElementKind.Vertex) { _regions.RemoveAt(i); continue; }
-                var valid = new List<int>();
-                for (int j = 0; j < _regions[i].Indices.Count; j++)
-                    if (_regions[i].Indices[j] >= 0 && _regions[i].Indices[j] < vertexCount) valid.Add(_regions[i].Indices[j]);
-                _regions[i].Replace(valid);
+                if (_regions[i].Kind == MeshElementKind.Vertex)
+                {
+                    var valid = new List<int>();
+                    for (int j = 0; j < _regions[i].Indices.Count; j++)
+                        if (_regions[i].Indices[j] >= 0 && _regions[i].Indices[j] < vertexCount) valid.Add(_regions[i].Indices[j]);
+                    _regions[i].Replace(valid);
+                    continue;
+                }
+                if (_regions[i].Kind == MeshElementKind.Edge)
+                {
+                    var validPairs = new List<int>();
+                    for (int j = 0; j + 1 < _regions[i].Indices.Count; j += 2)
+                    {
+                        int a = _regions[i].Indices[j];
+                        int b = _regions[i].Indices[j + 1];
+                        if (a >= 0 && a < vertexCount && b >= 0 && b < vertexCount)
+                        {
+                            validPairs.Add(a);
+                            validPairs.Add(b);
+                        }
+                    }
+                    _regions[i].Replace(validPairs);
+                    continue;
+                }
+                _regions.RemoveAt(i);
             }
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < _regions.Count; i++) names.Add(_regions[i].Name);
@@ -180,6 +201,16 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
         {
             for (int i = values.Count - 1; i >= 0; i--)
                 if (values[i] < 0 || values[i] >= count) values.RemoveAt(i);
+        }
+
+        private static void RemoveEdgePairsOutOfRange(List<int> values, int count)
+        {
+            for (int i = values.Count - 2; i >= 0; i -= 2)
+                if (values[i] < 0 || values[i] >= count || values[i + 1] < 0 || values[i + 1] >= count)
+                {
+                    values.RemoveAt(i + 1);
+                    values.RemoveAt(i);
+                }
         }
 
         private int FindRegionIndex(string name)

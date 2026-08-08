@@ -56,11 +56,11 @@ A toolbar IMGUI fixa do `AssetModelerSceneController` deixa de ser desenhada enq
 | Modo | Interação | Armazenamento |
 |---|---|---|
 | **Objeto** | Gizmos nativos da Unity, sem captura | — |
-| **Vértice** | Clique seleciona o vértice mais próximo (raio 14 px); Shift adiciona; Ctrl/Cmd remove; clique no vazio limpa | `MeshElementKind.Vertex` |
-| **Aresta** | Clique na aresta mais próxima (distância ao segmento, 12 px); **duplo clique = loop**; **Alt+duplo clique = ring** | `MeshElementKind.Edge` (pares planos `[a,b,…]`) |
+| **Vértice** | Clique seleciona o vértice mais próximo (raio 14 px); **arraste = marquee** (contido/cruzado); Shift adiciona; Ctrl/Cmd remove; clique no vazio limpa | `MeshElementKind.Vertex` |
+| **Aresta** | Clique na aresta mais próxima (12 px); **arraste = marquee** (contido: ambos endpoints; cruzado: segmento cruza o retângulo); **duplo clique ou tecla L = loop**; **tecla R = ring** | `MeshElementKind.Edge` (pares planos `[a,b,…]`) |
 | **Face** | Implementação existente do controller: clique, duplo clique (ilha), marquee contido/cruzado | `MeshElementKind.Face` |
 | **Região** | Clique numa face seleciona a região salva que a contém (`MeshNamedRegion`) | converte para o kind da região |
-| **Bone** | Clique no bone mais próximo do `SkinnedMeshRenderer` (raio 18 px) seleciona os vértices cujo peso dominante é daquele bone | `MeshElementKind.Vertex` |
+| **Bone** | Clique no bone mais próximo do `SkinnedMeshRenderer` (raio 18 px) seleciona os vértices cujo peso dominante é daquele bone; **sem skinned renderer, o modo vira Anchor**: clique num transform filho sem renderer seleciona os vértices dentro do raio do anchor | `MeshElementKind.Vertex` |
 
 ### Convenção de arestas
 
@@ -68,10 +68,10 @@ A seleção de arestas usa pares planos de vértices `[a0,b0, a1,b1, …]` — o
 
 ### Loop e Ring (`AssetModelerModelingTool`)
 
-- **Loop**: primeiro tenta os loops de borda exatos (`HalfEdgeTopology.BoundaryLoops()`); se a aresta não é de borda, aplica caminhada gulosa escolhendo, a cada vértice, a aresta mais paralela à atual (|dot| > 0.35) com exatamente duas faces — heurística estável para malhas trianguladas. Limite de 512 arestas.
+- **Loop**: primeiro tenta os loops de borda exatos (`HalfEdgeTopology.BoundaryLoops()`); se a aresta não é de borda, caminha pela **vizinhança topológica** — os candidatos são as arestas das faces adjacentes à aresta atual (via `EdgeFaces`), exigindo exatamente duas faces; a direção (|dot| > 0.35) serve apenas como desempate entre os candidatos topológicos. Limite de 512 arestas.
 - **Ring**: a partir das duas faces adjacentes, escolhe a aresta mais paralela que compartilha um vértice com a atual (|dot| > 0.5), propagando em faixa. Limite de 512 arestas.
 
-Ambos são heurísticas de UX documentadas — malhas puramente trianguladas não têm loops/rings canônicos como malhas de quads.
+Ambos usam heurística geométrica como desempate — malhas puramente trianguladas não têm loops/rings canônicos como malhas de quads. Seleções de arestas e de regiões de arestas **sobrevivem a rebuilds que preservam vértices**: `MeshSelectionState.RemapTopologyPreservingVertices` filtra pares cujos dois endpoints continuam válidos.
 
 ### Simetria
 
@@ -88,7 +88,8 @@ Executam dentro do fluxo transacional existente: o arraste atualiza o parâmetro
 | **Soft selection / Deform** | `Handles.RadiusHandle` no centro dos bounds controla o raio de influência, com disco visível |
 | **Grab** (Deform) | `PositionHandle`: o deslocamento vira direção + força da deformação |
 | **Spline** (Deform) | Um `PositionHandle` por ponto da curva, com polilinha conectando os pontos |
-| **Bend/Twist/Taper/Flatten** | Seta de eixo desenhada no centro dos bounds (visual; ângulo/força seguem na janela) |
+| **Bend/Twist/Taper/Flatten** | Seta de eixo no centro dos bounds **com arraste**: o `Slider` ao longo do eixo define força/ângulo (com snap opcional) |
+| **Surface Fit** | Linha editável→alvo e `Slider` vertical no alvo controlando o clearance (escala de exibição 20× para valores pequenos), com label do valor |
 
 Throttle de preview: regenera somente quando o valor varia mais que `SnapStep/2` (com snap) ou 0.01 (sem snap), evitando rebuilds por frame em meshes densas.
 
@@ -117,7 +118,7 @@ Os contadores aparecem nos toggles do overlay; os destaques são desenhados pelo
 - **Auto-derivação** em `CreateCurrentMeshOperation`:
   - `ExtrudeEdges` → `ResolveEdgePairs()`: usa o campo avançado se preenchido; senão converte a seleção de arestas do Scene View (pares planos).
   - `FillHole` → `ResolveHoleLoop()`: usa o campo avançado se preenchido; senão detecta automaticamente o **maior loop de borda** da mesh via `BoundaryLoops()`.
-  - `BridgeLoops` permanece manual (dois loops ordenados são semanticamente ambíguos para auto-derivação).
+  - `BridgeLoops` → botões **"Seleção → Loop A/B"**: um loop selecionado no modo Aresta (duplo clique) é ordenado por encadeamento guloso de pares (`OrderPairsToLoop`) e preenche o campo — sem redigitação; IDs manuais seguem no foldout avançado.
 
 ## 6. Contrato entre tool, controller e janela
 
@@ -139,15 +140,17 @@ Controller (internal): AttachedWindow, CurrentTopology, CurrentVertices,
 
 - **Oráculo de compilação**: csc (Roslyn 8.0.422) contra as DLLs do Unity 6000.3.5f2 — 256 fontes, incluindo toda a camada SceneUx. Resultado: **0 erros nos arquivos novos/alterados**. Os únicos erros são os pré-existentes `PhysicsAuthor.cs:886,896` (`PhysicMaterial` → `PhysicsMaterial`), artefato de compilar fora do Unity (o atributo `UnityUpgradable` vira erro no csc puro e é auto-resolvido pelo API Updater do Editor).
 - A busca de documentação indexada (rag_search_docs) estava indisponível nesta instância stdio; as APIs `EditorToolContext`, `EditorTool`, `IMGUIOverlay`/`OverlayAttribute` e `ShortcutAttribute` foram validadas diretamente pelo oráculo de compilação contra `UnityEditor.dll`.
-- **Pendente no Editor**: suíte EditMode do pacote (oracle: 224 testes) e validação interativa do Scene View (picking, manipuladores, overlays) — não executáveis neste shell.
+- **Testes EditMode reais** (Unity 6000.3.5f2, batch mode, projeto isolado `.validation/smart-split-schema-project`, filtro `Maicon.SceneAnalyzer.Editor.Modeling.Tests`): **39/39 aprovados, 0 falhas** — `sceneux-modeling-results.xml` e, após o fechamento das lacunas, `sceneux-gaps-results.xml`. Gotcha registrado: `-quit` junto de `-runTests` aborta a execução dos testes silenciosamente; `.validation/unity-project` está com pacotes Unity corrompidos (pré-existente, não relacionado).
+- **Pendente no Editor**: validação interativa do Scene View (picking, manipuladores, overlays, marquee) e a suíte completa do pacote (oracle: 224 testes) — a interação não é exercitável em shell.
 
 ## 8. Limites conhecidos desta fase
 
-- Marquee (seleção por área) existe apenas no modo Face; Vertex/Edge usam clique.
-- Loop/Ring em malhas 100% trianguladas são heurísticas por paralelismo, não topológicas.
-- Seleções de aresta não sobrevivem a rebuilds de topologia (`RemapTopologyPreservingVertices` preserva apenas vértices); `StableElementId` ainda não alimenta a seleção — item do Geometry Core 2.0.
+- Marquee cobre Vertex/Edge/Face; Region e Bone/Anchor permanecem clique-only (picking semântico).
+- Loop/Ring em malhas 100% trianguladas usam vizinhança topológica com desempate geométrico — não são loops canônicos de quads.
+- A seleção de arestas sobrevive apenas a rebuilds que **preservam vértices**; rebuilds que recriam vértices ainda a invalidam — `StableElementId` na seleção é item do Geometry Core 2.0.
 - Orientação Global/Local ainda não altera o extrude (inerente por-normal); reservada aos deformadores.
-- Surface Fit manipulável (anchors, máscara pintável) e preview ao vivo multipose ficam para o Surface Fit 2.0.
+- O handle de Surface Fit cobre clearance com preview throttled; anchors, máscara pintável e preview multipose ficam para o Surface Fit 2.0.
+- A toolbar IMGUI legada do controller permanece como fallback quando o contexto nativo está inativo (sem os botões nativos Mover/Rotacionar/Escalar, removidos nesta fase).
 
 ## 9. Roadmap pós-UX 2.0 (sequência recomendada)
 

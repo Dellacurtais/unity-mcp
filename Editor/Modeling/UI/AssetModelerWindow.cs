@@ -472,13 +472,23 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                     break;
                 case AssetModelerTopologyTool.ExtrudeEdges:
                     EditorGUILayout.LabelField("Extrudar arestas de borda", EditorStyles.boldLabel);
-                    EditorGUILayout.HelpBox("Selecione arestas no modo Aresta do Scene View (duplo clique = loop, Alt+duplo clique = ring). Com a seleção vazia, use IDs no modo avançado.", MessageType.Info);
+                    EditorGUILayout.HelpBox("Selecione arestas no modo Aresta do Scene View (duplo clique ou tecla L = loop, tecla R = ring). Com a seleção vazia, use IDs no modo avançado.", MessageType.Info);
                     _extrudeDistance = EditorGUILayout.FloatField("Distância", _extrudeDistance);
                     DrawAdvancedIds(() => _edgePairs = EditorGUILayout.TextField(new GUIContent("Pares de vértices", "Ex.: 0,1, 1,2."), _edgePairs));
                     break;
                 case AssetModelerTopologyTool.BridgeLoops:
                     EditorGUILayout.LabelField("Conectar dois loops", EditorStyles.boldLabel);
-                    EditorGUILayout.HelpBox("Informe dois loops de vértices ordenados no modo avançado.", MessageType.Info);
+                    EditorGUILayout.HelpBox("Selecione um loop no modo Aresta (duplo clique) e envie para Loop A ou B, ou use IDs no modo avançado.", MessageType.Info);
+                    using (new EditorGUI.DisabledScope(_document == null
+                        || _document.Selection.Kind != MeshElementKind.Edge
+                        || _document.Selection.TopologyRevision != _document.Revision.Topology
+                        || _document.Selection.Indices.Count < 4))
+                    {
+                        EditorGUILayout.BeginHorizontal();
+                        if (GUILayout.Button("Seleção → Loop A")) _loopA = EdgeSelectionAsLoop();
+                        if (GUILayout.Button("Seleção → Loop B")) _loopB = EdgeSelectionAsLoop();
+                        EditorGUILayout.EndHorizontal();
+                    }
                     DrawAdvancedIds(() =>
                     {
                         _loopA = EditorGUILayout.TextField("Loop A", _loopA);
@@ -513,6 +523,42 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                 return values;
             }
             return pairs;
+        }
+
+        private string EdgeSelectionAsLoop()
+        {
+            var ordered = OrderPairsToLoop(_document.Selection.Indices);
+            return string.Join(",", ordered);
+        }
+
+        private static List<int> OrderPairsToLoop(IReadOnlyList<int> pairs)
+        {
+            var remaining = new List<int[]>();
+            for (int i = 0; i + 1 < pairs.Count; i += 2) remaining.Add(new[] { pairs[i], pairs[i + 1] });
+            var loop = new List<int>();
+            if (remaining.Count == 0) return loop;
+            var first = remaining[0];
+            remaining.RemoveAt(0);
+            loop.Add(first[0]);
+            loop.Add(first[1]);
+            for (int guard = 0; guard < 100000 && remaining.Count > 0; guard++)
+            {
+                int tail = loop[loop.Count - 1];
+                int found = -1;
+                bool flip = false;
+                for (int i = 0; i < remaining.Count; i++)
+                {
+                    if (remaining[i][0] == tail) { found = i; break; }
+                    if (remaining[i][1] == tail) { found = i; flip = true; break; }
+                }
+                if (found < 0) break;
+                var edge = remaining[found];
+                remaining.RemoveAt(found);
+                int nextVertex = flip ? edge[0] : edge[1];
+                if (nextVertex == loop[0]) break;
+                loop.Add(nextVertex);
+            }
+            return loop;
         }
 
         private int[] ResolveHoleLoop()
@@ -1026,6 +1072,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         internal float SceneDeformStrength { get => _deformStrength; set { _deformStrength = value; Repaint(); } }
         internal Vector3 SceneDeformDirection { get => _deformDirection; set { _deformDirection = value; Repaint(); } }
         internal Vector3[] SceneSplinePoints { get => ParseSplinePoints(); set { _splinePoints = FormatSplinePoints(value); Repaint(); } }
+        internal Renderer SceneFitTarget => _fitTarget;
+        internal float SceneFitClearance { get => _fitClearance; set { _fitClearance = value; Repaint(); } }
 
         internal void SceneStatus(string message, MessageType type)
         {

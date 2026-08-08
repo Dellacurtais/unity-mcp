@@ -28,6 +28,18 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
         private MeshEdgeKey? _hoveredEdge;
         private int _hoveredBone = -1;
         private float _lastPreviewValue = float.NaN;
+        private bool _pointerCaptured;
+        private bool _marqueeActive;
+        private Vector2 _marqueeStart;
+        private Vector2 _marqueeEnd;
+        private int _capturedControlId;
+
+        private enum PointerResult
+        {
+            None,
+            Click,
+            Marquee,
+        }
 
         public override GUIContent toolbarIcon
             => _icon ?? (_icon = new GUIContent("Asset Modeler", EditorGUIUtility.IconContent("EditCollider").image, "Asset Modeler modeling tool"));
@@ -83,7 +95,16 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             int hovered = PickVertex(current.mousePosition, localToWorld, vertices);
             if (hovered != _hoveredVertex) { _hoveredVertex = hovered; sceneView.Repaint(); }
 
-            if (HandleSimpleClick(sceneView, current, controlId))
+            var pointer = HandlePointer(sceneView, current, controlId, out var marqueeRect, out bool marqueeCrossing);
+            if (pointer == PointerResult.Marquee)
+            {
+                bool remove = current.control || current.command;
+                bool additive = current.shift && !remove;
+                var picked = CollectVerticesInRect(marqueeRect, localToWorld, vertices, sceneView.camera);
+                var expanded = AssetModelerModelingState.ExpandSymmetric(vertices, picked);
+                modeler.SceneSelectElements(MeshElementKind.Vertex, expanded, additive, remove, marqueeCrossing ? "Área cruzada" : "Área contida");
+            }
+            else if (pointer == PointerResult.Click)
             {
                 bool remove = current.control || current.command;
                 bool additive = current.shift && !remove;
@@ -95,6 +116,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 else if (!additive && !remove)
                     modeler.SceneSelectElements(MeshElementKind.Vertex, Array.Empty<int>(), false, false, "Área vazia");
             }
+            if (_marqueeActive) AssetModelerSceneController.DrawMarquee(_marqueeStart, _marqueeEnd);
 
             var selected = SelectedIndices(modeler, MeshElementKind.Vertex);
             using (new Handles.DrawingScope(VertexColor, localToWorld))
@@ -121,7 +143,29 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             MeshEdgeKey? hovered = PickEdge(current.mousePosition, localToWorld, topology, vertices);
             if (!Nullable.Equals(hovered, _hoveredEdge)) { _hoveredEdge = hovered; sceneView.Repaint(); }
 
-            if (HandleSimpleClick(sceneView, current, controlId) && hovered.HasValue)
+            if (current.type == EventType.KeyDown && hovered.HasValue)
+            {
+                if (current.keyCode == KeyCode.L)
+                {
+                    modeler.SceneSelectElements(MeshElementKind.Edge, CollectEdgeLoop(topology, vertices, hovered.Value), current.shift, false, "Loop");
+                    current.Use();
+                }
+                else if (current.keyCode == KeyCode.R)
+                {
+                    modeler.SceneSelectElements(MeshElementKind.Edge, CollectEdgeRing(topology, vertices, hovered.Value), current.shift, false, "Ring");
+                    current.Use();
+                }
+            }
+
+            var pointer = HandlePointer(sceneView, current, controlId, out var marqueeRect, out bool marqueeCrossing);
+            if (pointer == PointerResult.Marquee)
+            {
+                bool remove = current.control || current.command;
+                bool additive = current.shift && !remove;
+                var picked = CollectEdgesInRect(marqueeRect, marqueeCrossing, localToWorld, topology, vertices, sceneView.camera);
+                modeler.SceneSelectElements(MeshElementKind.Edge, picked, additive, remove, marqueeCrossing ? "Área cruzada" : "Área contida");
+            }
+            else if (pointer == PointerResult.Click && hovered.HasValue)
             {
                 bool remove = current.control || current.command;
                 bool additive = current.shift && !remove;
@@ -129,10 +173,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 string source;
                 if (current.clickCount >= 2)
                 {
-                    pairs = current.alt
-                        ? CollectEdgeRing(topology, vertices, hovered.Value)
-                        : CollectEdgeLoop(topology, vertices, hovered.Value);
-                    source = current.alt ? "Ring" : "Loop";
+                    pairs = CollectEdgeLoop(topology, vertices, hovered.Value);
+                    source = "Loop";
                 }
                 else
                 {
@@ -141,6 +183,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 }
                 modeler.SceneSelectElements(MeshElementKind.Edge, pairs, additive, remove, source);
             }
+            else if (pointer == PointerResult.Click && !current.shift && !current.control && !current.command)
+                modeler.SceneSelectElements(MeshElementKind.Edge, Array.Empty<int>(), false, false, "Área vazia");
+            if (_marqueeActive) AssetModelerSceneController.DrawMarquee(_marqueeStart, _marqueeEnd);
 
             var selected = SelectedIndices(modeler, MeshElementKind.Edge);
             using (new Handles.DrawingScope(EdgeColor, localToWorld))
@@ -189,7 +234,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             var skinned = renderer as SkinnedMeshRenderer;
             if (skinned == null)
             {
-                DrawHint(sceneView, "Modo Bone requer um SkinnedMeshRenderer.");
+                DoAnchorMode(sceneView, modeler, renderer);
                 return;
             }
             var bones = skinned.bones;
@@ -238,6 +283,64 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                     if (index >= 0 && index < vertices.Length)
                         Handles.DotHandleCap(0, vertices[index], Quaternion.identity, HandleUtility.GetHandleSize(vertices[index]) * 0.05f, EventType.Repaint);
                 }
+            }
+        }
+
+        private void DoAnchorMode(SceneView sceneView, AssetModelerWindow modeler, Renderer renderer)
+        {
+            var target = modeler.SceneTarget;
+            if (target == null)
+            {
+                DrawHint(sceneView, "Selecione um objeto para editar anchors.");
+                return;
+            }
+            var anchors = new List<Transform>();
+            var all = target.GetComponentsInChildren<Transform>(false);
+            for (int i = 0; i < all.Length && anchors.Count < 256; i++)
+                if (all[i] != target.transform && all[i].GetComponent<Renderer>() == null)
+                    anchors.Add(all[i]);
+            if (anchors.Count == 0)
+            {
+                DrawHint(sceneView, "Nenhum anchor (transform filho sem renderer) encontrado.");
+                return;
+            }
+
+            var current = Event.current;
+            int controlId = GUIUtility.GetControlID(FocusType.Passive);
+            if (current.type == EventType.Layout) HandleUtility.AddDefaultControl(controlId);
+
+            int hovered = -1;
+            float best = BonePickRadiusPixels();
+            for (int i = 0; i < anchors.Count; i++)
+            {
+                float distance = Vector2.Distance(HandleUtility.WorldToGUIPoint(anchors[i].position), current.mousePosition);
+                if (distance < best) { best = distance; hovered = i; }
+            }
+            if (hovered != _hoveredBone) { _hoveredBone = hovered; sceneView.Repaint(); }
+
+            if (HandleSimpleClick(sceneView, current, controlId) && hovered >= 0)
+            {
+                bool remove = current.control || current.command;
+                bool additive = current.shift && !remove;
+                var vertices = AssetModelerSceneController.CurrentVertices;
+                if (vertices != null && vertices.Length > 0)
+                {
+                    var anchorPosition = anchors[hovered].position;
+                    float radius = HandleUtility.GetHandleSize(anchorPosition) * 0.15f;
+                    var localToWorld = renderer.localToWorldMatrix;
+                    var picked = new List<int>();
+                    for (int i = 0; i < vertices.Length; i++)
+                        if ((localToWorld.MultiplyPoint3x4(vertices[i]) - anchorPosition).sqrMagnitude <= radius * radius)
+                            picked.Add(i);
+                    modeler.SceneSelectElements(MeshElementKind.Vertex, picked, additive, remove, $"Anchor {anchors[hovered].name}");
+                }
+            }
+
+            for (int i = 0; i < anchors.Count; i++)
+            {
+                float size = HandleUtility.GetHandleSize(anchors[i].position) * (i == _hoveredBone ? 0.09f : 0.05f);
+                using (new Handles.DrawingScope(i == _hoveredBone ? HoverColor : BoneColor))
+                    Handles.SphereHandleCap(0, anchors[i].position, Quaternion.identity, size, EventType.Repaint);
             }
         }
 
@@ -316,13 +419,41 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 else if (deformMode == MeshDeformMode.Bend || deformMode == MeshDeformMode.Twist || deformMode == MeshDeformMode.Taper || deformMode == MeshDeformMode.Flatten)
                 {
                     var axis = AxisVector(modeler.SceneDeformAxis);
+                    var direction = localToWorld.MultiplyVector(axis).normalized;
                     using (new Handles.DrawingScope(new Color(1f, 0.8f, 0.2f, 1f)))
                     {
-                        var direction = localToWorld.MultiplyVector(axis).normalized;
                         Handles.DrawLine(boundsCenter - direction, boundsCenter + direction);
                         Handles.ConeHandleCap(0, boundsCenter + direction, Quaternion.LookRotation(direction), HandleUtility.GetHandleSize(boundsCenter) * 0.12f, EventType.Repaint);
                     }
+                    EditorGUI.BeginChangeCheck();
+                    var slid = Handles.Slider(boundsCenter + direction * modeler.SceneDeformStrength, direction, HandleUtility.GetHandleSize(boundsCenter) * 1.2f, Handles.ArrowHandleCap, 0f);
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        float strength = Mathf.Max(0f, AssetModelerModelingState.SnapValue(Vector3.Dot(slid - boundsCenter, direction)));
+                        modeler.SceneDeformStrength = strength;
+                        ThrottledPreview(modeler, strength);
+                    }
                 }
+            }
+
+            if (workspace == AssetModelerWorkspace.SurfaceFit)
+            {
+                var fitTarget = modeler.SceneFitTarget;
+                if (fitTarget == null) return;
+                var editableCenter = localToWorld.MultiplyPoint3x4(BoundsCenter(vertices));
+                var targetCenter = fitTarget.bounds.center;
+                Handles.DrawAAPolyLine(2f, editableCenter, targetCenter);
+                float handleSize = HandleUtility.GetHandleSize(targetCenter);
+                const float displayScale = 20f;
+                EditorGUI.BeginChangeCheck();
+                var slid = Handles.Slider(targetCenter + Vector3.up * (modeler.SceneFitClearance * displayScale), Vector3.up, handleSize * 0.9f, Handles.ArrowHandleCap, 0f);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    float clearance = Mathf.Max(0f, AssetModelerModelingState.SnapValue(Vector3.Dot(slid - targetCenter, Vector3.up) / displayScale));
+                    modeler.SceneFitClearance = clearance;
+                    ThrottledPreview(modeler, clearance * displayScale);
+                }
+                Handles.Label(targetCenter + Vector3.up * handleSize, $"Clearance {modeler.SceneFitClearance:F3}");
             }
         }
 
@@ -369,6 +500,146 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             }
             return false;
         }
+
+        private PointerResult HandlePointer(SceneView sceneView, Event current, int controlId, out Rect rect, out bool crossing)
+        {
+            rect = default;
+            crossing = false;
+            if (current.type == EventType.KeyDown && current.keyCode == KeyCode.Escape && _pointerCaptured)
+            {
+                ResetToolPointer();
+                current.Use();
+                sceneView.Repaint();
+                return PointerResult.None;
+            }
+            if (!_pointerCaptured && current.type == EventType.MouseDown && current.button == 0 && !current.alt)
+            {
+                _pointerCaptured = true;
+                _marqueeActive = false;
+                _marqueeStart = current.mousePosition;
+                _marqueeEnd = _marqueeStart;
+                _capturedControlId = controlId;
+                GUIUtility.hotControl = controlId;
+                current.Use();
+                return PointerResult.None;
+            }
+            if (!_pointerCaptured || GUIUtility.hotControl != controlId) return PointerResult.None;
+            if (current.type == EventType.MouseDrag && current.button == 0)
+            {
+                _marqueeEnd = current.mousePosition;
+                if (!_marqueeActive && (_marqueeEnd - _marqueeStart).sqrMagnitude >= 25f) _marqueeActive = true;
+                current.Use();
+                sceneView.Repaint();
+                return PointerResult.None;
+            }
+            if (current.type != EventType.MouseUp || current.button != 0) return PointerResult.None;
+            var result = _marqueeActive ? PointerResult.Marquee : PointerResult.Click;
+            rect = NormalizeRect(_marqueeStart, _marqueeEnd);
+            crossing = _marqueeEnd.x < _marqueeStart.x;
+            ResetToolPointer();
+            current.Use();
+            sceneView.Repaint();
+            return result;
+        }
+
+        private void ResetToolPointer()
+        {
+            int captured = _capturedControlId;
+            _pointerCaptured = false;
+            _marqueeActive = false;
+            _capturedControlId = 0;
+            if (captured != 0 && GUIUtility.hotControl == captured) GUIUtility.hotControl = 0;
+        }
+
+        private static Rect NormalizeRect(Vector2 start, Vector2 end)
+            => Rect.MinMaxRect(
+                Mathf.Min(start.x, end.x),
+                Mathf.Min(start.y, end.y),
+                Mathf.Max(start.x, end.x),
+                Mathf.Max(start.y, end.y));
+
+        private static int[] CollectVerticesInRect(Rect rect, Matrix4x4 localToWorld, Vector3[] vertices, Camera camera)
+        {
+            var result = new List<int>();
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                var world = localToWorld.MultiplyPoint3x4(vertices[i]);
+                if (camera.WorldToViewportPoint(world).z <= 0f) continue;
+                if (rect.Contains(HandleUtility.WorldToGUIPoint(world))) result.Add(i);
+            }
+            return result.ToArray();
+        }
+
+        private static int[] CollectEdgesInRect(
+            Rect rect,
+            bool crossing,
+            Matrix4x4 localToWorld,
+            HalfEdgeTopology topology,
+            Vector3[] vertices,
+            Camera camera)
+        {
+            var result = new List<int>();
+            foreach (var pair in topology.EdgeFaces)
+            {
+                var key = pair.Key;
+                if (key.A >= vertices.Length || key.B >= vertices.Length) continue;
+                var worldA = localToWorld.MultiplyPoint3x4(vertices[key.A]);
+                var worldB = localToWorld.MultiplyPoint3x4(vertices[key.B]);
+                if (camera.WorldToViewportPoint(worldA).z <= 0f || camera.WorldToViewportPoint(worldB).z <= 0f) continue;
+                var a = HandleUtility.WorldToGUIPoint(worldA);
+                var b = HandleUtility.WorldToGUIPoint(worldB);
+                bool containsA = rect.Contains(a);
+                bool containsB = rect.Contains(b);
+                bool match = crossing
+                    ? containsA || containsB || SegmentCrossesRect(a, b, rect)
+                    : containsA && containsB;
+                if (match)
+                {
+                    result.Add(key.A);
+                    result.Add(key.B);
+                }
+            }
+            return result.ToArray();
+        }
+
+        private static bool SegmentCrossesRect(Vector2 a, Vector2 b, Rect rect)
+        {
+            var topLeft = new Vector2(rect.xMin, rect.yMin);
+            var topRight = new Vector2(rect.xMax, rect.yMin);
+            var bottomRight = new Vector2(rect.xMax, rect.yMax);
+            var bottomLeft = new Vector2(rect.xMin, rect.yMax);
+            return SegmentsIntersect(a, b, topLeft, topRight)
+                || SegmentsIntersect(a, b, topRight, bottomRight)
+                || SegmentsIntersect(a, b, bottomRight, bottomLeft)
+                || SegmentsIntersect(a, b, bottomLeft, topLeft);
+        }
+
+        private static bool SegmentsIntersect(Vector2 a, Vector2 b, Vector2 c, Vector2 d)
+        {
+            float abC = Cross2(b - a, c - a);
+            float abD = Cross2(b - a, d - a);
+            float cdA = Cross2(d - c, a - c);
+            float cdB = Cross2(d - c, b - c);
+            const float epsilon = 1e-5f;
+            if (((abC > epsilon && abD < -epsilon) || (abC < -epsilon && abD > epsilon))
+                && ((cdA > epsilon && cdB < -epsilon) || (cdA < -epsilon && cdB > epsilon)))
+                return true;
+            return Mathf.Abs(abC) <= epsilon && OnSegment(a, b, c)
+                || Mathf.Abs(abD) <= epsilon && OnSegment(a, b, d)
+                || Mathf.Abs(cdA) <= epsilon && OnSegment(c, d, a)
+                || Mathf.Abs(cdB) <= epsilon && OnSegment(c, d, b);
+        }
+
+        private static bool OnSegment(Vector2 a, Vector2 b, Vector2 point)
+        {
+            const float epsilon = 1e-5f;
+            return point.x >= Mathf.Min(a.x, b.x) - epsilon
+                && point.x <= Mathf.Max(a.x, b.x) + epsilon
+                && point.y >= Mathf.Min(a.y, b.y) - epsilon
+                && point.y <= Mathf.Max(a.y, b.y) + epsilon;
+        }
+
+        private static float Cross2(Vector2 left, Vector2 right) => left.x * right.y - left.y * right.x;
 
         private static int PickVertex(Vector2 mousePosition, Matrix4x4 localToWorld, Vector3[] vertices)
         {
@@ -447,15 +718,23 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             next = default;
             float bestDot = 0.35f;
             var direction = EdgeDirection(vertices, current);
-            foreach (int vertex in new[] { current.A, current.B })
-                foreach (var candidate in EdgesAtVertex(topology, vertex))
+            if (!topology.EdgeFaces.TryGetValue(current, out var faces) || faces.Length != 2) return false;
+            for (int f = 0; f < faces.Length; f++)
+                foreach (var candidate in FaceEdgeKeys(topology.Faces[faces[f]]))
                 {
                     if (candidate.Equals(current) || visited.Contains(candidate)) continue;
-                    if (!topology.EdgeFaces.TryGetValue(candidate, out var faces) || faces.Length != 2) continue;
+                    if (!topology.EdgeFaces.TryGetValue(candidate, out var candidateFaces) || candidateFaces.Length != 2) continue;
                     float dot = Mathf.Abs(Vector3.Dot(direction, EdgeDirection(vertices, candidate)));
                     if (dot > bestDot) { bestDot = dot; next = candidate; }
                 }
             return !next.Equals(default(MeshEdgeKey)) && bestDot > 0.35f;
+        }
+
+        private static IEnumerable<MeshEdgeKey> FaceEdgeKeys(HalfEdgeTopology.Face face)
+        {
+            yield return new MeshEdgeKey(face.A, face.B);
+            yield return new MeshEdgeKey(face.B, face.C);
+            yield return new MeshEdgeKey(face.C, face.A);
         }
 
         private static bool TryRingContinuation(
@@ -483,13 +762,6 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
                 }
             }
             return !next.Equals(default(MeshEdgeKey)) && bestDot > 0.5f;
-        }
-
-        private static IEnumerable<MeshEdgeKey> EdgesAtVertex(HalfEdgeTopology topology, int vertex)
-        {
-            var seen = new HashSet<MeshEdgeKey>();
-            foreach (var pair in topology.EdgeFaces)
-                if ((pair.Key.A == vertex || pair.Key.B == vertex) && seen.Add(pair.Key)) yield return pair.Key;
         }
 
         private static Vector3 EdgeDirection(IReadOnlyList<Vector3> vertices, MeshEdgeKey key)
