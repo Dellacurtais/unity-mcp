@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Treat Unity's expected bone-weight quantization and influence ordering as numerically equivalent during Smart Body Split validation, while still rejecting meaningful rig-weight drift.
 - Preserve Smart Body Split `preset`, `outputFolder`, preview hashes, and `closeCutSurfaces` in MCP client signatures that project `oneOf` branches directly; apply results now also report whether intelligent closure was requested alongside generated cap counts.
 
+## [0.18.0] - 2026-08-01
+
+### Changed
+
+- Minor rollover bump: package, C# fallback, Python broker, and release validator versions advance to `0.18.0`.
+
 ## [0.17.9] - 2026-08-01
 
 ### Changed
