@@ -1,6 +1,8 @@
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Modeling.Commands;
 using Maicon.SceneAnalyzer.Editor.Modeling.Mcp;
+using Maicon.SceneAnalyzer.Editor.Modeling.Rigging;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
@@ -19,9 +21,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling
             try
             {
                 ModelingOperationCatalog.RegisterAll();
-                if (Bootstrap.ToolRegistry == null
-                    || Bootstrap.ToolRegistry.TryGet("mesh_analyze_body_parts", out _)) return;
-                Bootstrap.ToolRegistry.RegisterRange(new IMcpTool[]
+                if (Bootstrap.ToolRegistry == null) return;
+                var candidates = new IMcpTool[]
                 {
                     new AnalyzeBodyPartsTool(),
                     new GetSmartBodySplitProposalTool(),
@@ -51,8 +52,32 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling
                     new EvaluatePoseClearanceTool(),
                     new StageExternalModelAssetTool(),
                     new ExportMeshFbxTool(),
-                });
-                Bootstrap.RecordEntry("[asset-modeler] registered 28 modeling tools");
+                    new RigInspectTool(),
+                    new RigValidateClipsTool(),
+                    new RigCreateEditableSkinTool(),
+                    new RigApplyWeightOperationTool(),
+                    new RigRebuildBindPosesTool(),
+                    new RigTransferWeightsTool(),
+                    new RigEditSkeletonTool(),
+                    new AnimationCapturePoseTool(),
+                    new AnimationApplyPoseTool(),
+                    new AnimationTransformClipTool(),
+                    new RigAnalyzeRetargetTool(),
+                    new RigApplyRetargetPoseTool(),
+                    new RigRetargetClipTool(),
+                    new RigCreateIkTool(),
+                    new RigPreviewIkTool(),
+                    new RigBakeIkClipTool(),
+                    new RigAnalyzeAutoRigTool(),
+                    new RigPreviewAutoRigTool(),
+                    new RigApplyAutoRigTool(),
+                };
+                var missing = new List<IMcpTool>(candidates.Length);
+                for (int i = 0; i < candidates.Length; i++)
+                    if (!Bootstrap.ToolRegistry.TryGet(candidates[i].Name, out _)) missing.Add(candidates[i]);
+                if (missing.Count == 0) return;
+                Bootstrap.ToolRegistry.RegisterRange(missing);
+                Bootstrap.RecordEntry($"[asset-modeler] registered {missing.Count} of 47 modeling and rigging tools");
             }
             catch (System.Exception exception)
             {

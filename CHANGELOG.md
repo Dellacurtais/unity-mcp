@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add the seven-page Rig & Animation Studio with rig diagnostics/heatmaps, safe BoneWeight1 painting, skeleton and bind-pose editing, weight transfer, pose libraries and clip transforms, Humanoid/Generic retarget, native IK/bake with optional Animation Rigging integration, and hash-guarded local or AI-assisted auto-rig. The same services are exposed through 19 guarded MCP tools.
 - Add Scene View marquee face selection to Asset Modeler, with contained/crossing drag directions, additive/removal modifiers, connected-island double-click, and select-all/invert/connected shortcuts.
 - Add `screenshot_object`, a fast direct MCP capture for scene objects and prefab assets with automatic framing, optional batched views, inline PNG output, and non-destructive isolation by default.
 - Add the Asset Modeler Phase 0 foundation: editable mesh documents, full channel snapshots, source/revision fingerprints, operation contracts, synthetic fixtures, benchmark harness, and isolated Editor/runtime assemblies.
@@ -18,10 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Correct Humanoid muscle/root-axis mirroring and quaternion additive-reference math in Clip Studio; accelerate Weight Painter picking with a reusable baked mesh, triangle BVH, vertex grid and affected-only normalization; and complete the optional Animation Rigging bridge for validated Two Bone, Multi-Aim and Chain IK constraints through its public API.
+- Harden all seven Rig & Animation Studio phases: complete state hashes and stale-preview rejection; stroke-level Undo/cancel/locks and cached weight painting; bind snapshots, geometry-validated rebind and BVH weight transfer; complete clip transforms with duplicate-key-safe merge; reviewed retarget profiles with batch metrics; drift-free arbitrary-chain IK; and confidence-gated Auto Rig with Humanoid Avatar attempt, Generic fallback, validated deformation clip, and an explicit non-sending AI request/response bridge.
 - Repair Scene Modeling UX 2.0 edge-pair storage, boundary-loop encoding, symmetric edge selection, native Object/Face mode activation, scale-aware signed manipulators, debounced preview refresh, modern bone-weight selection, revision-aware diagnostics and geometric UV-seam detection. Make Mirror + Weld modifier records rebuildable, remove hidden attached-array gaps, deduplicate hierarchical mesh merges, and preserve child world poses when centering pivots.
 - Preserve views, resolution, overlay, and isolation in projected MCP signatures for object screenshots, and pin the canonical capture tool in the managed Unity Build agent so agents do not need custom menu methods or temporary cameras.
 - Treat Unity's expected bone-weight quantization and influence ordering as numerically equivalent during Smart Body Split validation, while still rejecting meaningful rig-weight drift.
 - Preserve Smart Body Split `preset`, `outputFolder`, preview hashes, and `closeCutSurfaces` in MCP client signatures that project `oneOf` branches directly; apply results now also report whether intelligent closure was requested alongside generated cap counts.
+
+## [0.18.2] - 2026-08-08
+
+### Changed
+
+- Bump package, C# fallback, Python broker, and release validator versions to `0.18.2`.
 
 ## [0.18.1] - 2026-08-08
 
