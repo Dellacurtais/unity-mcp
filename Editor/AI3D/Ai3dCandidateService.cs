@@ -253,6 +253,34 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             }
         }
 
+        /// <summary>
+        /// Rebuilds the validation snapshot for an existing quarantine asset. This
+        /// is used by durable MCP workflows after a domain reload; no manifest hash
+        /// is trusted without re-reading the imported FBX and its mesh channels.
+        /// </summary>
+        public static Ai3dStagedCandidate RevalidateStaged(
+            string assetPath,
+            string jobId,
+            string providerTaskId,
+            string planHash,
+            string sourceArtifactHash)
+        {
+            if (string.IsNullOrWhiteSpace(assetPath)
+                || (!assetPath.Equals("Assets", StringComparison.Ordinal)
+                    && !assetPath.StartsWith("Assets/", StringComparison.Ordinal)))
+                throw new InvalidOperationException("AI3D_STAGED_PATH_INVALID");
+            var projectRoot = Directory.GetParent(Application.dataPath)?.FullName
+                ?? throw new InvalidOperationException("UNITY_PROJECT_PATH_MISSING");
+            var absolute = Path.GetFullPath(Path.Combine(projectRoot, assetPath));
+            if (!IsUnderDirectory(absolute, Application.dataPath) || !File.Exists(absolute))
+                throw new InvalidOperationException("AI3D_STAGED_ASSET_MISSING");
+            var staged = InspectImportedAsset(
+                assetPath, jobId, providerTaskId, planHash, sourceArtifactHash,
+                new FileInfo(absolute).Length);
+            staged.ManifestAssetPath = Path.ChangeExtension(assetPath, ".ai3d.json").Replace('\\', '/');
+            return staged;
+        }
+
         public static GameObject InstantiateAccepted(string assetPath, Vector3 position)
         {
             var asset = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);

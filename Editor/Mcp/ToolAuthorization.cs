@@ -31,12 +31,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 return Deny("CAPABILITY_DISABLED", "Play control tools are disabled in Unity MCP settings.", out code, out message);
             if ((descriptor.Capabilities & McpCapability.RuntimeCommand) != 0 && !Settings.AllowRuntimeCommandTools)
                 return Deny("CAPABILITY_DISABLED", "Runtime command tools are disabled in Unity MCP settings.", out code, out message);
+            if ((descriptor.Capabilities & McpCapability.ExternalService) != 0 && !Settings.AllowExternalServiceTools)
+                return Deny("EXTERNAL_SERVICE_DISABLED", "Paid external-service tools are disabled. Enable them explicitly in AI 3D Studio or the Unity MCP Transport panel.", out code, out message);
             return true;
         }
 
         public static bool RequiresConfirmation(ToolDescriptor descriptor) =>
-            Settings.RequireHighRiskConfirmation && descriptor != null &&
-            descriptor.ConfirmationPolicy == McpConfirmationPolicy.Required;
+            descriptor != null && descriptor.ConfirmationPolicy == McpConfirmationPolicy.Required &&
+            (((descriptor.Capabilities & McpCapability.ExternalService) != 0) || Settings.RequireHighRiskConfirmation);
 
         private static bool Deny(string deniedCode, string deniedMessage, out string code, out string message)
         {

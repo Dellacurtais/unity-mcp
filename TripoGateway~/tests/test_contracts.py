@@ -59,6 +59,56 @@ def test_contract_requires_operation_specific_minimums_and_disclosure() -> None:
         JobCreateRequest.model_validate(payload)
 
 
+def test_processing_and_rig_contracts_enforce_official_v3_limits() -> None:
+    payload = valid_request()
+    payload["operation"] = "retopology"
+    payload["payload"] = {
+        "input": "file_mesh",
+        "model": "v2.0",
+        "face_limit": 10_001,
+        "quad": True,
+        "bake": True,
+    }
+    payload["budget"] = {"estimated_credits": 30, "cap_credits": 45}
+    payload["disclosure"] = {
+        "external_send_approved": True,
+        "kinds": ["mesh"],
+        "source_hashes": ["b" * 64],
+    }
+    with pytest.raises(ValidationError, match="between 500 and 10000"):
+        JobCreateRequest.model_validate(payload)
+    payload["payload"]["face_limit"] = 10_000
+    assert JobCreateRequest.model_validate(payload).operation == "retopology"
+
+    payload["operation"] = "segment"
+    payload["payload"] = {
+        "input": "task_source",
+        "model": "v2.0-20260430",
+        "segmentation_granularity": "detailed",
+        "split_by_connectivity": True,
+    }
+    payload["budget"] = {"estimated_credits": 40, "cap_credits": 60}
+    payload["disclosure"] = {
+        "external_send_approved": True,
+        "kinds": ["task_reference"],
+        "source_hashes": [],
+    }
+    assert JobCreateRequest.model_validate(payload).operation == "segment"
+
+    payload["operation"] = "retarget"
+    payload["payload"] = {
+        "input": "task_rig",
+        "animations": ["preset:idle", "preset:walk"],
+        "out_format": "fbx",
+        "animate_in_place": True,
+    }
+    payload["budget"] = {"estimated_credits": 20, "cap_credits": 30}
+    assert JobCreateRequest.model_validate(payload).operation == "retarget"
+    payload["payload"]["animation"] = "preset:run"
+    with pytest.raises(ValidationError, match="exactly one"):
+        JobCreateRequest.model_validate(payload)
+
+
 def test_canonical_hash_is_deterministic_and_secrets_are_redacted() -> None:
     left = {"b": [2, 1], "a": {"x": "ç"}}
     right = {"a": {"x": "ç"}, "b": [2, 1]}

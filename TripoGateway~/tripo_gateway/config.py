@@ -55,6 +55,10 @@ class GatewaySettings:
     max_request_bytes: int = 2 * 1024 * 1024
     max_download_bytes: int = 1024 * 1024 * 1024
     max_credits_per_job: int = 1000
+    max_daily_estimated_credits_per_project: int = 1000
+    max_active_jobs_per_project: int = 3
+    webhook_secret: str | None = None
+    webhook_tolerance_seconds: int = 300
     request_timeout_seconds: float = 60.0
     poll_interval_seconds: float = 2.0
     cancelled_poll_interval_seconds: float = 10.0
@@ -81,6 +85,14 @@ class GatewaySettings:
             raise ValueError("max_download_bytes must be positive")
         if self.max_credits_per_job < 0:
             raise ValueError("max_credits_per_job must be non-negative")
+        if self.max_daily_estimated_credits_per_project < 0:
+            raise ValueError("max_daily_estimated_credits_per_project must be non-negative")
+        if self.max_active_jobs_per_project < 1:
+            raise ValueError("max_active_jobs_per_project must be positive")
+        if self.webhook_secret is not None and not self.webhook_secret.startswith("whsec_"):
+            raise ValueError("TRIPO_WEBHOOK_SECRET must start with whsec_")
+        if self.webhook_tolerance_seconds < 30 or self.webhook_tolerance_seconds > 3600:
+            raise ValueError("webhook_tolerance_seconds must be between 30 and 3600")
         if self.poll_interval_seconds <= 0 or self.cancelled_poll_interval_seconds <= 0:
             raise ValueError("poll intervals must be positive")
 
@@ -103,6 +115,16 @@ class GatewaySettings:
             ),
             max_credits_per_job=int(
                 os.environ.get("TRIPO_GATEWAY_MAX_CREDITS_PER_JOB", 1000)
+            ),
+            max_daily_estimated_credits_per_project=int(
+                os.environ.get("TRIPO_GATEWAY_MAX_DAILY_ESTIMATED_CREDITS", 1000)
+            ),
+            max_active_jobs_per_project=int(
+                os.environ.get("TRIPO_GATEWAY_MAX_ACTIVE_JOBS_PER_PROJECT", 3)
+            ),
+            webhook_secret=os.environ.get("TRIPO_WEBHOOK_SECRET") or None,
+            webhook_tolerance_seconds=int(
+                os.environ.get("TRIPO_WEBHOOK_TOLERANCE_SECONDS", 300)
             ),
             request_timeout_seconds=float(
                 os.environ.get("TRIPO_GATEWAY_REQUEST_TIMEOUT_SECONDS", 60)
@@ -129,5 +151,7 @@ class GatewaySettings:
             "maxRequestBytes": self.max_request_bytes,
             "maxDownloadBytes": self.max_download_bytes,
             "maxCreditsPerJob": self.max_credits_per_job,
+            "maxDailyEstimatedCreditsPerProject": self.max_daily_estimated_credits_per_project,
+            "maxActiveJobsPerProject": self.max_active_jobs_per_project,
+            "webhookConfigured": bool(self.webhook_secret),
         }
-

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import time
 from pathlib import Path
 
@@ -111,6 +113,105 @@ def test_successful_job_is_durable_and_idempotent(tmp_path: Path) -> None:
         assert replay.status_code == 200
         assert replay.json()["job"]["job_id"] == job_id
         assert second_provider.created == []
+
+
+def test_signed_webhook_completes_job_once_and_telemetry_stays_redacted(tmp_path: Path) -> None:
+    secret = "whsec_synthetic_test"
+    config = GatewaySettings(
+        data_dir=tmp_path / "gateway-data",
+        gateway_token="local-gateway-token",
+        api_key="provider-api-secret",
+        webhook_secret=secret,
+        poll_interval_seconds=0.01,
+        cancelled_poll_interval_seconds=0.01,
+    )
+    provider = FakeTripoProvider(block_polling=True)
+    vault = FakeArtifactVault()
+    app = create_app(config, provider=provider, artifact_vault=vault)
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/jobs",
+            headers={**AUTH, "Idempotency-Key": "webhook-job"},
+            json=job_body("private webhook prompt"),
+        )
+        assert created.status_code == 202
+        job_id = created.json()["job"]["job_id"]
+        assert provider.provider_task_created.wait(1.0)
+        event = {
+            "id": "task_fake_001:task.completed",
+            "type": "task.completed",
+            "created_at": "2026-08-09T00:00:00Z",
+            "data": dict(provider.task_result),
+        }
+        raw = json.dumps(event, separators=(",", ":")).encode("utf-8")
+        timestamp = int(time.time())
+        signature = hmac.new(
+            secret.encode("utf-8"), str(timestamp).encode("ascii") + b"." + raw, hashlib.sha256
+        ).hexdigest()
+        headers = {
+            "Content-Type": "application/json",
+            "Tripo-Webhook-Signature": f"t={timestamp},v1={signature}",
+            "Tripo-Webhook-Delivery": "delivery-001",
+            "Tripo-Webhook-Event": "task.completed",
+        }
+        response = client.post("/v1/webhooks/tripo", headers=headers, content=raw)
+        assert response.status_code == 200
+        assert response.json() == {
+            "accepted": True,
+            "duplicate": False,
+            "matchedJobId": job_id,
+        }
+        duplicate = client.post("/v1/webhooks/tripo", headers=headers, content=raw)
+        assert duplicate.status_code == 200
+        assert duplicate.json()["duplicate"] is True
+        provider.release_polling.set()
+        completed = wait_for_terminal(client, job_id)
+        assert completed["status"] == "completed"
+        assert len(vault.calls) == 1
+        telemetry = client.get(
+            "/v1/telemetry/summary?project_key=project:test", headers=AUTH
+        )
+        assert telemetry.status_code == 200
+        assert telemetry.json()["creditsConsumed"] == 100
+        assert "private webhook prompt" not in telemetry.text
+        assert "provider-api-secret" not in telemetry.text
+
+
+def test_project_quotas_block_new_work_but_never_break_idempotent_replay(tmp_path: Path) -> None:
+    config = GatewaySettings(
+        data_dir=tmp_path / "gateway-data",
+        gateway_token="local-gateway-token",
+        api_key="provider-api-secret",
+        max_active_jobs_per_project=1,
+        max_daily_estimated_credits_per_project=150,
+        poll_interval_seconds=0.01,
+        cancelled_poll_interval_seconds=0.01,
+    )
+    provider = FakeTripoProvider(block_polling=True)
+    app = create_app(config, provider=provider, artifact_vault=FakeArtifactVault())
+    first_headers = {**AUTH, "Idempotency-Key": "quota-first"}
+    with TestClient(app) as client:
+        first = client.post("/v1/jobs", headers=first_headers, json=job_body())
+        assert first.status_code == 202
+        replay = client.post("/v1/jobs", headers=first_headers, json=job_body())
+        assert replay.status_code == 200
+        assert replay.json()["job"]["job_id"] == first.json()["job"]["job_id"]
+        blocked_active = client.post(
+            "/v1/jobs",
+            headers={**AUTH, "Idempotency-Key": "quota-second"},
+            json=job_body("second"),
+        )
+        assert blocked_active.status_code == 429
+        assert blocked_active.json()["error"]["code"] == "PROJECT_CONCURRENCY_QUOTA_EXCEEDED"
+        provider.release_polling.set()
+        wait_for_terminal(client, first.json()["job"]["job_id"])
+        blocked_daily = client.post(
+            "/v1/jobs",
+            headers={**AUTH, "Idempotency-Key": "quota-third"},
+            json=job_body("third"),
+        )
+        assert blocked_daily.status_code == 429
+        assert blocked_daily.json()["error"]["code"] == "PROJECT_DAILY_CREDIT_QUOTA_EXCEEDED"
 
 
 def test_job_polls_queued_running_success_and_records_provider_failure(tmp_path: Path) -> None:

@@ -176,7 +176,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                         ["readOnlyHint"] = !descriptor.IsWrite,
                         ["destructiveHint"] = (descriptor.Capabilities & McpCapability.Destructive) != 0,
                         ["idempotentHint"] = descriptor.IsIdempotent,
-                        ["openWorldHint"] = (descriptor.Capabilities & (McpCapability.PackageManager | McpCapability.Build)) != 0,
+                        ["openWorldHint"] = (descriptor.Capabilities &
+                            (McpCapability.PackageManager | McpCapability.Build | McpCapability.ExternalService)) != 0,
                     },
                     ["_meta"] = new JObject
                     {

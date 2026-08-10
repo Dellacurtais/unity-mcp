@@ -2,7 +2,8 @@
   "name": "com.maicon.scene-analyzer.Editor.AI3D.Tests",
   "rootNamespace": "Maicon.SceneAnalyzer.Editor.AI3D.Tests",
   "references": [
-    "com.maicon.scene-analyzer.Editor.AI3D"
+    "com.maicon.scene-analyzer.Editor.AI3D",
+    "com.maicon.scene-analyzer.Editor"
   ],
   "includePlatforms": [
     "Editor"

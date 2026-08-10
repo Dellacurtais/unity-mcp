@@ -587,6 +587,11 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     "Confirm high-risk tools",
                     "When enabled, high-risk tools require a second call with a single-use confirmation token. Disabled by default so authorized agents can execute directly."),
                 Settings.RequireHighRiskConfirmation);
+            Settings.AllowExternalServiceTools = EditorGUILayout.Toggle(
+                new GUIContent(
+                    "Allow paid external AI",
+                    "Allows MCP tools to send approved text/images/meshes to external AI providers and consume credits. Paid calls still always require a confirmation token and an explicit per-workflow budget."),
+                Settings.AllowExternalServiceTools);
             Settings.AutoActivateRequiredWindows = EditorGUILayout.Toggle(
                 new GUIContent(
                     "Autonomous editor activation",

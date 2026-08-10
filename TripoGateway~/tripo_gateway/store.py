@@ -55,6 +55,22 @@ class DurableJobStore:
             records.sort(key=lambda item: item.created_utc)
             return records
 
+    def find_idempotent(self, key_hash: str) -> JobRecord | None:
+        with self._lock:
+            mapping_path = self._idempotency_path(key_hash)
+            if mapping_path.exists():
+                try:
+                    mapping = json.loads(mapping_path.read_text("utf-8"))
+                    existing = self.get(str(mapping.get("jobId", "")))
+                    if existing is not None:
+                        return existing
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
+            return self._find_by_idempotency(key_hash)
+
+    def list_project(self, project_key: str) -> list[JobRecord]:
+        return [record for record in self.list(500) if record.project_key == project_key]
+
     def create_idempotent(self, record: JobRecord) -> tuple[JobRecord, bool]:
         with self._lock:
             mapping_path = self._idempotency_path(record.idempotency_key_hash)

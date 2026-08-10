@@ -22,6 +22,8 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private const string AcceptedKey = "Maicon.SceneAnalyzer.AI3D.AcceptedRoot";
         private const string TimeoutKey = "Maicon.SceneAnalyzer.AI3D.TimeoutSeconds";
         private const string LastJobKey = "Maicon.SceneAnalyzer.AI3D.LastJobId";
+        private const string MaxWorkflowCreditsKey = "Maicon.SceneAnalyzer.AI3D.MaxWorkflowCredits";
+        private const string LastWorkflowKey = "Maicon.SceneAnalyzer.AI3D.LastWorkflowId";
 
         public static string GatewayUrl
         {
@@ -63,6 +65,18 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         {
             get => EditorPrefs.GetString(LastJobKey, string.Empty);
             set => EditorPrefs.SetString(LastJobKey, value ?? string.Empty);
+        }
+
+        public static int MaxCreditsPerWorkflow
+        {
+            get => Math.Max(1, Math.Min(100000, EditorPrefs.GetInt(MaxWorkflowCreditsKey, 300)));
+            set => EditorPrefs.SetInt(MaxWorkflowCreditsKey, Math.Max(1, Math.Min(100000, value)));
+        }
+
+        public static string LastWorkflowId
+        {
+            get => EditorPrefs.GetString(LastWorkflowKey, string.Empty);
+            set => EditorPrefs.SetString(LastWorkflowKey, value ?? string.Empty);
         }
 
         public static string ProjectKey

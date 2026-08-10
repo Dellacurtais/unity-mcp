@@ -23,9 +23,12 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         }
 
         private static readonly List<MeshDraw> Draws = new List<MeshDraw>();
+        private static readonly List<MeshDraw> ComparisonDraws = new List<MeshDraw>();
         private static GameObject _asset;
+        private static GameObject _comparisonAsset;
         private static string _label;
         private static Bounds _localBounds;
+        private static Bounds _comparisonBounds;
         private static Vector3 _position;
         private static Quaternion _rotation = Quaternion.identity;
         private static Vector3 _scale = Vector3.one;
@@ -55,12 +58,25 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             Frame(view);
         }
 
+        public static void ShowComparison(GameObject source, GameObject candidate, string label = null)
+        {
+            Show(candidate, label);
+            if (source == null || candidate == null) return;
+            _comparisonAsset = source;
+            BuildDraws(source, ComparisonDraws, out _comparisonBounds);
+            SceneView.RepaintAll();
+            Frame();
+        }
+
         public static void Clear()
         {
             _asset = null;
+            _comparisonAsset = null;
             _label = null;
             Draws.Clear();
+            ComparisonDraws.Clear();
             _localBounds = new Bounds(Vector3.zero, Vector3.one);
+            _comparisonBounds = new Bounds(Vector3.zero, Vector3.one);
             SceneView.RepaintAll();
         }
 
@@ -75,7 +91,13 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
         private static void BuildDraws(GameObject root)
         {
+            BuildDraws(root, Draws, out _localBounds);
+        }
+
+        private static void BuildDraws(GameObject root, List<MeshDraw> target, out Bounds bounds)
+        {
             var initialized = false;
+            bounds = new Bounds(Vector3.zero, Vector3.one);
             var rootInverse = root.transform.worldToLocalMatrix;
             var filters = root.GetComponentsInChildren<MeshFilter>(true);
             for (int i = 0; i < filters.Length; i++)
@@ -84,8 +106,8 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 var renderer = filters[i].GetComponent<MeshRenderer>();
                 if (mesh == null || renderer == null) continue;
                 var relative = rootInverse * filters[i].transform.localToWorldMatrix;
-                Draws.Add(new MeshDraw { Mesh = mesh, RelativeMatrix = relative, Materials = renderer.sharedMaterials });
-                Encapsulate(ref _localBounds, ref initialized, TransformBounds(mesh.bounds, relative));
+                target.Add(new MeshDraw { Mesh = mesh, RelativeMatrix = relative, Materials = renderer.sharedMaterials });
+                Encapsulate(ref bounds, ref initialized, TransformBounds(mesh.bounds, relative));
             }
             var skinned = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
             for (int i = 0; i < skinned.Length; i++)
@@ -93,36 +115,35 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 var mesh = skinned[i].sharedMesh;
                 if (mesh == null) continue;
                 var relative = rootInverse * skinned[i].transform.localToWorldMatrix;
-                Draws.Add(new MeshDraw { Mesh = mesh, RelativeMatrix = relative, Materials = skinned[i].sharedMaterials });
-                Encapsulate(ref _localBounds, ref initialized, TransformBounds(mesh.bounds, relative));
+                target.Add(new MeshDraw { Mesh = mesh, RelativeMatrix = relative, Materials = skinned[i].sharedMaterials });
+                Encapsulate(ref bounds, ref initialized, TransformBounds(mesh.bounds, relative));
             }
-            if (!initialized) _localBounds = new Bounds(Vector3.zero, Vector3.one);
+            if (!initialized) bounds = new Bounds(Vector3.zero, Vector3.one);
         }
 
         private static void Draw(SceneView sceneView)
         {
             if (_asset == null || Draws.Count == 0) return;
-            var baseMatrix = BaseMatrix();
+            var baseMatrix = CandidateMatrix();
             if (Event.current.type == EventType.Repaint)
             {
                 var fallback = AssetDatabase.GetBuiltinExtraResource<Material>("Default-Material.mat");
-                for (int drawIndex = 0; drawIndex < Draws.Count; drawIndex++)
-                {
-                    var draw = Draws[drawIndex];
-                    var matrix = baseMatrix * draw.RelativeMatrix;
-                    for (int subMesh = 0; subMesh < draw.Mesh.subMeshCount; subMesh++)
-                    {
-                        var material = draw.Materials != null && draw.Materials.Length > 0
-                            ? draw.Materials[Mathf.Min(subMesh, draw.Materials.Length - 1)]
-                            : fallback;
-                        if (material != null)
-                            Graphics.DrawMesh(draw.Mesh, matrix, material, 0, sceneView.camera, subMesh);
-                    }
-                }
+                DrawMeshes(sceneView, Draws, baseMatrix, fallback);
+                if (_comparisonAsset != null && ComparisonDraws.Count > 0)
+                    DrawMeshes(sceneView, ComparisonDraws, ComparisonMatrix(), fallback);
                 Handles.color = new Color(0.1f, 0.85f, 1f, 0.9f);
-                var worldBounds = WorldBounds();
-                Handles.DrawWireCube(worldBounds.center, worldBounds.size);
-                Handles.Label(worldBounds.center + Vector3.up * worldBounds.extents.y, "AI 3D Preview — " + _label);
+                var candidateBounds = TransformBounds(_localBounds, CandidateMatrix());
+                Handles.DrawWireCube(candidateBounds.center, candidateBounds.size);
+                Handles.Label(candidateBounds.center + Vector3.up * candidateBounds.extents.y,
+                    (_comparisonAsset == null ? "AI 3D Preview — " : "Candidato — ") + _label);
+                if (_comparisonAsset != null)
+                {
+                    Handles.color = new Color(1f, 0.72f, 0.15f, 0.9f);
+                    var sourceBounds = TransformBounds(_comparisonBounds, ComparisonMatrix());
+                    Handles.DrawWireCube(sourceBounds.center, sourceBounds.size);
+                    Handles.Label(sourceBounds.center + Vector3.up * sourceBounds.extents.y,
+                        "Fonte A/B — " + _comparisonAsset.name);
+                }
             }
 
             EditorGUI.BeginChangeCheck();
@@ -173,10 +194,43 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             Handles.EndGUI();
         }
 
-        private static Matrix4x4 BaseMatrix()
-            => Matrix4x4.TRS(_position, _rotation, _scale) * Matrix4x4.Translate(-_localBounds.center);
+        private static void DrawMeshes(
+            SceneView sceneView, List<MeshDraw> draws, Matrix4x4 baseMatrix, Material fallback)
+        {
+            for (int drawIndex = 0; drawIndex < draws.Count; drawIndex++)
+            {
+                var draw = draws[drawIndex];
+                var matrix = baseMatrix * draw.RelativeMatrix;
+                for (int subMesh = 0; subMesh < draw.Mesh.subMeshCount; subMesh++)
+                {
+                    var material = draw.Materials != null && draw.Materials.Length > 0
+                        ? draw.Materials[Mathf.Min(subMesh, draw.Materials.Length - 1)]
+                        : fallback;
+                    if (material != null)
+                        Graphics.DrawMesh(draw.Mesh, matrix, material, 0, sceneView.camera, subMesh);
+                }
+            }
+        }
 
-        private static Bounds WorldBounds() => TransformBounds(_localBounds, BaseMatrix());
+        private static float ComparisonSpacing()
+            => _comparisonAsset == null ? 0f : Mathf.Max(_localBounds.size.x, _comparisonBounds.size.x) * 1.25f;
+
+        private static Matrix4x4 CandidateMatrix()
+            => Matrix4x4.TRS(
+                   _position + _rotation * Vector3.right * (ComparisonSpacing() * 0.5f), _rotation, _scale)
+               * Matrix4x4.Translate(-_localBounds.center);
+
+        private static Matrix4x4 ComparisonMatrix()
+            => Matrix4x4.TRS(
+                   _position - _rotation * Vector3.right * (ComparisonSpacing() * 0.5f), _rotation, _scale)
+               * Matrix4x4.Translate(-_comparisonBounds.center);
+
+        private static Bounds WorldBounds()
+        {
+            var result = TransformBounds(_localBounds, CandidateMatrix());
+            if (_comparisonAsset != null) result.Encapsulate(TransformBounds(_comparisonBounds, ComparisonMatrix()));
+            return result;
+        }
 
         private static void Encapsulate(ref Bounds target, ref bool initialized, Bounds value)
         {

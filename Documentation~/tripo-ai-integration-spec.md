@@ -1,6 +1,6 @@
 # Tripo AI Provider, Unity Asset Pipeline e MCP — especificação normativa
 
-> Versão do contrato: `1.0-draft`  
+> Versão do contrato: `1.2-draft`
 > Baseline preservada: tag `v0.18.2`, commit `e818b60bf80934eef945c2fe15422459bc4d19f1`  
 > Escopo inicial: Editor Unity, gateway local/servidor, Tripo API v3 e futura superfície MCP `ai3d_*`
 
@@ -23,9 +23,9 @@ O agente deve poder solicitar um asset em linguagem natural, acompanhar a tarefa
 9. O agente nunca declara sucesso somente porque a tarefa Tripo terminou.
 10. Toda aceitação futura requer `planHash`, `candidateHash`, `validationHash` e `previewHash` compatíveis.
 
-## 3. Limites desta entrega
+## 3. Limites históricos das Fases 0 e 1
 
-As Fases 0 e 1 implementam contratos e infraestrutura remota. Elas não:
+As Fases 0 e 1 implementaram contratos e infraestrutura remota. Naquele corte elas não:
 
 - importam automaticamente um resultado na Unity;
 - adicionam ainda a janela AI 3D Studio;
@@ -41,12 +41,15 @@ Coder Chat / agente              Unity AI 3D Studio (fase 2)
           |                                  |
           +---------- ai3d workflow --------+
                              |
-                    Tripo Gateway v1
+                    Tripo Gateway v1.2
                     - segredo e auth local
                     - políticas e orçamento
                     - idempotência
                     - jobs duráveis
                     - polling/backoff
+                    - webhook HMAC/dedupe
+                    - quotas por projeto
+                    - telemetria redigida
                     - upload aprovado
                     - artifact vault
                              |
@@ -96,7 +99,7 @@ O catálogo deve ser versionado. Versões de modelos e parâmetros não são inv
 
 - credencial Tripo: obrigatória para chamadas reais, lida somente pelo processo do gateway e obtida do Windows Credential Manager ou do fallback `TRIPO_API_KEY`.
 - `TRIPO_GATEWAY_TOKEN`: autentica Unity/MCP no gateway local.
-- `TRIPO_WEBHOOK_SECRET`: reservado para fase posterior.
+- `TRIPO_WEBHOOK_SECRET`: signing secret `whsec_…`, exclusivo do gateway, usado para validar `{timestamp}.{raw_body}` com HMAC-SHA256 e janela anti-replay.
 - respostas de health indicam apenas `configured: true|false`.
 - exceções e logs passam por redaction antes de serem persistidos.
 
@@ -361,12 +364,23 @@ O primeiro smoke real permitido é `GET /account/balance`. Uma geração real s�
 - [x] Fase 1 concluída: gateway, autenticação, account, upload, jobs, restart, retry e vault.
 - [ ] Smoke real de balance executado com credencial do usuário.
 - [x] Fase 2 concluída em código: cliente Unity, AI 3D Studio, FBX quarantine/import, preview e aceitação explícita.
+- [x] Fase 3 concluída em código: domínio compartilhado, dez ferramentas `ai3d_*`, policy de agente, orçamento, consentimento e confirmação.
+- [x] AI 3D Studio migrou sua geração principal para o mesmo planner/runner usado pelo MCP, incluindo conversão FBX automática dentro do limite aprovado.
+- [x] Fase 4 concluída em código e testes: workflow `retopology`, limites oficiais v1/v2, orçamento por nó, relatório geométrico A/B e preview fonte/candidato lado a lado.
+- [ ] Gate visual real da Fase 4: screenshot/silhouette de um asset Tripo real ainda precisa ser aprovado na Unity ativa.
+- [x] Fase 5 concluída em código e testes: `segment_complete` v1/v2, granularidade, connectivity split, `quick_cap`/`ai_completion` e auditoria local de skin weights, bind poses e blend shapes.
+- [ ] Gate real da Fase 5: validar fechamento e preservação de canais em pelo menos um personagem rigado real; perdas são bloqueadas e encaminhadas ao Smart Body Split local.
+- [x] Fase 6 concluída em código e testes: cadeia durável convert GLB → rig-check → rig → retarget FBX, rig type recomendado, lote de até cinco presets e Rig Inspector/clip validation locais no candidato.
+- [ ] Gate real da Fase 6: aprovar deformação e clips de um humanoide e de uma criatura reais na Unity ativa.
+- [x] Fase 7 concluída em infraestrutura: webhook Tripo assinado/deduplicado, reconciliação sem polling duplicado, quotas diária/concorrrente por projeto, telemetria redigida e CI de contratos sem créditos.
+- [ ] Gate final da Fase 7: matriz visual nas versões Unity suportadas, webhook HTTPS real e smoke/release com credencial do usuário.
+- [ ] Inventário `ai3d_*` verificado em um cliente MCP externo depois de instalar/recarregar esta revisão no projeto ativo.
 - [ ] Smoke real Tripo e prova visual com um FBX do provedor executados com credencial do usuário.
 
 ### 16.1 Evidência da entrega
 
 - tag anotada `v0.18.2` aponta para `e818b60bf80934eef945c2fe15422459bc4d19f1`;
-- `python -m pytest TripoGateway~/tests -q`: 27 testes aprovados;
+- `python -m pytest TripoGateway~/tests -q`: 33 testes aprovados;
 - `python Tools~/validate_release.py`: contrato de release aprovado;
 - `python Tools~/validate_modeling_phase0.py`: gate estático do Asset Modeler aprovado;
 - smoke HTTP real em loopback: health e capabilities aprovados, 11 operações allowlisted, cancelamento remoto desativado;
@@ -385,6 +399,37 @@ O primeiro smoke real permitido é `GET /account/balance`. Uma geração real s�
 - gateway/fake provider: 30/30 testes aprovados; release gate e Asset Modeler static gate aprovados;
 - Windows Credential Manager: round-trip nativo write/read/delete aprovado com credencial sintética temporária e limpeza confirmada;
 - a Unity ativa do ZombieWave permaneceu em `0.18.1`; nenhum manifest, asset ou cena do jogo foi alterado durante esta validação.
+
+### 16.3 Evidência da Fase 3
+
+- superfície MCP tipada: `ai3d_list_providers`, `ai3d_plan_workflow`, `ai3d_start_workflow`, `ai3d_get_workflow`, `ai3d_wait_workflow`, `ai3d_cancel_workflow`, `ai3d_preview_candidate`, `ai3d_validate_candidate`, `ai3d_accept_candidate` e `ai3d_reject_candidate`; não existe ferramenta de endpoint cru;
+- `ai3d_plan_workflow` é local e não faturável, não envia dados, não retorna o prompt completo e produz `workflowId`, `planHash`, disclosure, nós, estimativa e limite revisáveis;
+- `ExternalService` é uma capacidade MCP separada, desativada por padrão; início e cancelamento pagos sempre exigem confirmação de uso único mesmo quando a confirmação global de alto risco está desligada;
+- o início exige correspondência exata de `planHash`, budget aprovado e consentimento independente de texto/imagem/mesh antes da consulta de saldo ou submissão;
+- cada nó usa uma idempotency key determinística; geração e conversão compartilham o mesmo `planHash`, e o runner bloqueia o próximo nó se o orçamento restante não cobrir seu cap;
+- estado durável fica em `Library/com.maicon.scene-analyzer/ai3d/workflows`, com escrita atômica; upload aprovado recebe handoff durável para não ser repetido após falha, e o payload de retomada é removido depois que o primeiro job se torna durável; prompt e paths de retomada nunca aparecem na resposta MCP pública;
+- validação reconsulta o job autenticado e o vault, rehasha o FBX, importa somente para quarentena e registra issues; preview não cria GameObject; aceitação compara `planHash`, `candidateHash`, `validationHash` e `previewHash` e não instancia nada na cena;
+- rejeição não apaga silenciosamente o artifact ou a quarentena; cancelamento não promete cancelamento remoto nem reembolso;
+- os presets executáveis incluem `game-mobile`, `game-pc`, `hero-prop`, `character-humanoid`, `character-creature`, `modular-character` e `animation-pack`; `wearable` continua bloqueado até Surface Fit e transferência de pesos integrarem o workflow remoto;
+- Unity 6000.3.5f2, projeto isolado: AI3D EditMode aprovou 15/15; contrato MCP aprovou 41/41 com 2 testes opcionais ignorados; self-test do inventário registrou as dez ferramentas;
+- gateway/fake provider permaneceu verde: 30/30; release gate, syntax gate e Asset Modeler Phase 0 gate aprovados;
+- nenhum smoke real ou operação faturável foi executado nesta fase automatizada.
+
+### 16.4 Evidência das Fases 4–7
+
+- `ai3d_plan_workflow` aceita quatro tipos fechados: `generate_asset`, `retopology`, `segment_complete` e `rig_animation`; a superfície MCP permanece com dez ferramentas e sem endpoint cru;
+- cada plano persiste a lista de nós, payload tipado sem input sensível, estimate/cap por nó, índice atual e jobs remotos; a retomada usa as mesmas idempotency keys e não repete upload após falha de criação;
+- Smart Retopology v2 aplica os limites oficiais de 500–20.000 triângulos ou 500–10.000 quads; v1 aplica seus limites separados e recusa parâmetros exclusivos da v2;
+- a qualidade A/B mede triângulos, redução, bounds e canais; retopologia fora do budget é bloqueada e a aceitação exige o hash do preview lado a lado atual;
+- segmentação v2 suporta `simple|balanced|detailed`, connectivity split e completion; fontes fora de `Assets/` não podem provar preservação de rig e são bloqueadas, enquanto perdas conhecidas apontam para `mesh_preview_smart_split`/`mesh_apply_smart_split`/`mesh_validate_split`;
+- rig executa `rig_check` antes do nó faturável, usa o tipo recomendado quando `rigType=auto`, aceita Mixamo/Tripo, retarget batch em FBX e valida esqueleto, pesos, bind poses e clips com o Rig & Animation Studio;
+- AI 3D Studio ganhou página Processar com Retopologia, Separar + fechar e Rig + animação, usando o mesmo planner/runner MCP e uma única confirmação revisável;
+- webhook valida assinatura e timestamp, compara o header de evento, deduplica delivery, reabre a entrega se a reconciliação falhar e impede que o polling concorrente baixe o artifact duas vezes;
+- quotas não quebram replay idempotente; telemetria resume somente contagens/operações/créditos e declara explicitamente não conter prompts ou credenciais;
+- CI `.github/workflows/ai3d-contracts.yml` executa gateway tests e gates estáticos sem segredo/Tripo real;
+- candidatos barrados pelo gate continuam inspecionáveis na quarentena: a janela mostra métricas, issues e ferramentas locais sugeridas, permite preview/rejeição e mantém a aceitação desabilitada;
+- Unity 6000.3.5f2, projeto isolado: AI3D EditMode aprovou 21/21; contrato MCP aprovou 41/41, com 2 testes opcionais ignorados; gateway/fake provider aprovou 33/33; release, syntax e Asset Modeler Phase 0 gates aprovados;
+- nenhum crédito foi consumido e o projeto Unity ativo permaneceu sem mutação.
 
 ## 17. Referências oficiais
 

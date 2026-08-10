@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
@@ -11,7 +12,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 {
     public sealed class Ai3dStudioWindow : EditorWindow
     {
-        private static readonly string[] PageLabels = { "Gerar", "Jobs", "Candidato", "Configuração" };
+        private static readonly string[] PageLabels = { "Gerar", "Processar", "Jobs", "Candidato", "Configuração" };
         private static readonly string[] PresetLabels = { "Game Mobile", "Game PC", "Hero Prop", "Humanoid" };
 
         private int _page;
@@ -30,6 +31,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private string _quarantineRoot;
         private string _acceptedRoot;
         private int _timeoutSeconds;
+        private int _maxWorkflowCredits;
         private Ai3dGatewayHealth _health;
         private JObject _capabilities;
         private Ai3dCredentialStatus _credentialStatus;
@@ -50,9 +52,6 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private int _estimatedCredits = 120;
         private int _capCredits = 180;
         private bool _externalSendApproved;
-        private string _pendingGenerationKey;
-        private Ai3dUploadSnapshot _preparedUpload;
-        private string _preparedUploadPath;
         private string _pendingConvertKey;
 
         private readonly List<Ai3dJobSummary> _jobs = new List<Ai3dJobSummary>();
@@ -62,6 +61,21 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private string _reviewedPreviewHash;
         private string _currentPreviewHash;
         private string _acceptedAssetPath;
+        private string _activeWorkflowId;
+        private string _activeWorkflowPlanHash;
+
+        private int _processMode;
+        private string _meshPath;
+        private bool _quadRetopology;
+        private bool _bakeRetopology = true;
+        private string _segmentationGranularity = "balanced";
+        private string _completionMode = "quick_cap";
+        private bool _splitByConnectivity = true;
+        private string _rigType = "auto";
+        private string _rigSpec = "mixamo";
+        private string _animationPresets = "preset:idle, preset:walk, preset:run";
+        private bool _animateInPlace = true;
+        private int _processBudgetCap = 120;
 
         [MenuItem("Window/AI 3D Studio (Unity MCP)")]
         public static Ai3dStudioWindow Open()
@@ -81,6 +95,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             _quarantineRoot = Ai3dGatewaySettings.QuarantineRoot;
             _acceptedRoot = Ai3dGatewaySettings.AcceptedRoot;
             _timeoutSeconds = Ai3dGatewaySettings.TimeoutSeconds;
+            _maxWorkflowCredits = Ai3dGatewaySettings.MaxCreditsPerWorkflow;
             _model = Ai3dGatewaySettings.ModelVersion;
             EditorApplication.update += OnEditorUpdate;
             _ = InitializeAsync();
@@ -100,7 +115,19 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private async Task InitializeAsync()
         {
             await TestConnectionAsync(false);
-            if (!string.IsNullOrEmpty(Ai3dGatewaySettings.LastJobId))
+            if (!string.IsNullOrEmpty(Ai3dGatewaySettings.LastWorkflowId))
+            {
+                try
+                {
+                    var workflow = Ai3dWorkflowService.Get(Ai3dGatewaySettings.LastWorkflowId);
+                    _activeWorkflowId = workflow.WorkflowId;
+                    _activeWorkflowPlanHash = workflow.PlanHash;
+                    if (!string.IsNullOrEmpty(workflow.CurrentJobId))
+                        _selectedJob = await Ai3dGatewayClient.GetJobAsync(workflow.CurrentJobId, Token);
+                }
+                catch { Ai3dGatewaySettings.LastWorkflowId = string.Empty; }
+            }
+            else if (!string.IsNullOrEmpty(Ai3dGatewaySettings.LastJobId))
             {
                 try { await SelectJobAsync(Ai3dGatewaySettings.LastJobId); }
                 catch { /* Last job may belong to a removed gateway data directory. */ }
@@ -110,10 +137,12 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
         private void OnEditorUpdate()
         {
-            if (!_autoPoll || _busy || _polling || _selectedJob == null || _selectedJob.IsTerminal) return;
+            if (!_autoPoll || _busy || _polling || _selectedJob == null
+                || (_selectedJob.IsTerminal && string.IsNullOrEmpty(_activeWorkflowId))) return;
             if (EditorApplication.timeSinceStartup < _nextPoll) return;
             _nextPoll = EditorApplication.timeSinceStartup + 1.5d;
-            _ = RefreshSelectedJobAsync(false);
+            if (!string.IsNullOrEmpty(_activeWorkflowId)) _ = RefreshActiveWorkflowAsync(false);
+            else _ = RefreshSelectedJobAsync(false);
         }
 
         private void OnGUI()
@@ -125,8 +154,9 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             switch (_page)
             {
                 case 0: DrawGeneratePage(); break;
-                case 1: DrawJobsPage(); break;
-                case 2: DrawCandidatePage(); break;
+                case 1: DrawProcessPage(); break;
+                case 2: DrawJobsPage(); break;
+                case 3: DrawCandidatePage(); break;
                 default: DrawSettingsPage(); break;
             }
             EditorGUILayout.EndScrollView();
@@ -157,7 +187,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         {
             EditorGUILayout.LabelField("Novo candidato", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Gera um candidato externo. O resultado permanece no vault até você converter, validar e colocar em quarentena.",
+                "Planeja e executa geração → conversão FBX com um único planHash e limite aprovado. O resultado permanece no vault até você validar e colocá-lo em quarentena.",
                 MessageType.Info);
             _generationMode = GUILayout.Toolbar(_generationMode, new[] { "Texto → 3D", "Imagem → 3D" });
             EditorGUILayout.Space(4f);
@@ -182,9 +212,6 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                         if (!string.IsNullOrEmpty(selected) && !string.Equals(selected, _imagePath, StringComparison.Ordinal))
                         {
                             _imagePath = selected;
-                            _preparedUpload = null;
-                            _preparedUploadPath = null;
-                            _pendingGenerationKey = null;
                         }
                     }
                 }
@@ -210,10 +237,10 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
             EditorGUILayout.Space(4f);
             EditorGUILayout.LabelField("Orçamento", EditorStyles.boldLabel);
-            _estimatedCredits = Mathf.Max(0, EditorGUILayout.IntField("Estimativa", _estimatedCredits));
-            _capCredits = Mathf.Max(_estimatedCredits, EditorGUILayout.IntField("Limite máximo", _capCredits));
+            _estimatedCredits = Mathf.Max(1, EditorGUILayout.IntField("Estimativa da geração", _estimatedCredits));
+            _capCredits = Mathf.Max(_estimatedCredits + 15, EditorGUILayout.IntField("Limite do workflow", _capCredits));
             EditorGUILayout.HelpBox(
-                "O limite local evita submissões acima do valor aprovado, mas não é uma trava transacional da Tripo.",
+                "O planner reserva 10 créditos estimados e até 15 do limite para converter automaticamente o resultado em FBX. O limite local não é uma trava transacional da Tripo.",
                 MessageType.Warning);
             _externalSendApproved = EditorGUILayout.ToggleLeft(
                 _generationMode == 0
@@ -230,6 +257,82 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             }
             if (_health == null || !_health.Ready || !_health.Configured)
                 EditorGUILayout.HelpBox("Abra Configuração e conecte um gateway com uma credencial Tripo.", MessageType.Warning);
+        }
+
+        private void DrawProcessPage()
+        {
+            EditorGUILayout.LabelField("Processar modelo existente", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(
+                "O mesmo planner seguro executa apenas operações tipadas. O arquivo é hashado antes do envio; o resultado volta como candidato em quarentena, nunca direto na cena.",
+                MessageType.Info);
+            _processMode = GUILayout.Toolbar(_processMode, new[] { "Retopologia", "Separar + fechar", "Rig + animação" });
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                _meshPath = EditorGUILayout.TextField("Modelo", _meshPath ?? string.Empty);
+                if (GUILayout.Button("…", GUILayout.Width(32f)))
+                {
+                    var selected = EditorUtility.OpenFilePanel(
+                        "Modelo para processamento Tripo", string.Empty, "fbx,glb,gltf,obj,stl");
+                    if (!string.IsNullOrEmpty(selected)) _meshPath = selected;
+                }
+            }
+            EditorGUILayout.HelpBox(
+                "O arquivo precisa estar sob uma raiz permitida por TRIPO_GATEWAY_UPLOAD_ROOTS. Retopologia e separação só podem ser aceitas quando a fonte também está importada sob Assets/; para auditar rig, habilite Read/Write no importer.",
+                MessageType.None);
+
+            if (_processMode == 0)
+            {
+                EditorGUILayout.LabelField("Smart Retopology v2", EditorStyles.boldLabel);
+                _quadRetopology = EditorGUILayout.ToggleLeft("Saída em quads", _quadRetopology);
+                var maximum = _quadRetopology ? 10000 : 20000;
+                _faceLimit = EditorGUILayout.IntSlider("Meta geométrica", Mathf.Clamp(_faceLimit, 500, maximum), 500, maximum);
+                _bakeRetopology = EditorGUILayout.ToggleLeft("Bake de textura", _bakeRetopology);
+                EditorGUILayout.HelpBox(
+                    "Após importar, a ferramenta compara fonte/candidato e abre os dois lado a lado no Scene View. Excesso de triângulos bloqueia a aceitação.",
+                    MessageType.Info);
+            }
+            else if (_processMode == 1)
+            {
+                EditorGUILayout.LabelField("Segmentação semântica v2", EditorStyles.boldLabel);
+                var granularity = Array.IndexOf(new[] { "simple", "balanced", "detailed" }, _segmentationGranularity);
+                _segmentationGranularity = new[] { "simple", "balanced", "detailed" }[
+                    EditorGUILayout.Popup("Detalhamento", Mathf.Max(0, granularity), new[] { "Simples", "Balanceado", "Detalhado" })];
+                _splitByConnectivity = EditorGUILayout.ToggleLeft("Separar componentes desconectados", _splitByConnectivity);
+                var completion = _completionMode == "none" ? 0 : _completionMode == "ai_completion" ? 2 : 1;
+                completion = EditorGUILayout.Popup("Fechamento", completion,
+                    new[] { "Sem fechamento", "Quick cap", "AI completion" });
+                _completionMode = completion == 0 ? "none" : completion == 2 ? "ai_completion" : "quick_cap";
+                EditorGUILayout.HelpBox(
+                    "Se a fonte tiver rig, pesos, bind poses e blend shapes são auditados. Qualquer perda bloqueia a aceitação e direciona para Smart Body Split local.",
+                    MessageType.Warning);
+            }
+            else
+            {
+                EditorGUILayout.LabelField("Rig e pacote de animações", EditorStyles.boldLabel);
+                _rigType = new[] { "auto", "biped", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic" }[
+                    EditorGUILayout.Popup("Tipo", Math.Max(0, Array.IndexOf(
+                        new[] { "auto", "biped", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic" }, _rigType)),
+                        new[] { "Automático (rig-check)", "Bípede", "Quadrúpede", "Hexápode", "Octópode", "Ave", "Serpentino", "Aquático" })];
+                _rigSpec = EditorGUILayout.Popup("Esqueleto", _rigSpec == "tripo" ? 1 : 0,
+                    new[] { "Mixamo / Unity", "Tripo" }) == 1 ? "tripo" : "mixamo";
+                _animationPresets = EditorGUILayout.TextField("Animações", _animationPresets ?? string.Empty);
+                _animateInPlace = EditorGUILayout.ToggleLeft("Animações in-place", _animateInPlace);
+                EditorGUILayout.HelpBox(
+                    "Sempre executa rig-check antes de gastar com rig. Informe até 5 presets separados por vírgula, por exemplo: preset:idle, preset:walk.",
+                    MessageType.Info);
+            }
+
+            _processBudgetCap = Mathf.Clamp(
+                EditorGUILayout.IntField("Limite do workflow", _processBudgetCap), 1,
+                Ai3dGatewaySettings.MaxCreditsPerWorkflow);
+            _externalSendApproved = EditorGUILayout.ToggleLeft(
+                "Autorizo enviar esta mesh à Tripo e consumir até o limite revisado",
+                _externalSendApproved);
+            var canRun = !_busy && _externalSendApproved && File.Exists(_meshPath ?? string.Empty) &&
+                         _health != null && _health.Ready && _health.Configured;
+            using (new EditorGUI.DisabledScope(!canRun))
+                if (GUILayout.Button("Planejar e processar candidato", GUILayout.Height(36f)))
+                    _ = SubmitProcessingAsync();
         }
 
         private void DrawJobsPage()
@@ -265,6 +368,12 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             EditorGUILayout.SelectableLabel(_selectedJob.JobId, EditorStyles.miniLabel, GUILayout.Height(18f));
             EditorGUILayout.LabelField("Operação", _selectedJob.Operation ?? string.Empty);
             EditorGUILayout.LabelField("Estado", _selectedJob.Status ?? string.Empty);
+            if (!string.IsNullOrEmpty(_activeWorkflowId))
+            {
+                var workflow = Ai3dWorkflowService.Get(_activeWorkflowId);
+                EditorGUILayout.LabelField("Workflow", Short(workflow.WorkflowId, 12) + " · " + workflow.Status);
+                EditorGUILayout.LabelField("Orçamento", workflow.CreditsConsumed + " / " + workflow.BudgetCapCredits + " créditos");
+            }
             var progressRect = EditorGUILayout.GetControlRect(false, 20f);
             EditorGUI.ProgressBar(progressRect, _selectedJob.Progress, _selectedJob.Message ?? _selectedJob.Status);
             EditorGUILayout.LabelField("Estimativa", _selectedJob.EstimatedCredits + " créditos");
@@ -275,7 +384,11 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("Atualizar")) _ = RefreshSelectedJobAsync(true);
+                if (GUILayout.Button("Atualizar"))
+                {
+                    if (!string.IsNullOrEmpty(_activeWorkflowId)) _ = RefreshActiveWorkflowAsync(true);
+                    else _ = RefreshSelectedJobAsync(true);
+                }
                 using (new EditorGUI.DisabledScope(_busy || _selectedJob.IsTerminal))
                     if (GUILayout.Button("Cancelar localmente")) _ = CancelSelectedJobAsync();
             }
@@ -285,11 +398,18 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 var fbx = _selectedJob.FindFbxArtifact();
                 if (fbx == null && !string.IsNullOrEmpty(_selectedJob.ProviderTaskId))
                 {
-                    EditorGUILayout.HelpBox("O resultado ainda não é FBX. A conversão é um novo job faturável.", MessageType.Info);
-                    using (new EditorGUI.DisabledScope(_busy || !_externalSendApproved))
-                        if (GUILayout.Button("Converter resultado para FBX")) _ = ConvertSelectedToFbxAsync();
-                    _externalSendApproved = EditorGUILayout.ToggleLeft(
-                        "Autorizo a conversão e até 15 créditos", _externalSendApproved);
+                    if (!string.IsNullOrEmpty(_activeWorkflowId))
+                        EditorGUILayout.HelpBox(
+                            "O workflow iniciará a conversão FBX automaticamente dentro do limite já aprovado.",
+                            MessageType.Info);
+                    else
+                    {
+                        EditorGUILayout.HelpBox("O resultado ainda não é FBX. A conversão é um novo job faturável.", MessageType.Info);
+                        using (new EditorGUI.DisabledScope(_busy || !_externalSendApproved))
+                            if (GUILayout.Button("Converter resultado para FBX")) _ = ConvertSelectedToFbxAsync();
+                        _externalSendApproved = EditorGUILayout.ToggleLeft(
+                            "Autorizo a conversão e até 15 créditos", _externalSendApproved);
+                    }
                 }
                 else if (fbx != null)
                 {
@@ -302,6 +422,8 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private void DrawCandidatePage()
         {
             EditorGUILayout.LabelField("Revisão do candidato", EditorStyles.boldLabel);
+            var workflow = TryGetActiveWorkflow();
+            if (workflow?.QualityReport != null) DrawWorkflowQuality(workflow);
             if (_artifactValidation == null)
             {
                 EditorGUILayout.HelpBox("Selecione um job concluído com FBX e clique em Validar FBX.", MessageType.Info);
@@ -310,7 +432,11 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             DrawArtifactValidation();
             if (_artifactValidation.IsValid && _staged == null)
             {
-                if (GUILayout.Button("Colocar na quarentena Unity", GUILayout.Height(32f))) StageCandidate();
+                if (GUILayout.Button("Colocar na quarentena Unity", GUILayout.Height(32f)))
+                {
+                    if (!string.IsNullOrEmpty(_activeWorkflowId)) _ = StageWorkflowCandidateAsync();
+                    else StageCandidate();
+                }
             }
             if (_staged != null) DrawStagedCandidate();
         }
@@ -327,6 +453,9 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
         private void DrawStagedCandidate()
         {
+            var workflow = TryGetActiveWorkflow();
+            var qualityAllowed = workflow?.QualityReport == null
+                                 || (bool?)workflow.QualityReport["acceptAllowed"] != false;
             EditorGUILayout.Space(8f);
             EditorGUILayout.LabelField("Quarentena Unity", EditorStyles.boldLabel);
             EditorGUILayout.ObjectField("Asset", _staged.Asset, typeof(GameObject), false);
@@ -347,9 +476,18 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 if (GUILayout.Button("Preview no Scene View"))
                 {
                     _reviewedPreviewHash = null;
-                    Ai3dScenePreviewController.Show(_staged.Asset, Short(_staged.JobId, 10));
-                    _currentPreviewHash = Ai3dCandidateService.ComputePreviewHash(
-                        _staged.Asset, _staged.ValidationHash);
+                    if (!string.IsNullOrEmpty(_activeWorkflowId))
+                    {
+                        var previewWorkflow = Ai3dWorkflowService.PreviewCandidate(
+                            _activeWorkflowId, _activeWorkflowPlanHash);
+                        _currentPreviewHash = previewWorkflow.PreviewHash;
+                    }
+                    else
+                    {
+                        Ai3dScenePreviewController.Show(_staged.Asset, Short(_staged.JobId, 10));
+                        _currentPreviewHash = Ai3dCandidateService.ComputePreviewHash(
+                            _staged.Asset, _staged.ValidationHash);
+                    }
                 }
                 if (GUILayout.Button("Localizar asset")) EditorGUIUtility.PingObject(_staged.Asset);
             }
@@ -366,10 +504,16 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             }
             if (!previewIsCurrent)
                 EditorGUILayout.HelpBox("Abra e revise o candidato no Scene View antes de aceitá-lo.", MessageType.Warning);
-            using (new EditorGUI.DisabledScope(!_staged.IsValid || !previewIsCurrent || _busy))
+            using (new EditorGUI.DisabledScope(!_staged.IsValid || !qualityAllowed || !previewIsCurrent || _busy))
             {
                 if (GUILayout.Button("Aceitar como asset do projeto", GUILayout.Height(34f))) AcceptCandidate();
             }
+            if (!qualityAllowed)
+                EditorGUILayout.HelpBox(
+                    "A aceitação permanece bloqueada pelo relatório de qualidade. Use o preview para diagnosticar ou rejeite o candidato.",
+                    MessageType.Error);
+            if (!string.IsNullOrEmpty(_activeWorkflowId)
+                && GUILayout.Button("Rejeitar candidato (preservar quarentena)")) RejectWorkflowCandidate();
             if (!string.IsNullOrEmpty(_acceptedAssetPath))
             {
                 EditorGUILayout.HelpBox("Aceito em " + _acceptedAssetPath, MessageType.Info);
@@ -398,6 +542,16 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 "A API key nunca é persistida pela Unity. Ela é enviada uma vez ao gateway autenticado e armazenada pelo sistema operacional.",
                 MessageType.Info);
             _timeoutSeconds = EditorGUILayout.IntSlider("Timeout HTTP", _timeoutSeconds, 1, 120);
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("Automação MCP", EditorStyles.boldLabel);
+            Settings.AllowExternalServiceTools = EditorGUILayout.ToggleLeft(
+                "Permitir workflows pagos via MCP", Settings.AllowExternalServiceTools);
+            _maxWorkflowCredits = Mathf.Max(1, EditorGUILayout.IntField(
+                new GUIContent("Limite por workflow", "Teto local absoluto que o planner MCP não pode ultrapassar."),
+                _maxWorkflowCredits));
+            EditorGUILayout.HelpBox(
+                "Desligado por padrão. Quando ligado, cada início/cancelamento remoto ainda exige confirmação MCP de uso único, consentimento dos dados enviados e um planHash atual.",
+                MessageType.Warning);
             EditorGUILayout.Space(8f);
             DrawTripoCredentialSettings();
             EditorGUILayout.Space(4f);
@@ -498,54 +652,143 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             }
             _texture = true;
             _pbr = true;
-            _pendingGenerationKey = null;
+        }
+
+        private static string PresetId(Ai3dGenerationPreset preset)
+        {
+            switch (preset)
+            {
+                case Ai3dGenerationPreset.GameMobile: return "game-mobile";
+                case Ai3dGenerationPreset.HeroProp: return "hero-prop";
+                case Ai3dGenerationPreset.CharacterHumanoid: return "character-humanoid";
+                default: return "game-pc";
+            }
         }
 
         private async Task SubmitGenerationAsync()
         {
-            var subject = _generationMode == 0 ? "o prompt" : "a imagem";
-            if (!EditorUtility.DisplayDialog(
-                    "Enviar para Tripo",
-                    $"Enviar {subject} para um provedor externo e autorizar até {_capCredits} créditos?",
-                    "Enviar e gerar", "Cancelar")) return;
             SetBusy(true);
             try
             {
-                if (string.IsNullOrEmpty(_pendingGenerationKey)) _pendingGenerationKey = Guid.NewGuid().ToString("N");
-                Ai3dJobSnapshot job;
-                if (_generationMode == 0)
+                var sourceKind = _generationMode == 0 ? "text" : "image";
+                var planArguments = new JObject
                 {
-                    job = await Ai3dGatewayClient.CreateTextJobAsync(
-                        _prompt, _model, _faceLimit, _texture, _pbr, _smartLowPoly,
-                        _geometryQuality, _estimatedCredits, _capCredits,
-                        _pendingGenerationKey, Token);
-                }
-                else
-                {
-                    var absolute = Path.GetFullPath(_imagePath);
-                    var currentHash = Ai3dGatewayClient.ComputeFileSha256(absolute);
-                    if (_preparedUpload == null
-                        || !string.Equals(_preparedUploadPath, absolute, StringComparison.OrdinalIgnoreCase)
-                        || !string.Equals(_preparedUpload.Sha256, currentHash, StringComparison.OrdinalIgnoreCase))
-                    {
-                        _preparedUpload = await Ai3dGatewayClient.UploadAsync(absolute, Token);
-                        _preparedUploadPath = absolute;
-                    }
-                    job = await Ai3dGatewayClient.CreateImageJobAsync(
-                        _preparedUpload.FileToken, _preparedUpload.Sha256, _model, _faceLimit,
-                        _texture, _pbr, _smartLowPoly, _geometryQuality,
-                        _estimatedCredits, _capCredits, _pendingGenerationKey, Token);
-                }
-                _pendingGenerationKey = null;
-                _selectedJob = job;
+                    ["sourceKind"] = sourceKind,
+                    ["preset"] = PresetId(_preset),
+                    ["modelVersion"] = _model,
+                    ["autoConvertToFbx"] = true,
+                    ["faceLimit"] = _faceLimit,
+                    ["texture"] = _texture,
+                    ["pbr"] = _pbr,
+                    ["smartLowPoly"] = _smartLowPoly,
+                    ["geometryQuality"] = _geometryQuality,
+                    ["estimatedCredits"] = _estimatedCredits,
+                    ["budgetCapCredits"] = _capCredits,
+                };
+                if (_generationMode == 0) planArguments["prompt"] = _prompt;
+                else planArguments["imagePath"] = Path.GetFullPath(_imagePath);
+                var plan = Ai3dWorkflowService.Plan(planArguments);
+                var subject = _generationMode == 0 ? "o prompt" : "a imagem";
+                if (!EditorUtility.DisplayDialog(
+                        "Executar workflow Tripo",
+                        $"Enviar {subject}, gerar o modelo e converter automaticamente para FBX?\n\n" +
+                        $"Estimativa: {plan.EstimatedCredits} créditos\nLimite aprovado: {plan.BudgetCapCredits} créditos\n\n" +
+                        "O resultado ficará no vault até a validação e quarentena.",
+                        "Enviar e executar", "Cancelar")) return;
+                var workflow = await Ai3dWorkflowService.StartAsync(
+                    plan.WorkflowId, plan.PlanHash, plan.BudgetCapCredits, true,
+                    new[] { sourceKind }, Token);
+                _activeWorkflowId = workflow.WorkflowId;
+                _activeWorkflowPlanHash = workflow.PlanHash;
+                Ai3dGatewaySettings.LastWorkflowId = workflow.WorkflowId;
+                _selectedJob = await Ai3dGatewayClient.GetJobAsync(workflow.CurrentJobId, Token);
                 _externalSendApproved = false;
                 _artifactValidation = null;
                 _staged = null;
                 _reviewedPreviewHash = null;
                 _currentPreviewHash = null;
                 _acceptedAssetPath = null;
-                _page = 1;
-                SetStatus("Job criado. O gateway fará polling e download para o vault.", MessageType.Info);
+                _page = 2;
+                SetStatus(
+                    "Workflow criado. A geração e a conversão FBX usam o mesmo planHash e o limite aprovado; o resultado permanece fora da cena.",
+                    MessageType.Info);
+                await RefreshJobsAsync(false);
+            }
+            catch (Exception exception) { SetException(exception); }
+            finally { SetBusy(false); }
+        }
+
+        private async Task SubmitProcessingAsync()
+        {
+            SetBusy(true);
+            try
+            {
+                var workflowKind = _processMode == 0 ? "retopology"
+                    : _processMode == 1 ? "segment_complete" : "rig_animation";
+                var preset = _processMode == 0 ? "hero-prop"
+                    : _processMode == 1 ? "modular-character" : "animation-pack";
+                var arguments = new JObject
+                {
+                    ["workflowKind"] = workflowKind,
+                    ["sourceKind"] = "mesh",
+                    ["meshPath"] = Path.GetFullPath(_meshPath),
+                    ["preset"] = preset,
+                    ["autoConvertToFbx"] = true,
+                    ["budgetCapCredits"] = _processBudgetCap,
+                };
+                if (_processMode == 0)
+                {
+                    arguments["retopologyModel"] = "v2.0";
+                    arguments["faceLimit"] = _faceLimit;
+                    arguments["quad"] = _quadRetopology;
+                    arguments["bake"] = _bakeRetopology;
+                }
+                else if (_processMode == 1)
+                {
+                    arguments["segmentationModel"] = "v2.0-20260430";
+                    arguments["segmentationGranularity"] = _segmentationGranularity;
+                    arguments["splitByConnectivity"] = _splitByConnectivity;
+                    arguments["completionMode"] = _completionMode;
+                }
+                else
+                {
+                    arguments["rigType"] = _rigType;
+                    arguments["rigSpec"] = _rigSpec;
+                    arguments["animateInPlace"] = _animateInPlace;
+                    var animations = new JArray();
+                    foreach (var value in (_animationPresets ?? string.Empty).Split(','))
+                    {
+                        var trimmed = value.Trim();
+                        if (trimmed.Length > 0 && !animations.Any(token =>
+                                string.Equals((string)token, trimmed, StringComparison.Ordinal)))
+                            animations.Add(trimmed);
+                    }
+                    arguments["animations"] = animations;
+                }
+                var plan = Ai3dWorkflowService.Plan(arguments);
+                if (!EditorUtility.DisplayDialog(
+                        "Executar processamento Tripo",
+                        $"Workflow: {workflowKind}\nNós: {string.Join(" → ", plan.Nodes.Select(value => value.Id))}\n\n" +
+                        $"Estimativa: {plan.EstimatedCredits} créditos\nLimite aprovado: {plan.BudgetCapCredits} créditos\n\n" +
+                        "O resultado será validado localmente e ficará fora da cena.",
+                        "Enviar e executar", "Cancelar")) return;
+                var workflow = await Ai3dWorkflowService.StartAsync(
+                    plan.WorkflowId, plan.PlanHash, plan.BudgetCapCredits, true,
+                    new[] { "mesh" }, Token);
+                _activeWorkflowId = workflow.WorkflowId;
+                _activeWorkflowPlanHash = workflow.PlanHash;
+                Ai3dGatewaySettings.LastWorkflowId = workflow.WorkflowId;
+                _selectedJob = await Ai3dGatewayClient.GetJobAsync(workflow.CurrentJobId, Token);
+                _externalSendApproved = false;
+                _artifactValidation = null;
+                _staged = null;
+                _reviewedPreviewHash = null;
+                _currentPreviewHash = null;
+                _acceptedAssetPath = null;
+                _page = 2;
+                SetStatus(
+                    "Workflow tipado iniciado. Cada nó usa o mesmo planHash, idempotência própria e o limite aprovado.",
+                    MessageType.Info);
                 await RefreshJobsAsync(false);
             }
             catch (Exception exception) { SetException(exception); }
@@ -708,6 +951,9 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
         private async Task SelectJobAsync(string jobId)
         {
+            _activeWorkflowId = null;
+            _activeWorkflowPlanHash = null;
+            Ai3dGatewaySettings.LastWorkflowId = string.Empty;
             _selectedJob = await Ai3dGatewayClient.GetJobAsync(jobId, Token);
             Ai3dGatewaySettings.LastJobId = jobId;
             _artifactValidation = null;
@@ -715,7 +961,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             _reviewedPreviewHash = null;
             _currentPreviewHash = null;
             _acceptedAssetPath = null;
-            _page = 1;
+            _page = 2;
             Repaint();
         }
 
@@ -733,6 +979,28 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             finally { _polling = false; }
         }
 
+        private async Task RefreshActiveWorkflowAsync(bool showErrors)
+        {
+            if (string.IsNullOrEmpty(_activeWorkflowId) || _polling) return;
+            _polling = true;
+            try
+            {
+                var workflow = Ai3dWorkflowService.Get(_activeWorkflowId);
+                if (!string.IsNullOrEmpty(workflow.CurrentJobId)
+                    && (_selectedJob == null
+                        || !string.Equals(_selectedJob.JobId, workflow.CurrentJobId, StringComparison.Ordinal)
+                        || !_selectedJob.IsTerminal))
+                    _selectedJob = await Ai3dGatewayClient.GetJobAsync(workflow.CurrentJobId, Token);
+                if (!string.Equals(workflow.Status, "starting", StringComparison.Ordinal)
+                    && !(workflow.Status ?? string.Empty).StartsWith("running_", StringComparison.Ordinal)
+                    && !string.Equals(workflow.Status, "cancel_requested", StringComparison.Ordinal))
+                    await RefreshJobsAsync(false);
+                Repaint();
+            }
+            catch (Exception exception) { if (showErrors) SetException(exception); }
+            finally { _polling = false; }
+        }
+
         private async Task CancelSelectedJobAsync()
         {
             if (_selectedJob == null) return;
@@ -743,7 +1011,13 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             SetBusy(true);
             try
             {
-                _selectedJob = await Ai3dGatewayClient.CancelJobAsync(_selectedJob.JobId, Token);
+                if (!string.IsNullOrEmpty(_activeWorkflowId))
+                {
+                    var workflow = await Ai3dWorkflowService.CancelAsync(
+                        _activeWorkflowId, _activeWorkflowPlanHash, Token);
+                    _selectedJob = await Ai3dGatewayClient.GetJobAsync(workflow.CurrentJobId, Token);
+                }
+                else _selectedJob = await Ai3dGatewayClient.CancelJobAsync(_selectedJob.JobId, Token);
                 SetStatus("Cancelamento local solicitado; a reconciliação remota continua.", MessageType.Warning);
             }
             catch (Exception exception) { SetException(exception); }
@@ -762,7 +1036,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 _reviewedPreviewHash = null;
                 _currentPreviewHash = null;
                 _acceptedAssetPath = null;
-                _page = 2;
+                _page = 3;
                 SetStatus(_artifactValidation.IsValid
                     ? "Artifact aprovado para a quarentena Unity."
                     : "Artifact bloqueado; veja os erros de validação.",
@@ -798,6 +1072,37 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             }
         }
 
+        private async Task StageWorkflowCandidateAsync()
+        {
+            if (!EditorUtility.DisplayDialog(
+                    "Quarentena Unity",
+                    "Revalidar o FBX pelo workflow, copiar somente o artifact autenticado para Assets/ e aplicar configurações de importação seguras?",
+                    "Validar e colocar em quarentena", "Cancelar")) return;
+            SetBusy(true);
+            try
+            {
+                var workflow = await Ai3dWorkflowService.ValidateCandidateAsync(
+                    _activeWorkflowId, _activeWorkflowPlanHash, Token, _quarantineRoot);
+                _staged = Ai3dCandidateService.RevalidateStaged(
+                    workflow.StagedAssetPath, workflow.CurrentJobId, workflow.ProviderTaskId,
+                    workflow.PlanHash, workflow.CandidateHash);
+                _reviewedPreviewHash = null;
+                _currentPreviewHash = Ai3dCandidateService.ComputePreviewHash(
+                    _staged.Asset, _staged.ValidationHash);
+                SetStatus("Candidato validado pelo workflow e importado na quarentena; a cena não foi alterada.", MessageType.Info);
+                if (_staged.Asset != null) Ai3dScenePreviewController.Show(_staged.Asset, Short(_staged.JobId, 10));
+            }
+            catch (Exception exception)
+            {
+                TryRestoreBlockedWorkflowCandidate();
+                _reviewedPreviewHash = null;
+                _currentPreviewHash = Ai3dCandidateService.ComputePreviewHash(
+                    _staged?.Asset, _staged?.ValidationHash);
+                SetException(exception);
+            }
+            finally { SetBusy(false); }
+        }
+
         private void AcceptCandidate()
         {
             if (_staged == null) return;
@@ -807,8 +1112,17 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                     "Aceitar asset", "Cancelar")) return;
             try
             {
-                _acceptedAssetPath = Ai3dCandidateService.Accept(
-                    _staged, _reviewedPreviewHash, _acceptedRoot);
+                if (!string.IsNullOrEmpty(_activeWorkflowId))
+                {
+                    var workflow = Ai3dWorkflowService.AcceptCandidate(
+                        _activeWorkflowId, _activeWorkflowPlanHash,
+                        _staged.SourceArtifactHash, _staged.ValidationHash,
+                        _reviewedPreviewHash, _acceptedRoot);
+                    _acceptedAssetPath = workflow.AcceptedAssetPath;
+                }
+                else
+                    _acceptedAssetPath = Ai3dCandidateService.Accept(
+                        _staged, _reviewedPreviewHash, _acceptedRoot);
                 var accepted = AssetDatabase.LoadAssetAtPath<GameObject>(_acceptedAssetPath);
                 if (accepted != null) EditorGUIUtility.PingObject(accepted);
                 SetStatus("Asset aceito. Ele ainda não foi adicionado à cena.", MessageType.Info);
@@ -820,6 +1134,24 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                     _staged?.Asset, _staged?.ValidationHash);
                 SetException(exception);
             }
+        }
+
+        private void RejectWorkflowCandidate()
+        {
+            if (_staged == null || string.IsNullOrEmpty(_activeWorkflowId)) return;
+            if (!EditorUtility.DisplayDialog(
+                    "Rejeitar candidato",
+                    "Marcar este candidato como rejeitado e limpar o preview? Os arquivos de quarentena serão preservados para recuperação.",
+                    "Rejeitar", "Cancelar")) return;
+            try
+            {
+                Ai3dWorkflowService.RejectCandidate(
+                    _activeWorkflowId, _activeWorkflowPlanHash, _staged.SourceArtifactHash);
+                _reviewedPreviewHash = null;
+                _currentPreviewHash = null;
+                SetStatus("Candidato rejeitado. A quarentena foi preservada e a cena não foi alterada.", MessageType.Warning);
+            }
+            catch (Exception exception) { SetException(exception); }
         }
 
         private void InstantiateAccepted()
@@ -847,6 +1179,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             Ai3dGatewaySettings.QuarantineRoot = _quarantineRoot;
             Ai3dGatewaySettings.AcceptedRoot = _acceptedRoot;
             Ai3dGatewaySettings.TimeoutSeconds = _timeoutSeconds;
+            Ai3dGatewaySettings.MaxCreditsPerWorkflow = _maxWorkflowCredits;
             Ai3dGatewaySettings.ModelVersion = string.IsNullOrWhiteSpace(_model)
                 ? Ai3dGatewaySettings.DefaultModel : _model.Trim();
             _gatewayUrl = Ai3dGatewaySettings.GatewayUrl;
@@ -873,8 +1206,61 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         {
             var root = exception.GetBaseException();
             if (root is OperationCanceledException) return;
-            var code = root is Ai3dGatewayException gateway ? gateway.Code + ": " : string.Empty;
+            var code = root is Ai3dGatewayException gateway ? gateway.Code + ": "
+                : root is Ai3dWorkflowException workflow ? workflow.Code + ": "
+                : string.Empty;
             SetStatus(code + root.Message, MessageType.Error);
+        }
+
+        private Ai3dWorkflowRecord TryGetActiveWorkflow()
+        {
+            if (string.IsNullOrEmpty(_activeWorkflowId)) return null;
+            try { return Ai3dWorkflowService.Get(_activeWorkflowId); }
+            catch { return null; }
+        }
+
+        private void TryRestoreBlockedWorkflowCandidate()
+        {
+            var workflow = TryGetActiveWorkflow();
+            if (workflow == null || string.IsNullOrEmpty(workflow.StagedAssetPath)) return;
+            try
+            {
+                _staged = Ai3dCandidateService.RevalidateStaged(
+                    workflow.StagedAssetPath, workflow.CurrentJobId, workflow.ProviderTaskId,
+                    workflow.PlanHash, workflow.CandidateHash);
+            }
+            catch { _staged = null; }
+        }
+
+        private static void DrawWorkflowQuality(Ai3dWorkflowRecord workflow)
+        {
+            var report = workflow.QualityReport;
+            if (report == null) return;
+            var allowed = (bool?)report["acceptAllowed"] != false;
+            EditorGUILayout.Space(4f);
+            EditorGUILayout.LabelField("Gate específico do workflow", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Fluxo", workflow.WorkflowKind ?? "-");
+            EditorGUILayout.LabelField("Resultado", allowed ? "Aprovado" : "Bloqueado");
+            var sourceTriangles = (long?)report["source"]?["triangleCount"];
+            var candidateTriangles = (long?)report["candidate"]?["triangleCount"];
+            if (sourceTriangles.HasValue || candidateTriangles.HasValue)
+                EditorGUILayout.LabelField(
+                    "Triângulos (origem → candidato)",
+                    $"{sourceTriangles.GetValueOrDefault():N0} → {candidateTriangles.GetValueOrDefault():N0}");
+            var tools = report["recommendedLocalTools"] as JArray;
+            if (tools != null && tools.Count > 0)
+                EditorGUILayout.LabelField("Ferramentas sugeridas", string.Join(", ", tools.Values<string>()));
+            var issues = workflow.ValidationIssues ?? report["issues"] as JArray;
+            if (issues == null) return;
+            foreach (var token in issues.OfType<JObject>())
+            {
+                var severity = ((string)token["severity"] ?? string.Empty).ToLowerInvariant();
+                var type = severity == "error" ? MessageType.Error
+                    : severity == "warning" ? MessageType.Warning
+                    : MessageType.Info;
+                EditorGUILayout.HelpBox(
+                    ((string)token["code"] ?? "AI3D_QUALITY") + ": " + ((string)token["message"] ?? string.Empty), type);
+            }
         }
 
         private static void DrawIssues(IReadOnlyList<Ai3dCandidateIssue> issues)

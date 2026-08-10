@@ -16,7 +16,7 @@ from .models import (
 )
 from .provider import TripoApiError, TripoProvider
 from .security import redact, sha256_json, sha256_text
-from .store import DurableJobStore
+from .store import DurableJobStore, IdempotencyConflictError
 
 
 class ArtifactSink(Protocol):
@@ -87,6 +87,14 @@ class TripoJobManager:
         request_data = request.model_dump(mode="json")
         request_hash = sha256_json(request_data)
         key_hash = sha256_text(idempotency_key)
+        existing = self.store.find_idempotent(key_hash)
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise IdempotencyConflictError(
+                    "IDEMPOTENCY_CONFLICT: key already belongs to another request"
+                )
+            return existing, False
+        self._enforce_project_quotas(request)
         now = utc_now()
         record = JobRecord(
             job_id=uuid.uuid4().hex,
@@ -106,6 +114,89 @@ class TripoJobManager:
         if created:
             await self._schedule(stored.job_id)
         return stored, created
+
+    def _enforce_project_quotas(self, request: JobCreateRequest) -> None:
+        records = self.store.list_project(request.project_key)
+        active = [record for record in records if not record.terminal]
+        if len(active) >= self.settings.max_active_jobs_per_project:
+            raise GatewayPolicyError(
+                "PROJECT_CONCURRENCY_QUOTA_EXCEEDED",
+                f"project already has {len(active)} active AI 3D jobs",
+                429,
+            )
+        daily_limit = self.settings.max_daily_estimated_credits_per_project
+        if daily_limit <= 0:
+            return
+        today = utc_now()[:10]
+        estimated_today = sum(
+            record.estimated_credits
+            for record in records
+            if record.created_utc[:10] == today
+        )
+        if estimated_today + request.budget.estimated_credits > daily_limit:
+            raise GatewayPolicyError(
+                "PROJECT_DAILY_CREDIT_QUOTA_EXCEEDED",
+                f"project daily estimate would exceed {daily_limit} credits",
+                429,
+            )
+
+    async def reconcile_webhook(self, event_data: dict[str, Any]) -> str | None:
+        task_id = event_data.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            raise GatewayPolicyError("WEBHOOK_TASK_ID_MISSING", "task webhook has no task_id")
+        record = next(
+            (value for value in self.store.list(500) if value.provider_task_id == task_id),
+            None,
+        )
+        if record is None:
+            return None
+        if record.terminal:
+            return record.job_id
+        status = str(event_data.get("status", "")).lower()
+        if status == "success":
+            await self._handle_success(record.job_id, event_data)
+        elif status in {"failed", "cancelled"}:
+            error = event_data.get("error") if isinstance(event_data.get("error"), dict) else {}
+            self._fail(
+                record.job_id,
+                str(error.get("code") or "PROVIDER_TASK_FAILED"),
+                str(error.get("message") or f"provider task {status}"),
+            )
+        else:
+            raise GatewayPolicyError(
+                "WEBHOOK_TASK_STATUS_INVALID", "task webhook status must be success, failed or cancelled"
+            )
+        return record.job_id
+
+    def telemetry_summary(self, project_key: str | None = None) -> dict[str, Any]:
+        records = self.store.list(500)
+        if project_key:
+            records = [record for record in records if record.project_key == project_key]
+        statuses: dict[str, int] = {}
+        operations: dict[str, int] = {}
+        estimated = 0
+        consumed = 0
+        completed_with_usage = 0
+        for record in records:
+            statuses[record.status.value] = statuses.get(record.status.value, 0) + 1
+            operations[record.operation] = operations.get(record.operation, 0) + 1
+            estimated += record.estimated_credits
+            if record.credits_consumed is not None:
+                consumed += record.credits_consumed
+                completed_with_usage += 1
+        return {
+            "schemaVersion": 1,
+            "projectKey": project_key,
+            "jobCount": len(records),
+            "activeJobCount": sum(1 for record in records if not record.terminal),
+            "estimatedCredits": estimated,
+            "creditsConsumed": consumed,
+            "jobsWithProviderUsage": completed_with_usage,
+            "statuses": dict(sorted(statuses.items())),
+            "operations": dict(sorted(operations.items())),
+            "containsPrompts": False,
+            "containsCredentials": False,
+        }
 
     def get(self, job_id: str) -> JobRecord | None:
         return self.store.get(job_id)
@@ -211,6 +302,9 @@ class TripoJobManager:
             if not current.provider_task_id:
                 raise GatewayPolicyError("PROVIDER_TASK_ID_MISSING", "job cannot be reconciled")
             task = await self.provider.get_task(current.provider_task_id)
+            refreshed_after_wait = self.store.get(current.job_id)
+            if refreshed_after_wait is None or refreshed_after_wait.terminal:
+                return
             provider_status = str(task.get("status", "")).lower()
             provider_progress = max(0.0, min(float(task.get("progress", 0)) / 100.0, 1.0))
             self._record_poll(current.job_id, task, provider_progress)

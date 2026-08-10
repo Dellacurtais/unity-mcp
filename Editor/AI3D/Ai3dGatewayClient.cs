@@ -228,7 +228,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             };
         }
 
-        internal static async Task<Ai3dJobSnapshot> CreateJobAsync(
+        internal static Task<Ai3dJobSnapshot> CreateJobAsync(
             string operation,
             JObject payload,
             int estimatedCredits,
@@ -237,6 +237,38 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             IEnumerable<string> sourceHashes,
             string idempotencyKey,
             CancellationToken cancellationToken = default)
+            => CreateJobCoreAsync(
+                operation, payload, estimatedCredits, capCredits, disclosureKinds,
+                sourceHashes, idempotencyKey, null, cancellationToken);
+
+        internal static Task<Ai3dJobSnapshot> CreateWorkflowJobAsync(
+            string operation,
+            JObject payload,
+            int estimatedCredits,
+            int capCredits,
+            IEnumerable<string> disclosureKinds,
+            IEnumerable<string> sourceHashes,
+            string idempotencyKey,
+            string planHash,
+            CancellationToken cancellationToken = default)
+        {
+            if (!IsSha256(planHash))
+                throw new ArgumentException("planHash must be a SHA-256 hex value.", nameof(planHash));
+            return CreateJobCoreAsync(
+                operation, payload, estimatedCredits, capCredits, disclosureKinds,
+                sourceHashes, idempotencyKey, planHash.ToLowerInvariant(), cancellationToken);
+        }
+
+        private static async Task<Ai3dJobSnapshot> CreateJobCoreAsync(
+            string operation,
+            JObject payload,
+            int estimatedCredits,
+            int capCredits,
+            IEnumerable<string> disclosureKinds,
+            IEnumerable<string> sourceHashes,
+            string idempotencyKey,
+            string explicitPlanHash,
+            CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(idempotencyKey))
                 throw new ArgumentException("Idempotency key is required.", nameof(idempotencyKey));
@@ -253,7 +285,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             {
                 ["project_key"] = Ai3dGatewaySettings.ProjectKey,
                 ["operation"] = operation,
-                ["plan_hash"] = Ai3dGatewaySettings.Sha256(plan.ToString(Formatting.None)),
+                ["plan_hash"] = explicitPlanHash ?? Ai3dGatewaySettings.Sha256(plan.ToString(Formatting.None)),
                 ["payload"] = payload,
                 ["budget"] = new JObject
                 {
@@ -273,6 +305,14 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             var job = Ai3dJobSnapshot.Parse(root["job"]);
             Ai3dGatewaySettings.LastJobId = job.JobId;
             return job;
+        }
+
+        private static bool IsSha256(string value)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length != 64) return false;
+            for (int i = 0; i < value.Length; i++)
+                if (!Uri.IsHexDigit(value[i])) return false;
+            return true;
         }
 
         internal static string ComputeFileSha256(string path)

@@ -125,18 +125,75 @@ class JobCreateRequest(StrictModel):
                 raise ValueError(
                     f"{self.operation} disclosure must include mesh, task_reference, or url"
                 )
+        if "mesh" in self.disclosure.kinds and not self.disclosure.source_hashes:
+            raise ValueError("mesh disclosure requires at least one reviewed source SHA-256")
         if self.operation == "convert":
             output_format = self.payload.get("format")
             if not isinstance(output_format, str) or output_format.upper() not in {
                 "GLTF", "FBX", "USDZ", "OBJ", "STL", "3MF"
             }:
                 raise ValueError("convert requires a supported format")
+        if self.operation == "retopology":
+            model = self.payload.get("model", "v2.0")
+            if model not in {"v1.0", "v2.0"}:
+                raise ValueError("retopology model must be v1.0 or v2.0")
+            quad = self.payload.get("quad", False)
+            if not isinstance(quad, bool):
+                raise ValueError("retopology quad must be boolean")
+            face_limit = self.payload.get("face_limit")
+            if model == "v1.0" and not isinstance(face_limit, int):
+                raise ValueError("retopology v1.0 requires face_limit")
+            if face_limit is not None:
+                maximum = 10_000 if model == "v2.0" and quad else 20_000 if model == "v2.0" else 150_000 if quad else 2_000_000
+                if not isinstance(face_limit, int) or not 500 <= face_limit <= maximum:
+                    raise ValueError(f"retopology face_limit must be between 500 and {maximum}")
+            if model == "v1.0" and ({"bake", "part_names"} & set(self.payload)):
+                raise ValueError("retopology v1.0 does not support bake or part_names")
+            _string_list(self.payload.get("part_names"), "retopology part_names", 64, optional=True)
+        if self.operation == "segment":
+            model = self.payload.get("model", "v1.0-20250506")
+            if model not in {"v1.0-20250506", "v2.0-20260430"}:
+                raise ValueError("segment model is unsupported")
+            if model == "v1.0-20250506" and ({"segmentation_granularity", "split_by_connectivity", "ref_image"} & set(self.payload)):
+                raise ValueError("segment v1 does not support semantic v2 parameters")
+            if model == "v2.0-20260430":
+                granularity = self.payload.get("segmentation_granularity", "balanced")
+                if granularity not in {"simple", "balanced", "detailed"}:
+                    raise ValueError("segment granularity must be simple, balanced or detailed")
+                if not isinstance(self.payload.get("split_by_connectivity", True), bool):
+                    raise ValueError("split_by_connectivity must be boolean")
+        if self.operation == "complete":
+            if self.payload.get("completion_mode", "ai_completion") not in {"ai_completion", "quick_cap"}:
+                raise ValueError("completion_mode must be ai_completion or quick_cap")
+            _string_list(self.payload.get("part_names"), "complete part_names", 64, optional=True)
+        if self.operation == "rig_check" and set(self.payload) != {"input"}:
+            raise ValueError("rig_check payload accepts only input")
+        if self.operation == "rig":
+            if self.payload.get("rig_type", "biped") not in {
+                "biped", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic"
+            }:
+                raise ValueError("rig_type is unsupported")
+            if self.payload.get("spec", "tripo") not in {"tripo", "mixamo"}:
+                raise ValueError("rig spec must be tripo or mixamo")
+            if self.payload.get("out_format", "glb") not in {"glb", "fbx"}:
+                raise ValueError("rig out_format must be glb or fbx")
         if self.operation == "retarget":
             single = _non_empty_string(self.payload.get("animation"))
             multiple = self.payload.get("animations")
             has_multiple = isinstance(multiple, list) and bool(multiple)
             if single == has_multiple:
                 raise ValueError("retarget requires exactly one of animation or animations")
+            if single and not str(self.payload["animation"]).startswith("preset:"):
+                raise ValueError("retarget animation must be a typed preset identifier")
+            if has_multiple:
+                _string_list(multiple, "retarget animations", 5)
+                if any(not value.startswith("preset:") for value in multiple):
+                    raise ValueError("retarget animations must be typed preset identifiers")
+            if self.payload.get("out_format", "glb") not in {"glb", "fbx"}:
+                raise ValueError("retarget out_format must be glb or fbx")
+            for key in ("bake_animation", "export_with_geometry", "animate_in_place"):
+                if key in self.payload and not isinstance(self.payload[key], bool):
+                    raise ValueError(f"retarget {key} must be boolean")
         return self
 
 
@@ -204,3 +261,15 @@ def utc_now() -> str:
 
 def _non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _string_list(
+    value: Any, label: str, maximum: int, *, optional: bool = False
+) -> list[str]:
+    if value is None and optional:
+        return []
+    if not isinstance(value, list) or not value or len(value) > maximum:
+        raise ValueError(f"{label} must contain 1-{maximum} values")
+    if any(not isinstance(item, str) or not item.strip() or len(item) > 128 for item in value):
+        raise ValueError(f"{label} contains an invalid value")
+    return value

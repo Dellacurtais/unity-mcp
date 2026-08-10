@@ -35,6 +35,7 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KAllowProjectSettingsTools = "Maicon.SceneAnalyzer.AllowProjectSettingsTools";
         private const string KAllowPlayControlTools = "Maicon.SceneAnalyzer.AllowPlayControlTools";
         private const string KAllowRuntimeCommandTools = "Maicon.SceneAnalyzer.AllowRuntimeCommandTools";
+        private const string KAllowExternalServiceTools = "Maicon.SceneAnalyzer.AllowExternalServiceTools";
         private const string KTransportMode = "Maicon.SceneAnalyzer.TransportMode";
         private const string KBrokerUrl = "Maicon.SceneAnalyzer.BrokerUrl";
         private const string KBrokerAutoConnect = "Maicon.SceneAnalyzer.BrokerAutoConnect";
@@ -220,6 +221,17 @@ namespace Maicon.SceneAnalyzer.Editor
         {
             get => EditorPrefs.GetBool(KAllowRuntimeCommandTools, true);
             set => EditorPrefs.SetBool(KAllowRuntimeCommandTools, value);
+        }
+
+        /// <summary>
+        /// Opt-in gate for tools that can disclose data to or spend credits on an
+        /// external provider. Kept disabled by default independently of ordinary
+        /// Unity writes so connecting an MCP client cannot authorize paid work.
+        /// </summary>
+        public static bool AllowExternalServiceTools
+        {
+            get => EditorPrefs.GetBool(KAllowExternalServiceTools, false);
+            set => EditorPrefs.SetBool(KAllowExternalServiceTools, value);
         }
 
         public static string CoderUrl

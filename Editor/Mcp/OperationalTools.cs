@@ -267,7 +267,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                         Issue("error", "DESCRIPTOR_NAME_MISMATCH", $"{tool.Name}: {descriptor.Name}", issues);
                     if (tool.IsWrite != descriptor.IsWrite)
                         Issue("error", "MUTABILITY_MISMATCH", $"{tool.Name}: tool.IsWrite={tool.IsWrite}, descriptor.IsWrite={descriptor.IsWrite}", issues);
-                    var highRisk = McpCapability.Destructive | McpCapability.Reflection | McpCapability.PackageManager | McpCapability.Build;
+                    var highRisk = McpCapability.Destructive | McpCapability.Reflection | McpCapability.PackageManager |
+                                   McpCapability.Build | McpCapability.ExternalService;
                     if ((descriptor.Capabilities & highRisk) != 0 && descriptor.ConfirmationPolicy != McpConfirmationPolicy.Required)
                         Issue("error", "CONFIRMATION_POLICY_MISSING", tool.Name, issues);
                 }
@@ -324,6 +325,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             ["projectSettings"] = Settings.AllowProjectSettingsTools,
             ["playControl"] = Settings.AllowPlayControlTools,
             ["runtimeCommand"] = Settings.AllowRuntimeCommandTools,
+            ["externalService"] = Settings.AllowExternalServiceTools,
             ["highRiskConfirmation"] = Settings.RequireHighRiskConfirmation,
         };
 

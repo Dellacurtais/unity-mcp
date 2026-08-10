@@ -25,6 +25,12 @@ from .secrets import (
 from .security import constant_time_equal, resolve_allowed_file, sha256_file, sha256_text
 from .store import DurableJobStore, IdempotencyConflictError
 from .version import GATEWAY_VERSION
+from .webhooks import (
+    WebhookDeliveryStore,
+    WebhookVerificationError,
+    parse_event,
+    verify_tripo_signature,
+)
 
 
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
@@ -105,6 +111,7 @@ def create_app(
     provider_instance = provider or TripoHttpProvider(config, credentials=credentials)
     vault = artifact_vault or ArtifactVault(config.data_dir, config.max_download_bytes)
     manager = TripoJobManager(config, store, provider_instance, vault)
+    webhook_deliveries = WebhookDeliveryStore(config.data_dir)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -126,6 +133,7 @@ def create_app(
     app.state.credentials = credentials
     app.state.artifact_vault = vault
     app.state.job_manager = manager
+    app.state.webhook_deliveries = webhook_deliveries
 
     async def require_auth(authorization: str | None = Header(default=None)) -> None:
         if not authorization or not authorization.lower().startswith("bearer "):
@@ -177,7 +185,7 @@ def create_app(
     @app.get("/v1/capabilities", dependencies=[protected])
     async def capabilities() -> dict[str, Any]:
         return {
-            "contractVersion": "1.0-draft",
+            "contractVersion": "1.2-draft",
             "operations": sorted(OPERATION_ENDPOINTS),
             "remoteCancellation": False,
             "durableJobs": True,
@@ -226,6 +234,50 @@ def create_app(
         limit: int = Query(default=100, ge=1, le=500),
     ) -> list[dict[str, Any]]:
         return (await provider_instance.get_usage())[:limit]
+
+    @app.get("/v1/telemetry/summary", dependencies=[protected])
+    async def telemetry_summary(
+        project_key: str | None = Query(default=None, min_length=1, max_length=128),
+    ) -> dict[str, Any]:
+        return manager.telemetry_summary(project_key)
+
+    @app.post("/v1/webhooks/tripo")
+    async def tripo_webhook(
+        request: Request,
+        signature: str | None = Header(default=None, alias="Tripo-Webhook-Signature"),
+        delivery_id: str | None = Header(default=None, alias="Tripo-Webhook-Delivery"),
+        event_header: str | None = Header(default=None, alias="Tripo-Webhook-Event"),
+    ) -> dict[str, Any]:
+        if not config.webhook_secret:
+            raise HTTPException(status_code=503, detail="Tripo webhook is not configured")
+        raw_body = await request.body()
+        try:
+            verify_tripo_signature(
+                raw_body,
+                signature or "",
+                config.webhook_secret,
+                tolerance_seconds=config.webhook_tolerance_seconds,
+            )
+            event = parse_event(raw_body)
+            if event_header != event["type"]:
+                raise WebhookVerificationError("webhook event header does not match body")
+            if not delivery_id:
+                raise WebhookVerificationError("webhook delivery header is required")
+            created = webhook_deliveries.record(
+                delivery_id, event["type"], event["id"], event["created_at"]
+            )
+            if not created:
+                return {"accepted": True, "duplicate": True, "matchedJobId": None}
+            try:
+                matched = None
+                if event["type"].startswith("task."):
+                    matched = await manager.reconcile_webhook(event["data"])
+                return {"accepted": True, "duplicate": False, "matchedJobId": matched}
+            except Exception:
+                webhook_deliveries.forget(delivery_id)
+                raise
+        except WebhookVerificationError as exception:
+            raise HTTPException(status_code=400, detail=str(exception)) from exception
 
     @app.post("/v1/uploads", dependencies=[protected], status_code=201)
     async def upload(request: UploadRequest) -> dict[str, Any]:

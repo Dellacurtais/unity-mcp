@@ -2,7 +2,7 @@
 
 Secure provider gateway for AI 3D Studio. It keeps the Tripo API key outside Unity assets, authenticates local clients, enforces consent/budget/idempotency, persists asynchronous jobs, and downloads successful outputs immediately into a hashed artifact vault.
 
-This process never imports candidates into Unity. Phase 2's Unity client separately verifies the authenticated vault root and hashes before an explicit quarantine/preview/accept flow. MCP workflow tools remain a Phase 3 gate in `Documentation~/tripo-ai-integration-spec.md`.
+This process never imports candidates into Unity. The Unity client separately verifies the authenticated vault root and hashes before an explicit quarantine/preview/accept flow. The same durable workflow contract covers generation, Smart Retopology, segmentation/completion, rig-check/rig and animation retargeting.
 
 ## Configuration
 
@@ -28,8 +28,12 @@ Optional:
 | `TRIPO_GATEWAY_DATA_DIR` | Local application data | Durable jobs and artifact vault |
 | `TRIPO_API_BASE_URL` | `https://openapi.tripo3d.ai/v3` | Official global API |
 | `TRIPO_GATEWAY_MAX_CREDITS_PER_JOB` | `1000` | Local per-job cap |
+| `TRIPO_GATEWAY_MAX_DAILY_ESTIMATED_CREDITS` | `1000` | Daily estimate quota per project (`0` disables) |
+| `TRIPO_GATEWAY_MAX_ACTIVE_JOBS_PER_PROJECT` | `3` | Concurrent provider jobs per project |
 | `TRIPO_GATEWAY_MAX_DOWNLOAD_BYTES` | `1073741824` | Per-artifact stream limit |
 | `TRIPO_GATEWAY_PORT` | `8771` | Loopback HTTP port |
+| `TRIPO_WEBHOOK_SECRET` | unset | Tripo signing secret (`whsec_…`) for `/v1/webhooks/tripo` |
+| `TRIPO_WEBHOOK_TOLERANCE_SECONDS` | `300` | Signature replay window |
 
 Custom API hosts are rejected unless `TRIPO_GATEWAY_ALLOW_CUSTOM_BASE_URL=1`. The launcher refuses non-loopback bind addresses.
 
@@ -40,7 +44,7 @@ python -m pip install -r TripoGateway~/requirements.txt
 python TripoGateway~/main.py
 ```
 
-Health is public and secret-free at `GET http://127.0.0.1:8771/health`. Every `/v1/*` route requires `Authorization: Bearer <TRIPO_GATEWAY_TOKEN>`.
+Health is public and secret-free at `GET http://127.0.0.1:8771/health`. Every local `/v1/*` route requires `Authorization: Bearer <TRIPO_GATEWAY_TOKEN>`, except the provider-facing `/v1/webhooks/tripo`, which requires the official `Tripo-Webhook-Signature` HMAC and delivery/event headers.
 
 Credential routes are authenticated and never return the key:
 
@@ -56,6 +60,14 @@ Creating a remote task additionally requires:
 - sufficient account balance.
 
 Cancellation after Tripo submission is local/cooperative: polling continues for factual reconciliation, artifacts are not downloaded, and the gateway does not claim a provider refund.
+
+Operational routes:
+
+- `GET /v1/telemetry/summary`: counts, operations and credit totals without prompts, file content or credentials;
+- `POST /v1/webhooks/tripo`: signed `task.completed`, `task.failed` and `balance.low` deliveries, deduplicated by delivery id;
+- `GET /v1/capabilities`: exposes only safe quota/webhook configuration metadata.
+
+Configure the public HTTPS webhook URL in Tripo Settings and keep the signing secret only in the gateway environment. Invalid/stale signatures are rejected, duplicate deliveries are acknowledged idempotently, and failed reconciliation remains retryable.
 
 ## Test
 

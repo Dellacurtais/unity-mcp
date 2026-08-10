@@ -17,6 +17,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         RuntimeCommand = 1 << 7,
         Reflection = 1 << 8,
         Destructive = 1 << 9,
+        ExternalService = 1 << 10,
     }
 
     public enum McpRiskLevel { Low, Medium, High, Critical }
