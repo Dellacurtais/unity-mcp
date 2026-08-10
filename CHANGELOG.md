@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.4] - 2026-08-10
+
 ### Added
 
 - Extend the shared AI 3D planner/runner through Phases 4–7 with typed Smart Retopology, semantic segmentation/completion, rig-check/rig/animation-retarget pipelines, per-node durable budgets, local A/B/rig/channel/clip quality gates, a dedicated AI 3D Studio processing page, signed idempotent Tripo webhooks, per-project quotas, redacted telemetry, and credit-free CI contract coverage.
@@ -22,12 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Detect and reuse an already healthy Unity MCP broker before launching the managed process, distinguish externally owned endpoints from managed failures in the Transport window, and keep Stop disabled for processes owned by another operator. This prevents a harmless port collision from surfacing as `SystemExit: 3` while the bridge is already connected.
 - Correct Humanoid muscle/root-axis mirroring and quaternion additive-reference math in Clip Studio; accelerate Weight Painter picking with a reusable baked mesh, triangle BVH, vertex grid and affected-only normalization; and complete the optional Animation Rigging bridge for validated Two Bone, Multi-Aim and Chain IK constraints through its public API.
 - Harden all seven Rig & Animation Studio phases: complete state hashes and stale-preview rejection; stroke-level Undo/cancel/locks and cached weight painting; bind snapshots, geometry-validated rebind and BVH weight transfer; complete clip transforms with duplicate-key-safe merge; reviewed retarget profiles with batch metrics; drift-free arbitrary-chain IK; and confidence-gated Auto Rig with Humanoid Avatar attempt, Generic fallback, validated deformation clip, and an explicit non-sending AI request/response bridge.
 - Repair Scene Modeling UX 2.0 edge-pair storage, boundary-loop encoding, symmetric edge selection, native Object/Face mode activation, scale-aware signed manipulators, debounced preview refresh, modern bone-weight selection, revision-aware diagnostics and geometric UV-seam detection. Make Mirror + Weld modifier records rebuildable, remove hidden attached-array gaps, deduplicate hierarchical mesh merges, and preserve child world poses when centering pivots.
 - Preserve views, resolution, overlay, and isolation in projected MCP signatures for object screenshots, and pin the canonical capture tool in the managed Unity Build agent so agents do not need custom menu methods or temporary cameras.
 - Treat Unity's expected bone-weight quantization and influence ordering as numerically equivalent during Smart Body Split validation, while still rejecting meaningful rig-weight drift.
 - Preserve Smart Body Split `preset`, `outputFolder`, preview hashes, and `closeCutSurfaces` in MCP client signatures that project `oneOf` branches directly; apply results now also report whether intelligent closure was requested alongside generated cap counts.
+
+## [0.18.4] - 2026-08-08
+
+### Changed
+
+- Bump package, C# fallback, Python broker, and release validator versions to `0.18.4`.
 
 ## [0.18.3] - 2026-08-08
 

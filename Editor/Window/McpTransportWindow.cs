@@ -411,7 +411,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                         TryTransportAction(StartManagedBroker, "Failed to start managed broker");
                     }
                 }
-                using (new EditorGUI.DisabledScope(!managed.IsProcessActive))
+                using (new EditorGUI.DisabledScope(!managed.CanStopProcess))
                 {
                     if (GUILayout.Button("Stop"))
                         TryTransportAction(StopManagedBroker, "Failed to stop managed broker");
@@ -420,7 +420,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
             using (new EditorGUILayout.HorizontalScope())
             {
-                GUILayout.Label("Python", GUILayout.Width(80));
+                GUILayout.Label("Base Python", GUILayout.Width(80));
                 using (new EditorGUI.DisabledScope(managed.IsInstallInProgress))
                 {
                     EditorGUI.BeginChangeCheck();
@@ -453,9 +453,25 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 EditorGUILayout.LabelField(
                     "Installed: " + managed.InstalledVersion + " · Package: " + SceneAnalyzerVersion.Current,
                     EditorStyles.miniLabel);
+            if (!string.IsNullOrEmpty(managed.PythonPath))
+                EditorGUILayout.LabelField(
+                    new GUIContent("Managed runtime: " + managed.PythonPath, managed.PythonPath),
+                    EditorStyles.miniLabel);
+            if (!string.IsNullOrEmpty(managed.EndpointVersion))
+                EditorGUILayout.LabelField("Endpoint: " + managed.EndpointVersion, EditorStyles.miniLabel);
+            if (managed.IsExternalProcess)
+                EditorGUILayout.HelpBox(
+                    "A healthy Unity MCP broker is already listening at this URL. This editor will reuse it; Start is unnecessary and Stop stays disabled because another operator owns the process.",
+                    MessageType.Info);
             if (managed.IsInstalled && !managed.IsCurrentVersion)
                 EditorGUILayout.HelpBox(
                     "The installed broker does not match this package version. Stop it and click Install.",
+                    MessageType.Warning);
+            if (managed.IsEndpointReady
+                && !string.IsNullOrEmpty(managed.EndpointVersion)
+                && !string.Equals(managed.EndpointVersion, SceneAnalyzerVersion.Current, StringComparison.Ordinal))
+                EditorGUILayout.HelpBox(
+                    "The broker listening at this URL has a different version. Stop it from its owning process before starting this package version.",
                     MessageType.Warning);
             if (!string.IsNullOrEmpty(managed.Error))
                 EditorGUILayout.HelpBox(managed.Error, MessageType.Error);

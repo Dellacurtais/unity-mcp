@@ -3,6 +3,10 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp.Broker;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
@@ -175,6 +179,88 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(snapshot.IsInstalled, Is.True);
             Assert.That(snapshot.IsCurrentVersion, Is.False);
             Assert.That(snapshot.Error, Is.EqualTo("port already in use"));
+        }
+
+        [Test]
+        public void PersistedState_HealthyExternalEndpointOverridesStaleManagedFailure()
+        {
+            var installPath = Path.Combine(_root, "installations", "1.2.3-test");
+            var pythonPath = Path.Combine(installPath, "venv", "python.exe");
+            var mainPath = Path.Combine(installPath, "source", "main.py");
+            Directory.CreateDirectory(Path.GetDirectoryName(pythonPath));
+            Directory.CreateDirectory(Path.GetDirectoryName(mainPath));
+            File.WriteAllText(pythonPath, string.Empty);
+            File.WriteAllText(mainPath, string.Empty);
+            File.WriteAllText(Path.Combine(_root, "current.json"), new JObject
+            {
+                ["version"] = "1.2.3",
+                ["installPath"] = installPath,
+                ["pythonPath"] = pythonPath,
+                ["mainPath"] = mainPath,
+            }.ToString());
+            var runtime = Path.Combine(_root, "runtime");
+            Directory.CreateDirectory(runtime);
+            File.WriteAllText(Path.Combine(runtime, "broker-process.json"), new JObject
+            {
+                ["state"] = "failed",
+                ["error"] = "SystemExit: 3",
+                ["updatedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
+            }.ToString());
+
+            var snapshot = ManagedBrokerProcess.InspectPersistedState(
+                _root,
+                "1.2.3",
+                _ => new ManagedBrokerProcess.ProcessProbe(),
+                () => new ManagedBrokerProcess.EndpointProbe
+                {
+                    Occupied = true,
+                    Healthy = true,
+                    Version = "1.2.3",
+                });
+
+            Assert.That(snapshot.State, Is.EqualTo(ManagedBrokerState.Running));
+            Assert.That(snapshot.IsEndpointReady, Is.True);
+            Assert.That(snapshot.IsExternalProcess, Is.True);
+            Assert.That(snapshot.IsProcessActive, Is.True);
+            Assert.That(snapshot.CanStopProcess, Is.False);
+            Assert.That(snapshot.EndpointVersion, Is.EqualTo("1.2.3"));
+            Assert.That(snapshot.Error, Is.Null);
+            Assert.That(snapshot.Message, Does.Contain("external process"));
+        }
+
+        [Test]
+        public void EndpointProbe_RecognizesUnityBrokerHealthPayload()
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var responder = Task.Run(() =>
+            {
+                using (var client = listener.AcceptTcpClient())
+                using (var stream = client.GetStream())
+                {
+                    var request = new byte[2048];
+                    stream.Read(request, 0, request.Length);
+                    var body = "{\"service\":\"unity-mcp-broker\",\"version\":\"9.8.7\"}";
+                    var response = Encoding.UTF8.GetBytes(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                        + Encoding.UTF8.GetByteCount(body) + "\r\nConnection: close\r\n\r\n" + body);
+                    stream.Write(response, 0, response.Length);
+                }
+            });
+
+            try
+            {
+                var probe = ManagedBrokerProcess.ProbeBrokerEndpoint("127.0.0.1", port);
+                Assert.That(probe.Occupied, Is.True);
+                Assert.That(probe.Healthy, Is.True, probe.Error);
+                Assert.That(probe.Version, Is.EqualTo("9.8.7"));
+                Assert.That(responder.Wait(TimeSpan.FromSeconds(2)), Is.True);
+            }
+            finally
+            {
+                listener.Stop();
+            }
         }
 
         [Test]

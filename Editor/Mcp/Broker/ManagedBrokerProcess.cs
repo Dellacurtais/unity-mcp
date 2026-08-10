@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
@@ -37,6 +38,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
         public bool IsCurrentVersion { get; set; }
         public bool IsProcessRunning { get; set; }
         public bool IsProcessActive { get; set; }
+        public bool IsEndpointReady { get; set; }
+        public bool IsExternalProcess { get; set; }
+        public bool CanStopProcess { get; set; }
+        public string EndpointVersion { get; set; }
         public bool IsInstallInProgress { get; set; }
     }
 
@@ -55,9 +60,21 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             public string Error;
         }
 
+        internal sealed class EndpointProbe
+        {
+            public bool Occupied;
+            public bool Healthy;
+            public string Version;
+            public string Error;
+        }
+
         private static readonly object OperationLock = new object();
         private static Task _installLaunchTask;
+        private static EndpointProbe _cachedEndpointProbe;
+        private static string _cachedEndpointKey;
+        private static DateTimeOffset _cachedEndpointUtc;
         private const int ProbeTimeoutMilliseconds = 5000;
+        private const int EndpointProbeTimeoutMilliseconds = 500;
         private const string ProcessMutexName = "UnityMcp.ManagedBroker.Process.v1";
 
         public static string RootPath => Path.Combine(
@@ -74,6 +91,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         public static ManagedBrokerSnapshot Inspect()
         {
+            var endpoint = ProbeConfiguredEndpoint(false);
             return InspectPersistedState(RootPath, SceneAnalyzerVersion.Current, state =>
             {
                 var running = TryGetOwnedProcess(state, out var process, out var error);
@@ -84,13 +102,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                     Exists = running || !string.IsNullOrEmpty(error),
                     Error = error,
                 };
-            });
+            }, () => endpoint);
         }
 
         internal static ManagedBrokerSnapshot InspectPersistedState(
             string rootPath,
             string currentVersion,
-            Func<JObject, ProcessProbe> probeProcess)
+            Func<JObject, ProcessProbe> probeProcess,
+            Func<EndpointProbe> probeEndpoint = null)
         {
             if (string.IsNullOrWhiteSpace(rootPath)) throw new ArgumentException("Root path is required.", nameof(rootPath));
             if (probeProcess == null) throw new ArgumentNullException(nameof(probeProcess));
@@ -99,6 +118,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             var processState = ReadObject(Path.Combine(rootPath, "runtime", "broker-process.json"));
             var installed = ValidateManifest(manifest, out var manifestError);
             var probe = probeProcess(processState) ?? new ProcessProbe();
+            var endpoint = probeEndpoint?.Invoke() ?? new EndpointProbe();
             var processRunning = probe.Running;
             var ownershipError = probe.Error;
             var processExists = probe.Exists || processRunning || !string.IsNullOrEmpty(ownershipError);
@@ -111,6 +131,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             var installFailed = string.Equals(installState, "failed", StringComparison.Ordinal) || staleInstall;
             var processStatus = (string)processState?["state"];
             var processReady = processRunning && string.Equals(processStatus, "running", StringComparison.Ordinal);
+            var endpointReady = endpoint.Healthy;
             var recentProcessLaunch = string.Equals(processStatus, "starting", StringComparison.Ordinal)
                 && IsRecentState(processState, TimeSpan.FromSeconds(15));
             var processStarting = string.Equals(processStatus, "starting", StringComparison.Ordinal)
@@ -122,22 +143,25 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             if (installing) state = string.Equals(installState, "locating_python", StringComparison.Ordinal)
                 ? ManagedBrokerState.LocatingPython
                 : ManagedBrokerState.Installing;
-            else if (processReady) state = ManagedBrokerState.Running;
+            else if (processReady || endpointReady) state = ManagedBrokerState.Running;
             else if (processRunning || processStarting) state = ManagedBrokerState.Starting;
             else if (processFailed || !string.IsNullOrEmpty(ownershipError) || installFailed && !installed)
                 state = ManagedBrokerState.Failed;
             else if (installed) state = ManagedBrokerState.Installed;
 
             var message = (string)installStatus?["message"];
-            if (processReady) message = "Managed broker health endpoint is ready";
+            if (endpointReady && !processRunning)
+                message = "A compatible broker is already healthy at this endpoint (external process)";
+            else if (processReady || endpointReady) message = "Managed broker health endpoint is ready";
             else if (processRunning) message = "Managed broker process is starting";
             else if (processFailed) message = "Managed broker process failed";
             else if (staleInstall) message = "Managed broker installer stopped before completion";
             else if (installed && !installing) message = "Managed broker is installed";
             else if (string.IsNullOrEmpty(message)) message = "Managed broker is not installed";
 
-            var error = (string)processState?["error"]
+            var error = endpointReady ? null : (string)processState?["error"]
                 ?? ownershipError
+                ?? endpoint.Error
                 ?? (string)installStatus?["error"]
                 ?? (staleInstall ? "The installer process is no longer running. Open the install log and retry." : null)
                 ?? manifestError;
@@ -156,7 +180,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 IsCurrentVersion = installed && string.Equals(
                     (string)manifest["version"], currentVersion, StringComparison.Ordinal),
                 IsProcessRunning = processRunning,
-                IsProcessActive = processExists || processStarting,
+                IsProcessActive = processExists || processStarting || endpointReady,
+                IsEndpointReady = endpointReady,
+                IsExternalProcess = endpointReady && !processRunning,
+                CanStopProcess = processRunning,
+                EndpointVersion = endpoint.Version,
                 IsInstallInProgress = installing,
             };
         }
@@ -233,6 +261,20 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             if (string.IsNullOrEmpty(Settings.Token)) Settings.Token = Settings.GenerateToken();
             if (!TryParseManagedEndpoint(Settings.BrokerUrl, out var host, out var port, out error))
                 throw new InvalidOperationException(error);
+            var endpoint = ProbeBrokerEndpoint(host, port);
+            if (endpoint.Healthy)
+            {
+                if (!string.IsNullOrEmpty(endpoint.Version)
+                    && !string.Equals(endpoint.Version, SceneAnalyzerVersion.Current, StringComparison.Ordinal))
+                    throw new InvalidOperationException(
+                        $"Unity MCP broker {endpoint.Version} is already running at {host}:{port}. " +
+                        $"Stop its owner before starting package {SceneAnalyzerVersion.Current}.");
+                return;
+            }
+            if (endpoint.Occupied)
+                throw new InvalidOperationException(
+                    $"Port {host}:{port} is already occupied, but its Unity MCP health check failed. " +
+                    (endpoint.Error ?? "Stop the conflicting process or choose another broker endpoint."));
 
             Directory.CreateDirectory(Path.GetDirectoryName(BrokerLogPath));
             Directory.CreateDirectory(Path.GetDirectoryName(DataPath));
@@ -418,6 +460,77 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 return false;
             }
             return true;
+        }
+
+        private static EndpointProbe ProbeConfiguredEndpoint(bool force)
+        {
+            if (!TryParseManagedEndpoint(Settings.BrokerUrl, out var host, out var port, out _))
+                return new EndpointProbe();
+            var key = host + ":" + port.ToString(CultureInfo.InvariantCulture);
+            lock (OperationLock)
+            {
+                if (!force && _cachedEndpointProbe != null
+                    && string.Equals(_cachedEndpointKey, key, StringComparison.Ordinal)
+                    && DateTimeOffset.UtcNow - _cachedEndpointUtc < TimeSpan.FromSeconds(1))
+                    return _cachedEndpointProbe;
+            }
+            var result = ProbeBrokerEndpoint(host, port);
+            lock (OperationLock)
+            {
+                _cachedEndpointKey = key;
+                _cachedEndpointProbe = result;
+                _cachedEndpointUtc = DateTimeOffset.UtcNow;
+            }
+            return result;
+        }
+
+        internal static EndpointProbe ProbeBrokerEndpoint(string host, int port)
+        {
+            var result = new EndpointProbe();
+            try
+            {
+                var uri = new UriBuilder("http", host, port, "/health").Uri;
+                var request = WebRequest.CreateHttp(uri);
+                request.Method = "GET";
+                request.Proxy = null;
+                request.KeepAlive = false;
+                request.Timeout = EndpointProbeTimeoutMilliseconds;
+                request.ReadWriteTimeout = EndpointProbeTimeoutMilliseconds;
+                using (var response = (HttpWebResponse)request.GetResponse())
+                using (var reader = new StreamReader(response.GetResponseStream()))
+                {
+                    result.Occupied = true;
+                    if (response.StatusCode != HttpStatusCode.OK)
+                    {
+                        result.Error = "Health endpoint returned HTTP " + (int)response.StatusCode + ".";
+                        return result;
+                    }
+                    var health = JObject.Parse(reader.ReadToEnd());
+                    if (!string.Equals((string)health["service"], "unity-mcp-broker", StringComparison.Ordinal))
+                    {
+                        result.Error = "The listening service is not a Unity MCP broker.";
+                        return result;
+                    }
+                    result.Healthy = true;
+                    result.Version = (string)health["version"];
+                    return result;
+                }
+            }
+            catch (WebException exception)
+            {
+                result.Occupied = exception.Response != null
+                    || exception.Status != WebExceptionStatus.ConnectFailure
+                    && exception.Status != WebExceptionStatus.NameResolutionFailure;
+                if (result.Occupied)
+                    result.Error = "Unity MCP health check failed: " + exception.Message;
+                return result;
+            }
+            catch (Exception exception)
+            {
+                result.Occupied = true;
+                result.Error = "Unity MCP health check failed: " + exception.Message;
+                return result;
+            }
         }
 
         internal static string QuoteArgument(string value)
