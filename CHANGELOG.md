@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add the Phase 0–2 Tripo AI integration baseline and normative specification: an authenticated provider gateway with allowlisted operations, approved/hash-checked uploads, budgeted idempotent jobs, restart reconciliation, honest cooperative cancellation, rate-limit retry and an atomic artifact vault; plus AI 3D Studio for text/image generation, FBX conversion, vault/job/plan/hash-bound quarantine, mesh validation, non-mutating Scene View preview, reviewed acceptance and explicit Undo-aware scene instantiation.
+- Add secure Tripo credential management to AI 3D Studio: the key is sent only to the authenticated loopback gateway, stored through Windows Credential Manager, hot-reloaded without restarting, testable/removable from Unity, cleared from request buffers, and never returned by the gateway. `TRIPO_API_KEY` remains the non-Windows/environment fallback.
 - Add the seven-page Rig & Animation Studio with rig diagnostics/heatmaps, safe BoneWeight1 painting, skeleton and bind-pose editing, weight transfer, pose libraries and clip transforms, Humanoid/Generic retarget, native IK/bake with optional Animation Rigging integration, and hash-guarded local or AI-assisted auto-rig. The same services are exposed through 19 guarded MCP tools.
 - Add Scene View marquee face selection to Asset Modeler, with contained/crossing drag directions, additive/removal modifiers, connected-island double-click, and select-all/invert/connected shortcuts.
 - Add `screenshot_object`, a fast direct MCP capture for scene objects and prefab assets with automatic framing, optional batched views, inline PNG output, and non-destructive isolation by default.
@@ -25,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserve views, resolution, overlay, and isolation in projected MCP signatures for object screenshots, and pin the canonical capture tool in the managed Unity Build agent so agents do not need custom menu methods or temporary cameras.
 - Treat Unity's expected bone-weight quantization and influence ordering as numerically equivalent during Smart Body Split validation, while still rejecting meaningful rig-weight drift.
 - Preserve Smart Body Split `preset`, `outputFolder`, preview hashes, and `closeCutSurfaces` in MCP client signatures that project `oneOf` branches directly; apply results now also report whether intelligent closure was requested alongside generated cap counts.
+
+## [0.18.3] - 2026-08-08
+
+### Changed
+
+- Bump package, C# fallback, Python broker, and release validator versions to `0.18.3`.
 
 ## [0.18.2] - 2026-08-08
 

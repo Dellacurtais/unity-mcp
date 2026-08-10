@@ -45,6 +45,12 @@ Broker~/env/
 Broker~/__pycache__/
 Broker~/.pytest_cache/
 Broker~/.coverage
+TripoGateway~/.venv/
+TripoGateway~/venv/
+TripoGateway~/env/
+TripoGateway~/__pycache__/
+TripoGateway~/.pytest_cache/
+TripoGateway~/.coverage
 *.py[cod]
 
 # IDE and editor settings
