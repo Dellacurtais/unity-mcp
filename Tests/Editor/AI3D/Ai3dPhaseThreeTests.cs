@@ -104,6 +104,99 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D.Tests
         }
 
         [Test]
+        public void MeshyPlans_UseProviderSpecificPipelinesLimitsAndAutoRouting()
+        {
+            var text = TextPlan();
+            text["provider"] = "meshy";
+            text["modelVersion"] = "latest";
+            var textPlan = Ai3dWorkflowService.Plan(text);
+            Assert.That(textPlan.Provider, Is.EqualTo("meshy"));
+            Assert.That(textPlan.Nodes.Select(value => value.Operation),
+                Is.EqualTo(new[] { "text_to_model", "texture" }));
+            Assert.That(textPlan.EstimatedCredits, Is.EqualTo(30));
+            Assert.That(textPlan.BudgetCapCredits, Is.EqualTo(45));
+            Assert.That(textPlan.AutoConvertToFbx, Is.False);
+
+            var imagePath = Path.Combine(_storeRoot, "meshy-reference.png");
+            File.WriteAllBytes(imagePath, new byte[] { 137, 80, 78, 71, 1 });
+            var imagePlan = Ai3dWorkflowService.Plan(new JObject
+            {
+                ["provider"] = "auto",
+                ["sourceKind"] = "image",
+                ["imagePath"] = imagePath,
+                ["preset"] = "game-mobile",
+                ["smartLowPoly"] = true,
+                ["faceLimit"] = 20000,
+            });
+            Assert.That(imagePlan.Provider, Is.EqualTo("meshy"));
+            Assert.That(imagePlan.FaceLimit, Is.EqualTo(15000));
+
+            var minimumImagePlan = Ai3dWorkflowService.Plan(new JObject
+            {
+                ["provider"] = "meshy",
+                ["sourceKind"] = "image",
+                ["imagePath"] = imagePath,
+                ["preset"] = "game-mobile",
+                ["smartLowPoly"] = true,
+                ["faceLimit"] = 1,
+            });
+            Assert.That(minimumImagePlan.FaceLimit, Is.EqualTo(100));
+
+            var source = TemporaryModel("auto-segment.glb");
+            var segment = Ai3dWorkflowService.Plan(new JObject
+            {
+                ["provider"] = "auto",
+                ["workflowKind"] = "segment_complete",
+                ["sourceKind"] = "mesh",
+                ["meshPath"] = source,
+                ["preset"] = "modular-character",
+            });
+            Assert.That(segment.Provider, Is.EqualTo("tripo"));
+            var unsupported = Assert.Throws<Ai3dWorkflowException>(() => Ai3dWorkflowService.Plan(new JObject
+            {
+                ["provider"] = "meshy",
+                ["workflowKind"] = "segment_complete",
+                ["sourceKind"] = "mesh",
+                ["meshPath"] = source,
+                ["preset"] = "modular-character",
+            }));
+            Assert.That(unsupported.Code, Is.EqualTo("AI3D_PROVIDER_OPERATION_UNSUPPORTED"));
+        }
+
+        [Test]
+        public void MeshyRigPlan_UsesActionIdsAndStrictFps()
+        {
+            var source = TemporaryModel("meshy-rig.glb");
+            var plan = Ai3dWorkflowService.Plan(new JObject
+            {
+                ["provider"] = "meshy",
+                ["workflowKind"] = "rig_animation",
+                ["sourceKind"] = "mesh",
+                ["meshPath"] = source,
+                ["preset"] = "animation-pack",
+                ["heightMeters"] = 1.82,
+                ["animationActionIds"] = new JArray { 92, 133 },
+                ["animationFps"] = 24,
+            });
+            Assert.That(plan.Nodes.Select(value => value.Operation),
+                Is.EqualTo(new[] { "rig", "animate", "animate" }));
+            Assert.That((double)plan.Nodes[0].Payload["height_meters"], Is.EqualTo(1.82).Within(0.001));
+            Assert.That((int)plan.Nodes[1].Payload["action_id"], Is.EqualTo(92));
+            Assert.That((int)plan.Nodes[1].Payload["fps"], Is.EqualTo(24));
+
+            var invalid = Assert.Throws<Ai3dWorkflowException>(() => Ai3dWorkflowService.Plan(new JObject
+            {
+                ["provider"] = "meshy",
+                ["workflowKind"] = "rig_animation",
+                ["sourceKind"] = "mesh",
+                ["meshPath"] = source,
+                ["preset"] = "animation-pack",
+                ["animationFps"] = 26,
+            }));
+            Assert.That(invalid.Code, Is.EqualTo("AI3D_ANIMATION_FPS_INVALID"));
+        }
+
+        [Test]
         public void SegmentPlan_ComposesSemanticSplitCompletionAndFbxWithoutRawEndpoint()
         {
             var path = TemporaryModel("body.glb");
@@ -369,6 +462,10 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D.Tests
                     Is.True, tool.Name + " output: " + outputError);
                 Assert.That(tool.Descriptor.Category, Is.EqualTo("ai3d"), tool.Name);
             }
+            var planSchema = new Ai3dPlanWorkflowTool().InputSchema;
+            Assert.That(planSchema["properties"]?["provider"]?["enum"]?.Values<string>(),
+                Is.EquivalentTo(new[] { "tripo", "meshy", "auto" }));
+            Assert.That(planSchema["properties"]?["animationActionIds"], Is.Not.Null);
             Ai3dMcpBootstrap.Initialize();
             foreach (var tool in tools)
                 Assert.That(Bootstrap.ToolRegistry.TryGet(tool.Name, out _), Is.True, tool.Name);

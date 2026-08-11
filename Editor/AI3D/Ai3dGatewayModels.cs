@@ -92,6 +92,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
         public string JobId;
         public string ProjectKey;
+        public string Provider;
         public string Operation;
         public string PlanHash;
         public string Status;
@@ -128,6 +129,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             {
                 JobId = (string)json["job_id"],
                 ProjectKey = (string)json["project_key"],
+                Provider = (string)json["provider"] ?? "tripo",
                 Operation = (string)json["operation"],
                 PlanHash = (string)json["plan_hash"],
                 Status = (string)json["status"],
@@ -163,6 +165,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
     public sealed class Ai3dJobSummary
     {
         public string JobId;
+        public string Provider;
         public string Operation;
         public string Status;
         public float Progress;
@@ -177,6 +180,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             var result = new Ai3dJobSummary
             {
                 JobId = (string)json["job_id"],
+                Provider = (string)json["provider"] ?? "tripo",
                 Operation = (string)json["operation"],
                 Status = (string)json["status"],
                 Progress = (float?)json["progress"] ?? 0f,
@@ -199,6 +203,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
     public sealed class Ai3dUploadSnapshot
     {
+        public string Provider;
         public string FileToken;
         public string SourceName;
         public long ByteCount;

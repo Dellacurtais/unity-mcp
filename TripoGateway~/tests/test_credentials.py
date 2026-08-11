@@ -3,11 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from fakes import FakeArtifactVault, FakeTripoProvider
 from tripo_gateway.app import create_app
 from tripo_gateway.config import GatewaySettings
-from tripo_gateway.secrets import MemoryCredentialStore, TripoCredentialManager
+from tripo_gateway.secrets import (
+    CredentialStoreError,
+    MemoryCredentialStore,
+    TripoCredentialManager,
+    validate_api_key,
+)
 
 
 AUTH = {"Authorization": "Bearer local-gateway-token"}
@@ -41,7 +47,7 @@ def test_credential_manager_prefers_secure_store_and_clear_reveals_environment()
 
 
 def test_authenticated_credential_api_never_returns_or_echoes_key(tmp_path: Path) -> None:
-    secret = "tripo-secret-value-123456"
+    secret = "tsk_tripo-secret-value-123456"
     manager = TripoCredentialManager(None, MemoryCredentialStore())
     app = create_app(
         settings(tmp_path),
@@ -77,3 +83,12 @@ def test_authenticated_credential_api_never_returns_or_echoes_key(tmp_path: Path
         assert removed.status_code == 200
         assert removed.json()["configured"] is False
         assert manager.api_key is None
+
+
+def test_meshy_credential_validation_uses_provider_specific_errors() -> None:
+    with pytest.raises(CredentialStoreError) as raised:
+        validate_api_key("invalid secret with spaces", "meshy")
+
+    assert raised.value.code == "MESHY_API_KEY_INVALID"
+    assert "Meshy API key" in str(raised.value)
+    assert "Tripo" not in str(raised.value)

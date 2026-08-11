@@ -18,10 +18,11 @@ SECRET_KEYS = frozenset(
         "gateway_token",
         "tripo_api_key",
         "tripo_gateway_token",
+        "meshy_api_key",
     }
 )
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
-ALLOWED_DOWNLOAD_SUFFIXES = (".tripo3d.ai", ".tripo3d.com")
+ALLOWED_DOWNLOAD_SUFFIXES = (".tripo3d.ai", ".tripo3d.com", ".meshy.ai")
 
 
 def canonical_json(value: Any) -> str:
@@ -85,11 +86,10 @@ def validate_download_url(url: str) -> str:
         raise ValueError("ARTIFACT_URL_REJECTED: fragment or non-default port")
     host = parsed.hostname.lower()
     if not any(host.endswith(suffix) for suffix in ALLOWED_DOWNLOAD_SUFFIXES):
-        raise ValueError("ARTIFACT_URL_REJECTED: host is not owned by Tripo")
+        raise ValueError("ARTIFACT_URL_REJECTED: host is not an approved AI 3D provider")
     return url
 
 
 def safe_filename(value: str, fallback: str = "artifact") -> str:
     name = SAFE_NAME.sub("_", (value or "").strip()).strip("._")
     return (name or fallback)[:120]
-

@@ -26,6 +26,17 @@ OUTPUT_URL_KEYS = frozenset(
         "base_model",
         "pbr_model",
         "rendered_image",
+        "thumbnail_url",
+        "alpha_thumbnail_url",
+        "texture_urls",
+        "rigged_character_fbx_url",
+        "rigged_character_glb_url",
+        "basic_animations",
+        "animation_glb_url",
+        "animation_fbx_url",
+        "processed_usdz_url",
+        "processed_armature_fbx_url",
+        "processed_animation_fps_fbx_url",
     }
 )
 CONTENT_EXTENSIONS = {
@@ -161,15 +172,20 @@ class ArtifactVault:
 
 def _collect_urls(output: dict[str, Any]) -> list[tuple[str, str]]:
     candidates: list[tuple[str, str]] = []
-    for key, value in output.items():
-        if key not in OUTPUT_URL_KEYS:
-            continue
-        if isinstance(value, str) and value.startswith("https://"):
-            candidates.append((key, value))
+    def collect(prefix: str, value: Any, approved: bool = False) -> None:
+        if isinstance(value, str) and approved and value.startswith("https://"):
+            candidates.append((prefix, value))
+        elif isinstance(value, dict):
+            for child_key, child in value.items():
+                child_prefix = f"{prefix}_{child_key}" if prefix else child_key
+                child_approved = approved or child_key in OUTPUT_URL_KEYS or child_key.endswith("_url") or child_key.endswith("_urls")
+                collect(child_prefix, child, child_approved)
         elif isinstance(value, list):
-            for index, item in enumerate(value):
-                if isinstance(item, str) and item.startswith("https://"):
-                    candidates.append((f"{key}_{index}", item))
+            for index, child in enumerate(value):
+                collect(f"{prefix}_{index}", child, approved)
+
+    for key, value in output.items():
+        collect(key, value, key in OUTPUT_URL_KEYS or key.endswith("_url") or key.endswith("_urls"))
     return candidates
 
 

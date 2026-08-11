@@ -35,13 +35,18 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private Ai3dGatewayHealth _health;
         private JObject _capabilities;
         private Ai3dCredentialStatus _credentialStatus;
+        private Ai3dCredentialStatus _meshyCredentialStatus;
         private string _tripoApiKeyInput;
+        private string _meshyApiKeyInput;
         private bool _showTripoApiKey;
+        private bool _showMeshyApiKey;
         private JObject _balance;
+        private string _provider = "tripo";
 
         private int _generationMode;
         private Ai3dGenerationPreset _preset = Ai3dGenerationPreset.GamePc;
         private string _model;
+        private string _meshyModel = "latest";
         private string _prompt = "Um prop 3D game-ready, topologia limpa, materiais PBR e escala realista";
         private string _imagePath;
         private int _faceLimit = 50000;
@@ -74,6 +79,9 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private string _rigType = "auto";
         private string _rigSpec = "mixamo";
         private string _animationPresets = "preset:idle, preset:walk, preset:run";
+        private string _meshyAnimationActionIds = string.Empty;
+        private float _heightMeters = 1.7f;
+        private int _animationFps = 30;
         private bool _animateInPlace = true;
         private int _processBudgetCap = 120;
 
@@ -108,6 +116,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             _lifetime?.Dispose();
             _lifetime = null;
             _tripoApiKeyInput = null;
+            _meshyApiKeyInput = null;
             if (_staged != null && Ai3dScenePreviewController.ActiveAsset == _staged.Asset)
                 Ai3dScenePreviewController.Clear();
         }
@@ -171,11 +180,12 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             {
                 EditorGUILayout.LabelField("AI 3D Studio", EditorStyles.boldLabel);
                 GUILayout.FlexibleSpace();
+                var configured = SelectedProviderConfigured;
                 var state = _health == null ? "não testado"
                     : !_health.Ready ? "offline"
-                    : _health.Configured ? "Tripo pronta" : "gateway sem API key";
+                    : configured ? SelectedProviderLabel + " pronta" : "gateway sem API key " + SelectedProviderLabel;
                 var previous = GUI.color;
-                GUI.color = _health != null && _health.Ready && _health.Configured
+                GUI.color = _health != null && _health.Ready && configured
                     ? new Color(0.55f, 1f, 0.65f)
                     : new Color(1f, 0.75f, 0.35f);
                 GUILayout.Label("● " + state, EditorStyles.miniBoldLabel);
@@ -183,18 +193,55 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             }
         }
 
+        private void DrawProviderSelector()
+        {
+            var values = new[] { "tripo", "meshy", "auto" };
+            var labels = new[] { "Tripo", "Meshy", "Automático" };
+            var selected = Math.Max(0, Array.IndexOf(values, _provider));
+            var next = EditorGUILayout.Popup(
+                new GUIContent("Provedor", "Automático escolhe Meshy, exceto na separação semântica exclusiva da Tripo."),
+                selected, labels);
+            if (next != selected)
+            {
+                _provider = values[next];
+                if (_provider != "tripo")
+                {
+                    _capCredits = _generationMode == 0 ? (_texture ? 45 : 30) : (_texture ? 40 : 30);
+                    _processBudgetCap = _processMode == 0 ? 8 : 25;
+                }
+            }
+        }
+
+        private string EffectiveProvider
+            => _provider == "auto" ? (_page == 1 && _processMode == 1 ? "tripo" : "meshy") : _provider;
+
+        private string SelectedProviderLabel => EffectiveProvider == "meshy" ? "Meshy" : "Tripo";
+
+        private bool SelectedProviderConfigured
+            => EffectiveProvider == "meshy"
+                ? _meshyCredentialStatus != null && _meshyCredentialStatus.Configured
+                : _credentialStatus != null ? _credentialStatus.Configured : _health != null && _health.Configured;
+
         private void DrawGeneratePage()
         {
             EditorGUILayout.LabelField("Novo candidato", EditorStyles.boldLabel);
+            DrawProviderSelector();
             EditorGUILayout.HelpBox(
-                "Planeja e executa geração → conversão FBX com um único planHash e limite aprovado. O resultado permanece no vault até você validar e colocá-lo em quarentena.",
+                EffectiveProvider == "meshy"
+                    ? "Planeja geração Meshy (preview/refine quando necessário) e solicita FBX no próprio resultado. O candidato permanece no vault até validação e quarentena."
+                    : "Planeja e executa geração → conversão FBX com um único planHash e limite aprovado. O resultado permanece no vault até você validar e colocá-lo em quarentena.",
                 MessageType.Info);
             _generationMode = GUILayout.Toolbar(_generationMode, new[] { "Texto → 3D", "Imagem → 3D" });
             EditorGUILayout.Space(4f);
             EditorGUI.BeginChangeCheck();
             _preset = (Ai3dGenerationPreset)EditorGUILayout.Popup("Preset", (int)_preset, PresetLabels);
             if (EditorGUI.EndChangeCheck()) ApplyPreset();
-            _model = EditorGUILayout.TextField(new GUIContent("Modelo Tripo", "Versão explícita; não é atualizada silenciosamente."), _model);
+            if (EffectiveProvider == "meshy")
+                _meshyModel = EditorGUILayout.TextField(
+                    new GUIContent("Modelo Meshy", "Use latest, meshy-6 ou meshy-5."), _meshyModel ?? "latest");
+            else
+                _model = EditorGUILayout.TextField(
+                    new GUIContent("Modelo Tripo", "Versão explícita; não é atualizada silenciosamente."), _model);
 
             if (_generationMode == 0)
             {
@@ -208,7 +255,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                     _imagePath = EditorGUILayout.TextField("Imagem", _imagePath ?? string.Empty);
                     if (GUILayout.Button("…", GUILayout.Width(32f)))
                     {
-                        var selected = EditorUtility.OpenFilePanel("Imagem para Tripo", string.Empty, "png,jpg,jpeg");
+                        var selected = EditorUtility.OpenFilePanel("Imagem para " + SelectedProviderLabel, string.Empty, "png,jpg,jpeg");
                         if (!string.IsNullOrEmpty(selected) && !string.Equals(selected, _imagePath, StringComparison.Ordinal))
                         {
                             _imagePath = selected;
@@ -225,8 +272,13 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             _smartLowPoly = EditorGUILayout.ToggleLeft("Smart Low Poly", _smartLowPoly);
             if (_smartLowPoly)
             {
-                _faceLimit = EditorGUILayout.IntSlider("Limite de faces", Mathf.Clamp(_faceLimit, 500, 20000), 500, 20000);
-                EditorGUILayout.HelpBox("A API Smart Low Poly aceita no máximo 20.000 faces.", MessageType.None);
+                var smartMaximum = EffectiveProvider == "meshy" && _generationMode == 1 ? 15000 : 20000;
+                _faceLimit = EditorGUILayout.IntSlider("Limite de faces", Mathf.Clamp(_faceLimit, 500, smartMaximum), 500, smartMaximum);
+                EditorGUILayout.HelpBox(
+                    EffectiveProvider == "meshy"
+                        ? "Meshy Smart Topology T2 cria partes separadas e aceita até 15.000 faces em Imagem → 3D. Em Texto → 3D, Low Poly escolhe a topologia automaticamente."
+                        : "A API Smart Low Poly aceita no máximo 20.000 faces.",
+                    MessageType.None);
             }
             else _faceLimit = EditorGUILayout.IntField("Limite de faces", Mathf.Max(500, _faceLimit));
             _geometryQuality = EditorGUILayout.Popup("Qualidade", _geometryQuality == "detailed" ? 1 : 0,
@@ -237,31 +289,35 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
             EditorGUILayout.Space(4f);
             EditorGUILayout.LabelField("Orçamento", EditorStyles.boldLabel);
-            _estimatedCredits = Mathf.Max(1, EditorGUILayout.IntField("Estimativa da geração", _estimatedCredits));
-            _capCredits = Mathf.Max(_estimatedCredits + 15, EditorGUILayout.IntField("Limite do workflow", _capCredits));
+            if (EffectiveProvider == "tripo")
+                _estimatedCredits = Mathf.Max(1, EditorGUILayout.IntField("Estimativa da geração", _estimatedCredits));
+            _capCredits = Mathf.Max(1, EditorGUILayout.IntField("Limite do workflow", _capCredits));
             EditorGUILayout.HelpBox(
-                "O planner reserva 10 créditos estimados e até 15 do limite para converter automaticamente o resultado em FBX. O limite local não é uma trava transacional da Tripo.",
+                EffectiveProvider == "meshy"
+                    ? "O planner calcula os créditos por etapa Meshy (geração, refine, rig ou animação). FBX já é solicitado na geração; o limite local não é uma trava transacional do provedor."
+                    : "O planner reserva 10 créditos estimados e até 15 do limite para converter automaticamente o resultado em FBX. O limite local não é uma trava transacional da Tripo.",
                 MessageType.Warning);
             _externalSendApproved = EditorGUILayout.ToggleLeft(
                 _generationMode == 0
-                    ? "Autorizo enviar este texto para a Tripo e consumir créditos"
-                    : "Autorizo enviar esta imagem para a Tripo e consumir créditos",
+                    ? "Autorizo enviar este texto para " + SelectedProviderLabel + " e consumir créditos"
+                    : "Autorizo enviar esta imagem para " + SelectedProviderLabel + " e consumir créditos",
                 _externalSendApproved);
 
-            var canGenerate = !_busy && _externalSendApproved && _health != null && _health.Ready && _health.Configured;
+            var canGenerate = !_busy && _externalSendApproved && _health != null && _health.Ready && SelectedProviderConfigured;
             if (_generationMode == 0) canGenerate &= !string.IsNullOrWhiteSpace(_prompt);
             else canGenerate &= !string.IsNullOrWhiteSpace(_imagePath) && File.Exists(_imagePath);
             using (new EditorGUI.DisabledScope(!canGenerate))
             {
                 if (GUILayout.Button("Gerar candidato", GUILayout.Height(36f))) _ = SubmitGenerationAsync();
             }
-            if (_health == null || !_health.Ready || !_health.Configured)
-                EditorGUILayout.HelpBox("Abra Configuração e conecte um gateway com uma credencial Tripo.", MessageType.Warning);
+            if (_health == null || !_health.Ready || !SelectedProviderConfigured)
+                EditorGUILayout.HelpBox("Abra Configuração e conecte um gateway com uma credencial " + SelectedProviderLabel + ".", MessageType.Warning);
         }
 
         private void DrawProcessPage()
         {
             EditorGUILayout.LabelField("Processar modelo existente", EditorStyles.boldLabel);
+            DrawProviderSelector();
             EditorGUILayout.HelpBox(
                 "O mesmo planner seguro executa apenas operações tipadas. O arquivo é hashado antes do envio; o resultado volta como candidato em quarentena, nunca direto na cena.",
                 MessageType.Info);
@@ -272,7 +328,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 if (GUILayout.Button("…", GUILayout.Width(32f)))
                 {
                     var selected = EditorUtility.OpenFilePanel(
-                        "Modelo para processamento Tripo", string.Empty, "fbx,glb,gltf,obj,stl");
+                        "Modelo para processamento " + SelectedProviderLabel, string.Empty, "fbx,glb,gltf,obj,stl");
                     if (!string.IsNullOrEmpty(selected)) _meshPath = selected;
                 }
             }
@@ -309,27 +365,47 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             else
             {
                 EditorGUILayout.LabelField("Rig e pacote de animações", EditorStyles.boldLabel);
-                _rigType = new[] { "auto", "biped", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic" }[
-                    EditorGUILayout.Popup("Tipo", Math.Max(0, Array.IndexOf(
-                        new[] { "auto", "biped", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic" }, _rigType)),
-                        new[] { "Automático (rig-check)", "Bípede", "Quadrúpede", "Hexápode", "Octópode", "Ave", "Serpentino", "Aquático" })];
-                _rigSpec = EditorGUILayout.Popup("Esqueleto", _rigSpec == "tripo" ? 1 : 0,
-                    new[] { "Mixamo / Unity", "Tripo" }) == 1 ? "tripo" : "mixamo";
-                _animationPresets = EditorGUILayout.TextField("Animações", _animationPresets ?? string.Empty);
-                _animateInPlace = EditorGUILayout.ToggleLeft("Animações in-place", _animateInPlace);
-                EditorGUILayout.HelpBox(
-                    "Sempre executa rig-check antes de gastar com rig. Informe até 5 presets separados por vírgula, por exemplo: preset:idle, preset:walk.",
-                    MessageType.Info);
+                if (EffectiveProvider == "meshy")
+                {
+                    _heightMeters = Mathf.Max(0.1f, EditorGUILayout.FloatField("Altura aproximada (m)", _heightMeters));
+                    _meshyAnimationActionIds = EditorGUILayout.TextField(
+                        new GUIContent("IDs de animação", "Até 5 action IDs da biblioteca Meshy, separados por vírgula. Vazio gera somente rig e animações básicas."),
+                        _meshyAnimationActionIds ?? string.Empty);
+                    var fpsValues = new[] { 24, 25, 30, 60 };
+                    var fpsLabels = new[] { "24", "25", "30", "60" };
+                    _animationFps = fpsValues[EditorGUILayout.Popup(
+                        "FPS", Math.Max(0, Array.IndexOf(fpsValues, _animationFps)), fpsLabels)];
+                    EditorGUILayout.HelpBox(
+                        "Meshy Auto-Rig suporta humanoides bípedes texturizados. GLB externo deve olhar para +Z e ter no máximo 300.000 faces.",
+                        MessageType.Info);
+                }
+                else
+                {
+                    _rigType = new[] { "auto", "biped", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic" }[
+                        EditorGUILayout.Popup("Tipo", Math.Max(0, Array.IndexOf(
+                            new[] { "auto", "biped", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic" }, _rigType)),
+                            new[] { "Automático (rig-check)", "Bípede", "Quadrúpede", "Hexápode", "Octópode", "Ave", "Serpentino", "Aquático" })];
+                    _rigSpec = EditorGUILayout.Popup("Esqueleto", _rigSpec == "tripo" ? 1 : 0,
+                        new[] { "Mixamo / Unity", "Tripo" }) == 1 ? "tripo" : "mixamo";
+                    _animationPresets = EditorGUILayout.TextField("Animações", _animationPresets ?? string.Empty);
+                    _animateInPlace = EditorGUILayout.ToggleLeft("Animações in-place", _animateInPlace);
+                    EditorGUILayout.HelpBox(
+                        "Sempre executa rig-check antes de gastar com rig. Informe até 5 presets separados por vírgula, por exemplo: preset:idle, preset:walk.",
+                        MessageType.Info);
+                }
             }
 
             _processBudgetCap = Mathf.Clamp(
                 EditorGUILayout.IntField("Limite do workflow", _processBudgetCap), 1,
                 Ai3dGatewaySettings.MaxCreditsPerWorkflow);
             _externalSendApproved = EditorGUILayout.ToggleLeft(
-                "Autorizo enviar esta mesh à Tripo e consumir até o limite revisado",
+                "Autorizo enviar esta mesh à " + SelectedProviderLabel + " e consumir até o limite revisado",
                 _externalSendApproved);
+            var operationSupported = !(EffectiveProvider == "meshy" && _processMode == 1);
+            if (!operationSupported)
+                EditorGUILayout.HelpBox("Separar + fechar é exclusivo da Tripo. Escolha Tripo ou Automático.", MessageType.Warning);
             var canRun = !_busy && _externalSendApproved && File.Exists(_meshPath ?? string.Empty) &&
-                         _health != null && _health.Ready && _health.Configured;
+                         _health != null && _health.Ready && SelectedProviderConfigured && operationSupported;
             using (new EditorGUI.DisabledScope(!canRun))
                 if (GUILayout.Button("Planejar e processar candidato", GUILayout.Height(36f)))
                     _ = SubmitProcessingAsync();
@@ -350,6 +426,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 {
                     var id = Short(job.JobId, 10);
                     if (GUILayout.Button(id, EditorStyles.miniButton, GUILayout.Width(84f))) _ = SelectJobAsync(job.JobId);
+                    EditorGUILayout.LabelField(job.Provider ?? "tripo", GUILayout.Width(52f));
                     EditorGUILayout.LabelField(job.Operation ?? "?", GUILayout.Width(120f));
                     EditorGUILayout.LabelField(job.Status ?? "?", GUILayout.Width(125f));
                     GUILayout.FlexibleSpace();
@@ -366,6 +443,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             if (_selectedJob == null) return;
             EditorGUILayout.LabelField("Job selecionado", EditorStyles.boldLabel);
             EditorGUILayout.SelectableLabel(_selectedJob.JobId, EditorStyles.miniLabel, GUILayout.Height(18f));
+            EditorGUILayout.LabelField("Provedor", _selectedJob.Provider ?? "tripo");
             EditorGUILayout.LabelField("Operação", _selectedJob.Operation ?? string.Empty);
             EditorGUILayout.LabelField("Estado", _selectedJob.Status ?? string.Empty);
             if (!string.IsNullOrEmpty(_activeWorkflowId))
@@ -553,7 +631,9 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 "Desligado por padrão. Quando ligado, cada início/cancelamento remoto ainda exige confirmação MCP de uso único, consentimento dos dados enviados e um planHash atual.",
                 MessageType.Warning);
             EditorGUILayout.Space(8f);
-            DrawTripoCredentialSettings();
+            DrawProviderCredentialSettings("tripo", _credentialStatus);
+            EditorGUILayout.Space(6f);
+            DrawProviderCredentialSettings("meshy", _meshyCredentialStatus);
             EditorGUILayout.Space(4f);
             EditorGUILayout.LabelField("Assets", EditorStyles.boldLabel);
             _quarantineRoot = EditorGUILayout.TextField("Quarentena", _quarantineRoot ?? string.Empty);
@@ -571,7 +651,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                     catch (Exception exception) { SetException(exception); }
                 }
                 if (GUILayout.Button("Testar conexão")) _ = TestConnectionAsync(true);
-                using (new EditorGUI.DisabledScope(_health == null || !_health.Ready || !_health.Configured))
+                using (new EditorGUI.DisabledScope(_health == null || !_health.Ready || !SelectedProviderConfigured))
                     if (GUILayout.Button("Consultar saldo")) _ = RefreshBalanceAsync();
             }
             if (_health != null)
@@ -579,7 +659,8 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 EditorGUILayout.LabelField("Serviço", _health.Service ?? string.Empty);
                 EditorGUILayout.LabelField("Versão", _health.Version ?? string.Empty);
                 EditorGUILayout.LabelField("Gateway", _health.Ready ? "pronto" : "offline");
-                EditorGUILayout.LabelField("Tripo API", _health.Configured ? "configurada" : "não configurada");
+                EditorGUILayout.LabelField("Tripo API", _credentialStatus?.Configured == true ? "configurada" : "não configurada");
+                EditorGUILayout.LabelField("Meshy API", _meshyCredentialStatus?.Configured == true ? "configurada" : "não configurada");
             }
             if (_balance != null)
             {
@@ -588,17 +669,20 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             }
         }
 
-        private void DrawTripoCredentialSettings()
+        private void DrawProviderCredentialSettings(string provider, Ai3dCredentialStatus status)
         {
-            EditorGUILayout.LabelField("Credencial Tripo", EditorStyles.boldLabel);
-            if (_credentialStatus != null)
+            var isMeshy = provider == "meshy";
+            var label = isMeshy ? "Meshy" : "Tripo";
+            EditorGUILayout.LabelField("Credencial " + label, EditorStyles.boldLabel);
+            if (status != null)
             {
-                EditorGUILayout.LabelField("Estado", _credentialStatus.Configured ? "configurada" : "não configurada");
-                EditorGUILayout.LabelField("Origem", CredentialSourceLabel(_credentialStatus.Source));
-                EditorGUILayout.LabelField("Armazenamento", _credentialStatus.Store ?? "indisponível");
-                if (!_credentialStatus.StoreAvailable)
+                EditorGUILayout.LabelField("Estado", status.Configured ? "configurada" : "não configurada");
+                EditorGUILayout.LabelField("Origem", CredentialSourceLabel(status.Source, provider));
+                EditorGUILayout.LabelField("Armazenamento", status.Store ?? "indisponível");
+                if (!status.StoreAvailable)
                     EditorGUILayout.HelpBox(
-                        "O armazenamento seguro não está disponível neste sistema. Ainda é possível iniciar o gateway com TRIPO_API_KEY.",
+                        "O armazenamento seguro não está disponível neste sistema. Ainda é possível iniciar o gateway com " +
+                        (isMeshy ? "MESHY_API_KEY." : "TRIPO_API_KEY."),
                         MessageType.Warning);
             }
             else
@@ -609,27 +693,32 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
             using (new EditorGUILayout.HorizontalScope())
             {
-                _tripoApiKeyInput = _showTripoApiKey
-                    ? EditorGUILayout.TextField("Nova API key", _tripoApiKeyInput ?? string.Empty)
-                    : EditorGUILayout.PasswordField("Nova API key", _tripoApiKeyInput ?? string.Empty);
-                _showTripoApiKey = GUILayout.Toggle(_showTripoApiKey, "Ver", GUILayout.Width(44f));
+                var input = isMeshy ? _meshyApiKeyInput : _tripoApiKeyInput;
+                var show = isMeshy ? _showMeshyApiKey : _showTripoApiKey;
+                input = show
+                    ? EditorGUILayout.TextField("Nova API key", input ?? string.Empty)
+                    : EditorGUILayout.PasswordField("Nova API key", input ?? string.Empty);
+                show = GUILayout.Toggle(show, "Ver", GUILayout.Width(44f));
+                if (isMeshy) { _meshyApiKeyInput = input; _showMeshyApiKey = show; }
+                else { _tripoApiKeyInput = input; _showTripoApiKey = show; }
             }
+            var providerInput = isMeshy ? _meshyApiKeyInput : _tripoApiKeyInput;
             var canStore = !_busy
-                           && _credentialStatus != null
-                           && _credentialStatus.StoreAvailable
-                           && !string.IsNullOrWhiteSpace(_tripoApiKeyInput)
-                           && _tripoApiKeyInput.Length >= 8;
+                           && status != null
+                           && status.StoreAvailable
+                           && !string.IsNullOrWhiteSpace(providerInput)
+                           && providerInput.StartsWith(isMeshy ? "msy_" : "tsk_", StringComparison.Ordinal);
             using (new EditorGUILayout.HorizontalScope())
             {
                 using (new EditorGUI.DisabledScope(!canStore))
-                    if (GUILayout.Button("Salvar com segurança")) _ = SaveTripoApiKeyAsync();
+                    if (GUILayout.Button("Salvar com segurança")) _ = SaveProviderApiKeyAsync(provider);
                 using (new EditorGUI.DisabledScope(
-                           _busy || _credentialStatus == null || !_credentialStatus.Configured))
-                    if (GUILayout.Button("Testar credencial")) _ = TestTripoCredentialAsync();
+                           _busy || status == null || !status.Configured))
+                    if (GUILayout.Button("Testar credencial")) _ = TestProviderCredentialAsync(provider);
                 using (new EditorGUI.DisabledScope(
-                           _busy || _credentialStatus == null
-                           || !string.Equals(_credentialStatus.Source, "windows_credential_manager", StringComparison.Ordinal)))
-                    if (GUILayout.Button("Remover")) _ = DeleteTripoApiKeyAsync();
+                           _busy || status == null
+                           || !string.Equals(status.Source, "windows_credential_manager", StringComparison.Ordinal)))
+                    if (GUILayout.Button("Remover")) _ = DeleteProviderApiKeyAsync(provider);
             }
         }
 
@@ -673,9 +762,10 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 var sourceKind = _generationMode == 0 ? "text" : "image";
                 var planArguments = new JObject
                 {
+                    ["provider"] = _provider,
                     ["sourceKind"] = sourceKind,
                     ["preset"] = PresetId(_preset),
-                    ["modelVersion"] = _model,
+                    ["modelVersion"] = EffectiveProvider == "meshy" ? _meshyModel : _model,
                     ["autoConvertToFbx"] = true,
                     ["faceLimit"] = _faceLimit,
                     ["texture"] = _texture,
@@ -690,7 +780,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 var plan = Ai3dWorkflowService.Plan(planArguments);
                 var subject = _generationMode == 0 ? "o prompt" : "a imagem";
                 if (!EditorUtility.DisplayDialog(
-                        "Executar workflow Tripo",
+                        "Executar workflow " + (plan.Provider == "meshy" ? "Meshy" : "Tripo"),
                         $"Enviar {subject}, gerar o modelo e converter automaticamente para FBX?\n\n" +
                         $"Estimativa: {plan.EstimatedCredits} créditos\nLimite aprovado: {plan.BudgetCapCredits} créditos\n\n" +
                         "O resultado ficará no vault até a validação e quarentena.",
@@ -710,7 +800,8 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 _acceptedAssetPath = null;
                 _page = 2;
                 SetStatus(
-                    "Workflow criado. A geração e a conversão FBX usam o mesmo planHash e o limite aprovado; o resultado permanece fora da cena.",
+                    "Workflow " + (plan.Provider == "meshy" ? "Meshy" : "Tripo") +
+                    " criado com planHash e limite aprovado; o resultado permanece fora da cena.",
                     MessageType.Info);
                 await RefreshJobsAsync(false);
             }
@@ -729,6 +820,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                     : _processMode == 1 ? "modular-character" : "animation-pack";
                 var arguments = new JObject
                 {
+                    ["provider"] = _provider,
                     ["workflowKind"] = workflowKind,
                     ["sourceKind"] = "mesh",
                     ["meshPath"] = Path.GetFullPath(_meshPath),
@@ -752,22 +844,41 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 }
                 else
                 {
-                    arguments["rigType"] = _rigType;
-                    arguments["rigSpec"] = _rigSpec;
-                    arguments["animateInPlace"] = _animateInPlace;
-                    var animations = new JArray();
-                    foreach (var value in (_animationPresets ?? string.Empty).Split(','))
+                    if (EffectiveProvider == "meshy")
                     {
-                        var trimmed = value.Trim();
-                        if (trimmed.Length > 0 && !animations.Any(token =>
-                                string.Equals((string)token, trimmed, StringComparison.Ordinal)))
-                            animations.Add(trimmed);
+                        arguments["heightMeters"] = _heightMeters;
+                        arguments["animationFps"] = _animationFps;
+                        var actionIds = new JArray();
+                        foreach (var value in (_meshyAnimationActionIds ?? string.Empty).Split(','))
+                        {
+                            var trimmed = value.Trim();
+                            if (trimmed.Length == 0) continue;
+                            if (!int.TryParse(trimmed, out var actionId) || actionId <= 0)
+                                throw new Ai3dWorkflowException(
+                                    "AI3D_ANIMATION_ACTION_INVALID", "IDs de animação Meshy devem ser inteiros positivos.");
+                            if (!actionIds.Any(token => (int)token == actionId)) actionIds.Add(actionId);
+                        }
+                        arguments["animationActionIds"] = actionIds;
                     }
-                    arguments["animations"] = animations;
+                    else
+                    {
+                        arguments["rigType"] = _rigType;
+                        arguments["rigSpec"] = _rigSpec;
+                        arguments["animateInPlace"] = _animateInPlace;
+                        var animations = new JArray();
+                        foreach (var value in (_animationPresets ?? string.Empty).Split(','))
+                        {
+                            var trimmed = value.Trim();
+                            if (trimmed.Length > 0 && !animations.Any(token =>
+                                    string.Equals((string)token, trimmed, StringComparison.Ordinal)))
+                                animations.Add(trimmed);
+                        }
+                        arguments["animations"] = animations;
+                    }
                 }
                 var plan = Ai3dWorkflowService.Plan(arguments);
                 if (!EditorUtility.DisplayDialog(
-                        "Executar processamento Tripo",
+                        "Executar processamento " + (plan.Provider == "meshy" ? "Meshy" : "Tripo"),
                         $"Workflow: {workflowKind}\nNós: {string.Join(" → ", plan.Nodes.Select(value => value.Id))}\n\n" +
                         $"Estimativa: {plan.EstimatedCredits} créditos\nLimite aprovado: {plan.BudgetCapCredits} créditos\n\n" +
                         "O resultado será validado localmente e ficará fora da cena.",
@@ -800,14 +911,17 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             if (_selectedJob == null || string.IsNullOrEmpty(_selectedJob.ProviderTaskId)) return;
             if (!EditorUtility.DisplayDialog(
                     "Converter para FBX",
-                    "Criar um novo job Tripo de conversão, autorizado a consumir até 15 créditos?",
+                    "Criar um novo job " + (_selectedJob.Provider == "meshy" ? "Meshy" : "Tripo") +
+                    " de conversão, autorizado a consumir até " + (_selectedJob.Provider == "meshy" ? "2" : "15") + " créditos?",
                     "Converter", "Cancelar")) return;
             SetBusy(true);
             try
             {
                 if (string.IsNullOrEmpty(_pendingConvertKey)) _pendingConvertKey = Guid.NewGuid().ToString("N");
+                var meshy = _selectedJob.Provider == "meshy";
                 _selectedJob = await Ai3dGatewayClient.CreateConvertToFbxJobAsync(
-                    _selectedJob.ProviderTaskId, 10, 15, _pendingConvertKey, Token);
+                    _selectedJob.ProviderTaskId, meshy ? 1 : 10, meshy ? 2 : 15,
+                    _pendingConvertKey, meshy ? "meshy" : "tripo", Token);
                 _pendingConvertKey = null;
                 _externalSendApproved = false;
                 _artifactValidation = null;
@@ -830,22 +944,25 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 _health = await Ai3dGatewayClient.HealthAsync(Token);
                 _capabilities = null;
                 _credentialStatus = null;
+                _meshyCredentialStatus = null;
                 if (_health.Ready && !string.IsNullOrEmpty(Ai3dGatewaySettings.GatewayToken))
                 {
                     _capabilities = await Ai3dGatewayClient.GetCapabilitiesAsync(Token);
-                    _credentialStatus = await Ai3dGatewayClient.GetCredentialStatusAsync(Token);
+                    _credentialStatus = await Ai3dGatewayClient.GetCredentialStatusAsync("tripo", Token);
+                    _meshyCredentialStatus = await Ai3dGatewayClient.GetCredentialStatusAsync("meshy", Token);
                 }
                 if (showSuccess)
-                    SetStatus(_health.Configured
-                        ? "Gateway conectado e Tripo API configurada."
-                        : "Gateway conectado, mas a credencial Tripo não está configurada.",
-                        _health.Configured ? MessageType.Info : MessageType.Warning);
+                    SetStatus(SelectedProviderConfigured
+                        ? "Gateway conectado e credencial " + SelectedProviderLabel + " configurada."
+                        : "Gateway conectado, mas a credencial " + SelectedProviderLabel + " não está configurada.",
+                        SelectedProviderConfigured ? MessageType.Info : MessageType.Warning);
             }
             catch (Exception exception)
             {
                 _health = null;
                 _capabilities = null;
                 _credentialStatus = null;
+                _meshyCredentialStatus = null;
                 if (showSuccess) SetException(exception);
             }
             finally { SetBusy(false); }
@@ -856,30 +973,35 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             SetBusy(true);
             try
             {
-                _balance = await Ai3dGatewayClient.GetBalanceAsync(Token);
+                _balance = await Ai3dGatewayClient.GetBalanceAsync(EffectiveProvider, Token);
                 SetStatus("Saldo atualizado sem consumir créditos.", MessageType.Info);
             }
             catch (Exception exception) { SetException(exception); }
             finally { SetBusy(false); }
         }
 
-        private async Task SaveTripoApiKeyAsync()
+        private async Task SaveProviderApiKeyAsync(string provider)
         {
-            if (string.IsNullOrWhiteSpace(_tripoApiKeyInput)) return;
+            var isMeshy = provider == "meshy";
+            var input = isMeshy ? _meshyApiKeyInput : _tripoApiKeyInput;
+            var label = isMeshy ? "Meshy" : "Tripo";
+            if (string.IsNullOrWhiteSpace(input)) return;
             if (!EditorUtility.DisplayDialog(
-                    "Salvar credencial Tripo",
+                    "Salvar credencial " + label,
                     "Enviar esta key uma única vez ao gateway local e armazená-la no Windows Credential Manager? Ela não será salva em Assets ou EditorPrefs.",
                     "Salvar com segurança", "Cancelar")) return;
-            var value = _tripoApiKeyInput;
+            var value = input;
             var stored = false;
             SetBusy(true);
             try
             {
-                _credentialStatus = await Ai3dGatewayClient.SetTripoApiKeyAsync(value, Token);
+                var status = await Ai3dGatewayClient.SetProviderApiKeyAsync(provider, value, Token);
+                if (isMeshy) _meshyCredentialStatus = status;
+                else _credentialStatus = status;
                 stored = true;
                 _health = await Ai3dGatewayClient.HealthAsync(Token);
-                _balance = await Ai3dGatewayClient.GetBalanceAsync(Token);
-                SetStatus("Credencial salva no Windows Credential Manager e validada pela Tripo.", MessageType.Info);
+                _balance = await Ai3dGatewayClient.GetBalanceAsync(provider, Token);
+                SetStatus("Credencial salva no Windows Credential Manager e validada pela " + label + ".", MessageType.Info);
             }
             catch (Exception exception)
             {
@@ -889,25 +1011,28 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                     var root = exception.GetBaseException();
                     var code = root is Ai3dGatewayException gateway ? gateway.Code + ": " : string.Empty;
                     SetStatus(
-                        "Credencial armazenada, mas o teste com a Tripo falhou: " + code + root.Message,
+                        "Credencial armazenada, mas o teste com a " + label + " falhou: " + code + root.Message,
                         MessageType.Warning);
                 }
             }
             finally
             {
-                _tripoApiKeyInput = null;
+                if (isMeshy) _meshyApiKeyInput = null;
+                else _tripoApiKeyInput = null;
                 value = null;
                 SetBusy(false);
             }
         }
 
-        private async Task TestTripoCredentialAsync()
+        private async Task TestProviderCredentialAsync(string provider)
         {
             SetBusy(true);
             try
             {
-                _credentialStatus = await Ai3dGatewayClient.GetCredentialStatusAsync(Token);
-                _balance = await Ai3dGatewayClient.GetBalanceAsync(Token);
+                var status = await Ai3dGatewayClient.GetCredentialStatusAsync(provider, Token);
+                if (provider == "meshy") _meshyCredentialStatus = status;
+                else _credentialStatus = status;
+                _balance = await Ai3dGatewayClient.GetBalanceAsync(provider, Token);
                 _health = await Ai3dGatewayClient.HealthAsync(Token);
                 SetStatus("Credencial válida; saldo consultado sem consumir créditos.", MessageType.Info);
             }
@@ -915,22 +1040,25 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             finally { SetBusy(false); }
         }
 
-        private async Task DeleteTripoApiKeyAsync()
+        private async Task DeleteProviderApiKeyAsync(string provider)
         {
+            var label = provider == "meshy" ? "Meshy" : "Tripo";
             if (!EditorUtility.DisplayDialog(
-                    "Remover credencial Tripo",
+                    "Remover credencial " + label,
                     "Remover a key persistida do Windows Credential Manager? Jobs remotos em andamento podem falhar no próximo polling.",
                     "Remover", "Cancelar")) return;
             SetBusy(true);
             try
             {
-                _credentialStatus = await Ai3dGatewayClient.DeleteTripoApiKeyAsync(Token);
+                var status = await Ai3dGatewayClient.DeleteProviderApiKeyAsync(provider, Token);
+                if (provider == "meshy") _meshyCredentialStatus = status;
+                else _credentialStatus = status;
                 _health = await Ai3dGatewayClient.HealthAsync(Token);
                 _balance = null;
-                SetStatus(_credentialStatus.Configured
-                    ? "Credencial persistida removida; TRIPO_API_KEY do ambiente continua ativa."
-                    : "Credencial Tripo removida.",
-                    _credentialStatus.Configured ? MessageType.Warning : MessageType.Info);
+                SetStatus(status.Configured
+                    ? "Credencial persistida removida; a variável de ambiente do provedor continua ativa."
+                    : "Credencial " + label + " removida.",
+                    status.Configured ? MessageType.Warning : MessageType.Info);
             }
             catch (Exception exception) { SetException(exception); }
             finally { SetBusy(false); }
@@ -1277,12 +1405,12 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private static string Short(string value, int length)
             => string.IsNullOrEmpty(value) || value.Length <= length ? value : value.Substring(0, length);
 
-        private static string CredentialSourceLabel(string source)
+        private static string CredentialSourceLabel(string source, string provider)
         {
             switch (source)
             {
                 case "windows_credential_manager": return "Windows Credential Manager";
-                case "environment": return "variável TRIPO_API_KEY";
+                case "environment": return "variável " + (provider == "meshy" ? "MESHY_API_KEY" : "TRIPO_API_KEY");
                 case "memory": return "memória temporária";
                 default: return "nenhuma";
             }

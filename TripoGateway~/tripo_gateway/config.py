@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 
 OFFICIAL_API_HOSTS = frozenset({"openapi.tripo3d.ai", "openapi.tripo3d.com"})
+OFFICIAL_MESHY_API_HOST = "api.meshy.ai"
 
 
 def _default_data_dir() -> Path:
@@ -45,12 +46,32 @@ def normalize_api_base_url(value: str, allow_custom: bool = False) -> str:
     return f"https://{parsed.hostname.lower()}{path}"
 
 
+def normalize_meshy_api_base_url(value: str, allow_custom: bool = False) -> str:
+    parsed = urlsplit((value or "").strip())
+    if parsed.scheme != "https":
+        raise ValueError("MESHY_API_BASE_URL must use https")
+    if not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("MESHY_API_BASE_URL must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("MESHY_API_BASE_URL must not contain query or fragment")
+    if parsed.port not in (None, 443):
+        raise ValueError("MESHY_API_BASE_URL must use the default https port")
+    if not allow_custom and parsed.hostname.lower() != OFFICIAL_MESHY_API_HOST:
+        raise ValueError("MESHY_API_BASE_URL host is not the official Meshy API host")
+    path = parsed.path.rstrip("/")
+    if path:
+        raise ValueError("MESHY_API_BASE_URL must not contain a path")
+    return f"https://{parsed.hostname.lower()}"
+
+
 @dataclass(frozen=True)
 class GatewaySettings:
     data_dir: Path
     gateway_token: str
     api_key: str | None = None
     api_base_url: str = "https://openapi.tripo3d.ai/v3"
+    meshy_api_key: str | None = None
+    meshy_api_base_url: str = "https://api.meshy.ai"
     upload_roots: tuple[Path, ...] = ()
     max_request_bytes: int = 2 * 1024 * 1024
     max_download_bytes: int = 1024 * 1024 * 1024
@@ -76,6 +97,13 @@ class GatewaySettings:
             self,
             "api_base_url",
             normalize_api_base_url(self.api_base_url, self.allow_custom_api_base_url),
+        )
+        object.__setattr__(
+            self,
+            "meshy_api_base_url",
+            normalize_meshy_api_base_url(
+                self.meshy_api_base_url, self.allow_custom_api_base_url
+            ),
         )
         if not self.gateway_token:
             raise ValueError("TRIPO_GATEWAY_TOKEN is required")
@@ -105,6 +133,10 @@ class GatewaySettings:
             api_key=os.environ.get("TRIPO_API_KEY") or None,
             api_base_url=os.environ.get(
                 "TRIPO_API_BASE_URL", "https://openapi.tripo3d.ai/v3"
+            ),
+            meshy_api_key=os.environ.get("MESHY_API_KEY") or None,
+            meshy_api_base_url=os.environ.get(
+                "MESHY_API_BASE_URL", "https://api.meshy.ai"
             ),
             upload_roots=_parse_roots(os.environ.get("TRIPO_GATEWAY_UPLOAD_ROOTS")),
             max_request_bytes=int(
@@ -147,6 +179,7 @@ class GatewaySettings:
         return {
             "configured": self.configured,
             "apiRegion": "cn" if self.api_base_url.endswith(".com/v3") else "global",
+            "meshyConfiguredFromEnvironment": bool(self.meshy_api_key),
             "uploadRootCount": len(self.upload_roots),
             "maxRequestBytes": self.max_request_bytes,
             "maxDownloadBytes": self.max_download_bytes,

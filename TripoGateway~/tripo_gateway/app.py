@@ -14,6 +14,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from .artifacts import ArtifactVault
 from .config import GatewaySettings
 from .jobs import GatewayPolicyError, TripoJobManager
+from .meshy_provider import MESHY_OPERATION_ENDPOINTS, MeshyHttpProvider
 from .models import JobCreateRequest, UploadRequest
 from .provider import OPERATION_ENDPOINTS, TripoApiError, TripoHttpProvider, TripoProvider
 from .secrets import (
@@ -21,6 +22,8 @@ from .secrets import (
     MemoryCredentialStore,
     TripoCredentialManager,
     create_platform_credential_store,
+    create_provider_credential_store,
+    validate_api_key,
 )
 from .security import constant_time_equal, resolve_allowed_file, sha256_file, sha256_text
 from .store import DurableJobStore, IdempotencyConflictError
@@ -99,6 +102,8 @@ def create_app(
     provider: TripoProvider | None = None,
     artifact_vault: ArtifactVault | None = None,
     credential_manager: TripoCredentialManager | None = None,
+    meshy_provider: TripoProvider | None = None,
+    meshy_credential_manager: TripoCredentialManager | None = None,
 ) -> FastAPI:
     config = settings or GatewaySettings.from_environment()
     store = DurableJobStore(config.data_dir)
@@ -109,8 +114,22 @@ def create_app(
         else MemoryCredentialStore(),
     )
     provider_instance = provider or TripoHttpProvider(config, credentials=credentials)
+    providers: dict[str, TripoProvider] = {"tripo": provider_instance}
+    credential_managers: dict[str, TripoCredentialManager] = {"tripo": credentials}
+    if provider is None or meshy_provider is not None:
+        meshy_credentials = meshy_credential_manager or TripoCredentialManager(
+            config.meshy_api_key,
+            create_provider_credential_store("meshy", config.meshy_api_base_url)
+            if meshy_provider is None
+            else MemoryCredentialStore(),
+        )
+        meshy_instance = meshy_provider or MeshyHttpProvider(
+            config, credentials=meshy_credentials
+        )
+        providers["meshy"] = meshy_instance
+        credential_managers["meshy"] = meshy_credentials
     vault = artifact_vault or ArtifactVault(config.data_dir, config.max_download_bytes)
-    manager = TripoJobManager(config, store, provider_instance, vault)
+    manager = TripoJobManager(config, store, providers, vault)
     webhook_deliveries = WebhookDeliveryStore(config.data_dir)
 
     @asynccontextmanager
@@ -120,7 +139,8 @@ def create_app(
             yield
         finally:
             await manager.stop()
-            await provider_instance.close()
+            for current_provider in providers.values():
+                await current_provider.close()
             close_vault = getattr(vault, "close", None)
             if close_vault is not None:
                 await close_vault()
@@ -130,7 +150,9 @@ def create_app(
     app.state.settings = config
     app.state.store = store
     app.state.provider = provider_instance
+    app.state.providers = providers
     app.state.credentials = credentials
+    app.state.credential_managers = credential_managers
     app.state.artifact_vault = vault
     app.state.job_manager = manager
     app.state.webhook_deliveries = webhook_deliveries
@@ -166,6 +188,19 @@ def create_app(
         result = config.public_summary()
         status = credentials.status()
         result["configured"] = bool(provider_instance.configured)
+        result["providers"] = {
+            provider_id: {
+                "configured": bool(current.configured),
+                "operations": sorted(
+                    getattr(
+                        current,
+                        "operations",
+                        OPERATION_ENDPOINTS if provider_id == "tripo" else MESHY_OPERATION_ENDPOINTS,
+                    )
+                ),
+            }
+            for provider_id, current in providers.items()
+        }
         if include_credential_metadata:
             result["credentialSource"] = status.source
             result["credentialStoreAvailable"] = status.store_available
@@ -185,8 +220,17 @@ def create_app(
     @app.get("/v1/capabilities", dependencies=[protected])
     async def capabilities() -> dict[str, Any]:
         return {
-            "contractVersion": "1.2-draft",
-            "operations": sorted(OPERATION_ENDPOINTS),
+            "contractVersion": "1.3-draft",
+            "operations": sorted(
+                {operation for current in providers.values() for operation in getattr(current, "operations", OPERATION_ENDPOINTS)}
+            ),
+            "providerCapabilities": {
+                provider_id: {
+                    "configured": bool(current.configured),
+                    "operations": sorted(getattr(current, "operations", OPERATION_ENDPOINTS)),
+                }
+                for provider_id, current in providers.items()
+            },
             "remoteCancellation": False,
             "durableJobs": True,
             "artifactVault": True,
@@ -198,12 +242,20 @@ def create_app(
             **public_summary(True),
         }
 
-    @app.get("/v1/credentials/tripo", dependencies=[protected])
-    async def get_tripo_credential() -> dict[str, object]:
-        return credentials.status().public_dict()
+    def credential_for(provider_id: str) -> TripoCredentialManager:
+        selected = credential_managers.get(provider_id)
+        if selected is None:
+            raise GatewayPolicyError(
+                "PROVIDER_NOT_AVAILABLE", f"AI 3D provider {provider_id} is not available", 404
+            )
+        return selected
 
-    @app.put("/v1/credentials/tripo", dependencies=[protected])
-    async def replace_tripo_credential(request: Request) -> dict[str, object]:
+    @app.get("/v1/credentials/{provider_id}", dependencies=[protected])
+    async def get_provider_credential(provider_id: str) -> dict[str, object]:
+        return credential_for(provider_id).status().public_dict()
+
+    @app.put("/v1/credentials/{provider_id}", dependencies=[protected])
+    async def replace_provider_credential(provider_id: str, request: Request) -> dict[str, object]:
         try:
             body = await request.json()
         except (UnicodeDecodeError, ValueError) as exception:
@@ -217,23 +269,33 @@ def create_app(
         value = body.get("apiKey")
         if not isinstance(value, str):
             raise CredentialStoreError(
-                "TRIPO_API_KEY_INVALID", "Tripo API key must be a string."
+                f"{provider_id.upper()}_API_KEY_INVALID", "Provider API key must be a string."
             )
-        return credentials.replace(value).public_dict()
+        if provider_id not in {"tripo", "meshy"}:
+            credential_for(provider_id)
+        validate_api_key(value, provider_id)
+        return credential_for(provider_id).replace(value).public_dict()
 
-    @app.delete("/v1/credentials/tripo", dependencies=[protected])
-    async def delete_tripo_credential() -> dict[str, object]:
-        return credentials.clear().public_dict()
+    @app.delete("/v1/credentials/{provider_id}", dependencies=[protected])
+    async def delete_provider_credential(provider_id: str) -> dict[str, object]:
+        return credential_for(provider_id).clear().public_dict()
 
     @app.get("/v1/account/balance", dependencies=[protected])
-    async def balance() -> dict[str, Any]:
-        return await provider_instance.get_balance()
+    async def balance(provider: str = Query(default="tripo")) -> dict[str, Any]:
+        selected = providers.get(provider)
+        if selected is None:
+            raise GatewayPolicyError("PROVIDER_NOT_AVAILABLE", f"unknown provider: {provider}", 404)
+        return await selected.get_balance()
 
     @app.get("/v1/account/usage", dependencies=[protected])
     async def usage(
         limit: int = Query(default=100, ge=1, le=500),
+        provider: str = Query(default="tripo"),
     ) -> list[dict[str, Any]]:
-        return (await provider_instance.get_usage())[:limit]
+        selected = providers.get(provider)
+        if selected is None:
+            raise GatewayPolicyError("PROVIDER_NOT_AVAILABLE", f"unknown provider: {provider}", 404)
+        return (await selected.get_usage())[:limit]
 
     @app.get("/v1/telemetry/summary", dependencies=[protected])
     async def telemetry_summary(
@@ -300,9 +362,19 @@ def create_app(
             raise GatewayPolicyError(
                 "UPLOAD_HASH_MISMATCH", "source SHA-256 differs from expected_sha256"
             )
-        token = await provider_instance.upload_file(source)
+        selected_provider = providers.get(request.provider)
+        if selected_provider is None:
+            raise GatewayPolicyError(
+                "PROVIDER_NOT_AVAILABLE", f"unknown provider: {request.provider}", 404
+            )
+        if not selected_provider.configured:
+            raise GatewayPolicyError(
+                "PROVIDER_NOT_CONFIGURED", f"provider {request.provider} is not configured"
+            )
+        token = await selected_provider.upload_file(source)
         result = {
             "projectKey": request.project_key,
+            "provider": request.provider,
             "fileToken": token,
             "sourceName": source.name,
             "byteCount": source.stat().st_size,
@@ -371,6 +443,7 @@ def _job_summary(record) -> dict[str, Any]:
     return {
         "job_id": record.job_id,
         "project_key": record.project_key,
+        "provider": record.provider,
         "operation": record.operation,
         "status": record.status.value,
         "progress": record.progress,
@@ -408,6 +481,7 @@ def _write_upload_audit(data_dir: Path, result: dict[str, Any]) -> None:
         "schemaVersion": 1,
         "uploadId": audit_id,
         "projectKey": result["projectKey"],
+        "provider": result.get("provider", "tripo"),
         "sourceName": result["sourceName"],
         "byteCount": result["byteCount"],
         "sha256": result["sha256"],

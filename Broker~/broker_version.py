@@ -1,4 +1,4 @@
 from __future__ import annotations
 
 PACKAGE_NAME = "com.maicon.scene-analyzer"
-BROKER_VERSION = "0.18.4"
+BROKER_VERSION = "0.18.5"

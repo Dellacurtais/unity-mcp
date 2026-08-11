@@ -42,6 +42,9 @@ class TripoApiError(RuntimeError):
 
 
 class TripoProvider(Protocol):
+    provider_id: str
+    operations: frozenset[str]
+
     @property
     def configured(self) -> bool: ...
 
@@ -53,12 +56,15 @@ class TripoProvider(Protocol):
 
     async def create_task(self, operation: str, payload: dict[str, Any]) -> str: ...
 
-    async def get_task(self, task_id: str) -> dict[str, Any]: ...
+    async def get_task(self, task_id: str, operation: str | None = None) -> dict[str, Any]: ...
 
     async def close(self) -> None: ...
 
 
 class TripoHttpProvider:
+    provider_id = "tripo"
+    operations = frozenset(OPERATION_ENDPOINTS)
+
     def __init__(
         self,
         settings: GatewaySettings,
@@ -118,7 +124,7 @@ class TripoHttpProvider:
             raise TripoApiError("TRIPO_RESPONSE_INVALID", "task creation returned no task_id")
         return task_id
 
-    async def get_task(self, task_id: str) -> dict[str, Any]:
+    async def get_task(self, task_id: str, operation: str | None = None) -> dict[str, Any]:
         if not task_id.startswith("task_") or len(task_id) > 256:
             raise TripoApiError("TRIPO_TASK_ID_INVALID", "invalid Tripo task id")
         data = await self._request_json("GET", f"/tasks/{task_id}")

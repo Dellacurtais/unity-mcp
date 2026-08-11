@@ -196,7 +196,7 @@ async def test_artifact_vault_streams_hashes_and_writes_manifest(tmp_path: Path)
 
 @pytest.mark.asyncio
 async def test_artifact_vault_rejects_foreign_hosts_redirects_and_oversize(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="host is not owned by Tripo"):
+    with pytest.raises(ValueError, match="host is not an approved AI 3D provider"):
         validate_download_url("https://example.com/model.glb")
 
     def redirect_handler(_: httpx.Request) -> httpx.Response:
@@ -205,7 +205,7 @@ async def test_artifact_vault_rejects_foreign_hosts_redirects_and_oversize(tmp_p
     redirect_client = httpx.AsyncClient(transport=httpx.MockTransport(redirect_handler))
     redirect_vault = ArtifactVault(tmp_path / "redirect", 1024, client=redirect_client)
     try:
-        with pytest.raises(ValueError, match="host is not owned by Tripo"):
+        with pytest.raises(ValueError, match="host is not an approved AI 3D provider"):
             await redirect_vault.download_outputs(
                 "b" * 32, {"model_url": "https://cdn.tripo3d.ai/output/model.glb"}
             )

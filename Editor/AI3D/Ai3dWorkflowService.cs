@@ -28,7 +28,18 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         Task<Ai3dJobSnapshot> CancelJobAsync(string jobId, CancellationToken token);
     }
 
-    internal sealed class Ai3dWorkflowGateway : IAi3dWorkflowGateway
+    internal interface IAi3dMultiProviderWorkflowGateway
+    {
+        Task<Ai3dCredentialStatus> CredentialStatusAsync(string provider, CancellationToken token);
+        Task<JObject> BalanceAsync(string provider, CancellationToken token);
+        Task<Ai3dUploadSnapshot> UploadAsync(string path, string provider, CancellationToken token);
+        Task<Ai3dJobSnapshot> CreateJobAsync(
+            string provider, string operation, JObject payload, int estimate, int cap,
+            IEnumerable<string> disclosureKinds, IEnumerable<string> sourceHashes,
+            string idempotencyKey, string planHash, CancellationToken token);
+    }
+
+    internal sealed class Ai3dWorkflowGateway : IAi3dWorkflowGateway, IAi3dMultiProviderWorkflowGateway
     {
         public Task<Ai3dGatewayHealth> HealthAsync(CancellationToken token)
             => Ai3dGatewayClient.HealthAsync(token);
@@ -51,6 +62,19 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             => Ai3dGatewayClient.GetJobAsync(jobId, token);
         public Task<Ai3dJobSnapshot> CancelJobAsync(string jobId, CancellationToken token)
             => Ai3dGatewayClient.CancelJobAsync(jobId, token);
+        public Task<Ai3dCredentialStatus> CredentialStatusAsync(string provider, CancellationToken token)
+            => Ai3dGatewayClient.GetCredentialStatusAsync(provider, token);
+        public Task<JObject> BalanceAsync(string provider, CancellationToken token)
+            => Ai3dGatewayClient.GetBalanceAsync(provider, token);
+        public Task<Ai3dUploadSnapshot> UploadAsync(string path, string provider, CancellationToken token)
+            => Ai3dGatewayClient.UploadAsync(path, provider, token);
+        public Task<Ai3dJobSnapshot> CreateJobAsync(
+            string provider, string operation, JObject payload, int estimate, int cap,
+            IEnumerable<string> disclosureKinds, IEnumerable<string> sourceHashes,
+            string idempotencyKey, string planHash, CancellationToken token)
+            => Ai3dGatewayClient.CreateWorkflowJobAsync(
+                operation, payload, estimate, cap, disclosureKinds, sourceHashes,
+                idempotencyKey, planHash, provider, token);
     }
 
     /// <summary>
@@ -90,6 +114,18 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             if (!preset.Available)
                 throw new Ai3dWorkflowException("AI3D_PRESET_NOT_AVAILABLE", preset.UnavailableReason);
 
+            var requestedProvider = ((string)arguments["provider"] ?? "tripo").Trim().ToLowerInvariant();
+            if (requestedProvider != "tripo" && requestedProvider != "meshy" && requestedProvider != "auto")
+                throw new Ai3dWorkflowException(
+                    "AI3D_PROVIDER_INVALID", "provider must be tripo, meshy or auto.");
+            var provider = requestedProvider == "auto"
+                ? (workflowKind == "segment_complete" ? "tripo" : "meshy")
+                : requestedProvider;
+            if (provider == "meshy" && workflowKind == "segment_complete")
+                throw new Ai3dWorkflowException(
+                    "AI3D_PROVIDER_OPERATION_UNSUPPORTED",
+                    "Meshy does not provide semantic segment/complete; use Tripo for this workflow.");
+
             var defaultSourceKind = workflowKind == "generate_asset" ? "text" : "mesh";
             var sourceKind = ((string)arguments["sourceKind"] ?? defaultSourceKind).Trim().ToLowerInvariant();
             if (workflowKind == "generate_asset" && sourceKind != "text" && sourceKind != "image")
@@ -104,9 +140,10 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             if (sourceKind == "text")
             {
                 prompt = ((string)arguments["prompt"] ?? string.Empty).Trim();
-                if (prompt.Length == 0 || prompt.Length > MaxPromptLength)
+                var promptLimit = provider == "meshy" ? 600 : MaxPromptLength;
+                if (prompt.Length == 0 || prompt.Length > promptLimit)
                     throw new Ai3dWorkflowException(
-                        "AI3D_PROMPT_INVALID", $"prompt must contain 1-{MaxPromptLength} characters.");
+                        "AI3D_PROMPT_INVALID", $"prompt must contain 1-{promptLimit} characters for {provider}.");
                 inputHash = Ai3dGatewaySettings.Sha256(prompt);
                 inputSummary = prompt.Length + " characters; sha256 " + inputHash.Substring(0, 12);
             }
@@ -149,10 +186,13 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                                inputHash.Substring(0, 12);
             }
 
-            var autoConvert = (bool?)arguments["autoConvertToFbx"] ?? true;
+            var autoConvert = provider == "tripo" && ((bool?)arguments["autoConvertToFbx"] ?? true);
             var smartLowPoly = (bool?)arguments["smartLowPoly"] ?? preset.SmartLowPoly;
-            var faceLimit = Math.Max(500, (int?)arguments["faceLimit"] ?? preset.FaceLimit);
-            if (smartLowPoly || workflowKind == "retopology")
+            var minimumFaceLimit = provider == "meshy" ? 100 : 500;
+            var faceLimit = Math.Max(minimumFaceLimit, (int?)arguments["faceLimit"] ?? preset.FaceLimit);
+            if (provider == "meshy" && sourceKind == "image" && smartLowPoly)
+                faceLimit = Math.Min(15000, faceLimit);
+            if (provider == "tripo" && (smartLowPoly || workflowKind == "retopology"))
             {
                 var quad = (bool?)arguments["quad"] ?? false;
                 faceLimit = Math.Min(quad ? 10000 : 20000, faceLimit);
@@ -166,13 +206,14 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             var plan = new Ai3dWorkflowPlan
             {
                 WorkflowId = Guid.NewGuid().ToString("N"),
+                Provider = provider,
                 WorkflowKind = workflowKind,
                 Preset = preset.Id,
                 SourceKind = sourceKind,
                 InputHash = inputHash,
                 InputSummary = inputSummary,
                 ModelVersion = string.IsNullOrWhiteSpace((string)arguments["modelVersion"])
-                    ? Ai3dGatewaySettings.ModelVersion
+                    ? (provider == "meshy" ? "latest" : Ai3dGatewaySettings.ModelVersion)
                     : ((string)arguments["modelVersion"]).Trim(),
                 FaceLimit = faceLimit,
                 Texture = texture,
@@ -198,6 +239,11 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private static void BuildPipeline(
             Ai3dWorkflowPlan plan, JObject arguments, Ai3dWorkflowPresetDefinition preset)
         {
+            if (plan.Provider == "meshy")
+            {
+                BuildMeshyPipeline(plan, arguments);
+                return;
+            }
             switch (plan.WorkflowKind)
             {
                 case "generate_asset":
@@ -304,12 +350,88 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             }
         }
 
+        private static void BuildMeshyPipeline(Ai3dWorkflowPlan plan, JObject arguments)
+        {
+            switch (plan.WorkflowKind)
+            {
+                case "generate_asset":
+                {
+                    var image = plan.SourceKind == "image";
+                    var estimate = image
+                        ? (plan.SmartLowPoly ? (plan.Texture ? 15 : 5) : (plan.Texture ? 30 : 20))
+                        : 20;
+                    plan.Nodes.Add(Node(
+                        "generate", image ? "image_to_model" : "text_to_model",
+                        estimate, estimate + 10, GenerationPayload(plan, null)));
+                    if (!image && plan.Texture)
+                    {
+                        plan.Nodes.Add(Node("texture", "texture", 10, 15, new JObject
+                        {
+                            ["pbr"] = plan.Pbr,
+                            ["texture_resolution"] = "2k",
+                        }));
+                    }
+                    break;
+                }
+                case "retopology":
+                {
+                    var quad = (bool?)arguments["quad"] ?? false;
+                    var faceLimit = Math.Max(100, Math.Min(300000, plan.FaceLimit));
+                    plan.Nodes.Add(Node("retopology", "retopology", 5, 8, new JObject
+                    {
+                        ["face_limit"] = faceLimit,
+                        ["quad"] = quad,
+                    }));
+                    break;
+                }
+                case "rig_animation":
+                {
+                    var extension = Path.GetExtension(plan.SourcePath ?? string.Empty).ToLowerInvariant();
+                    if (extension != ".glb")
+                        plan.Nodes.Add(Node("convert_glb", "convert", 1, 2,
+                            new JObject { ["format"] = "GLB" }));
+                    plan.Nodes.Add(Node("rig", "rig", 5, 8, new JObject
+                    {
+                        ["height_meters"] = Math.Max(0.1, (double?)arguments["heightMeters"] ?? 1.7),
+                    }));
+                    var fps = (int?)arguments["animationFps"] ?? 30;
+                    if (fps != 24 && fps != 25 && fps != 30 && fps != 60)
+                        throw new Ai3dWorkflowException(
+                            "AI3D_ANIMATION_FPS_INVALID", "Meshy animationFps must be 24, 25, 30 or 60.");
+                    if (arguments["animationActionIds"] is JArray actions)
+                    {
+                        if (actions.Count > 5)
+                            throw new Ai3dWorkflowException(
+                                "AI3D_ANIMATION_COUNT_INVALID", "Meshy supports at most 5 requested actions per workflow.");
+                        var index = 0;
+                        foreach (var action in actions)
+                        {
+                            var actionId = (int?)action ?? 0;
+                            if (actionId <= 0)
+                                throw new Ai3dWorkflowException(
+                                    "AI3D_ANIMATION_ACTION_INVALID", "Meshy action IDs must be positive integers.");
+                            plan.Nodes.Add(Node("animate_" + index++, "animate", 3, 5, new JObject
+                            {
+                                ["action_id"] = actionId,
+                                ["fps"] = fps,
+                            }));
+                        }
+                    }
+                    break;
+                }
+                default:
+                    throw new Ai3dWorkflowException(
+                        "AI3D_PROVIDER_OPERATION_UNSUPPORTED",
+                        "Meshy does not support workflow " + plan.WorkflowKind + ".");
+            }
+        }
+
         private static void ApplyWorkflowBudget(
             Ai3dWorkflowPlan plan, JObject arguments, Ai3dWorkflowPresetDefinition preset)
         {
             var estimated = plan.Nodes.Sum(node => node.EstimatedCredits);
             var defaultCap = plan.Nodes.Sum(node => node.BudgetCapCredits);
-            if (plan.WorkflowKind == "generate_asset")
+            if (plan.Provider == "tripo" && plan.WorkflowKind == "generate_asset")
                 defaultCap = Math.Max(defaultCap, preset.GenerationCap + (plan.AutoConvertToFbx ? 15 : 0));
             var requestedCap = (int?)arguments["budgetCapCredits"] ?? defaultCap;
             if (requestedCap < estimated)
@@ -462,16 +584,17 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
             if (alreadyStarted) return existing;
 
-            var balance = await Gateway.BalanceAsync(cancellationToken);
+            var balance = await ProviderBalanceAsync(plan.Provider, cancellationToken);
             if (((int?)balance?["balance"] ?? 0) < plan.EstimatedCredits)
                 throw new Ai3dWorkflowException(
                     "AI3D_BALANCE_INSUFFICIENT",
-                    $"Available Tripo balance is below the estimate of {plan.EstimatedCredits} credits.");
+                    $"Available {plan.Provider} balance is below the estimate of {plan.EstimatedCredits} credits.");
 
             var record = existing ?? new Ai3dWorkflowRecord
             {
                 WorkflowId = plan.WorkflowId,
                 PlanHash = plan.PlanHash,
+                Provider = plan.Provider,
                 Status = "starting",
                 WorkflowKind = plan.WorkflowKind,
                 Preset = plan.Preset,
@@ -708,21 +831,29 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                     ["acceptedSceneMutation"] = false,
                 },
             };
-            var provider = new JObject
-            {
-                ["id"] = "tripo",
-                ["service"] = health.Service,
-                ["gatewayVersion"] = health.Version,
-                ["ready"] = health.Ready,
-                ["configured"] = health.Configured,
-                ["presets"] = new JArray(Ai3dWorkflowCatalog.All.Select(item => item.ToJson())),
-            };
+            var capabilities = health.Ready && !string.IsNullOrWhiteSpace(Ai3dGatewaySettings.GatewayToken)
+                ? await Gateway.CapabilitiesAsync(cancellationToken)
+                : null;
+            foreach (var providerId in new[] { "tripo", "meshy" })
             if (health.Ready && !string.IsNullOrWhiteSpace(Ai3dGatewaySettings.GatewayToken))
             {
-                var capabilities = await Gateway.CapabilitiesAsync(cancellationToken);
-                var credential = await Gateway.CredentialStatusAsync(cancellationToken);
+                var credential = await ProviderCredentialStatusAsync(providerId, cancellationToken);
+                var providerCapabilities = capabilities?["providerCapabilities"]?[providerId] as JObject;
+                var provider = new JObject
+                {
+                    ["id"] = providerId,
+                    ["service"] = health.Service,
+                    ["gatewayVersion"] = health.Version,
+                    ["ready"] = health.Ready,
+                    ["configured"] = credential.Configured,
+                    ["presets"] = new JArray(Ai3dWorkflowCatalog.All.Select(item => item.ToJson())),
+                    ["supportedWorkflows"] = providerId == "meshy"
+                        ? new JArray("generate_asset", "retopology", "rig_animation")
+                        : new JArray("generate_asset", "retopology", "segment_complete", "rig_animation"),
+                };
                 provider["contractVersion"] = capabilities["contractVersion"];
-                provider["operations"] = capabilities["operations"]?.DeepClone();
+                provider["operations"] = providerCapabilities?["operations"]?.DeepClone()
+                    ?? (providerId == "tripo" ? capabilities["operations"]?.DeepClone() : new JArray());
                 provider["durableJobs"] = capabilities["durableJobs"];
                 provider["remoteCancellation"] = capabilities["remoteCancellation"];
                 provider["credential"] = new JObject
@@ -733,15 +864,26 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 };
                 if (includeBalance && credential.Configured)
                 {
-                    var balance = await Gateway.BalanceAsync(cancellationToken);
+                    var balance = await ProviderBalanceAsync(providerId, cancellationToken);
                     provider["balance"] = new JObject
                     {
                         ["available"] = (int?)balance["balance"] ?? 0,
                         ["frozen"] = (int?)balance["frozen"] ?? 0,
                     };
                 }
+                ((JArray)result["providers"]).Add(provider);
             }
-            ((JArray)result["providers"]).Add(provider);
+            else
+            {
+                ((JArray)result["providers"]).Add(new JObject
+                {
+                    ["id"] = providerId,
+                    ["service"] = health.Service,
+                    ["gatewayVersion"] = health.Version,
+                    ["ready"] = false,
+                    ["configured"] = false,
+                });
+            }
             return result;
         }
 
@@ -787,7 +929,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                     throw new Ai3dWorkflowException("AI3D_INPUT_CHANGED", "Local input changed after planning; plan again.");
                 if (string.IsNullOrEmpty(record.ResumeUploadFileToken))
                 {
-                    var upload = await Gateway.UploadAsync(plan.SourcePath, token);
+                    var upload = await ProviderUploadAsync(plan.SourcePath, plan.Provider, token);
                     if (!string.Equals(upload.Sha256, plan.InputHash, StringComparison.OrdinalIgnoreCase))
                         throw new Ai3dWorkflowException("AI3D_UPLOAD_HASH_MISMATCH", "Gateway upload hash differs from the reviewed plan.");
                     record.ResumeUploadFileToken = upload.FileToken;
@@ -805,7 +947,8 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 disclosures = new[] { "text" };
                 sourceHashes = Array.Empty<string>();
             }
-            var job = await Gateway.CreateJobAsync(
+            var job = await ProviderCreateJobAsync(
+                plan.Provider,
                 node.Operation, payload, node.EstimatedCredits, node.BudgetCapCredits,
                 disclosures, sourceHashes, NodeIdempotencyKey(plan.WorkflowId, node.Id),
                 plan.PlanHash, token);
@@ -971,19 +1114,23 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             var payload = node.Payload?.DeepClone() as JObject ?? new JObject();
             var input = node.Operation == "rig" && previous.Operation == "rig_check"
                 ? record.SourceProviderReference
-                : previous.ProviderTaskId;
+                : node.Operation == "animate"
+                    ? FindNodeProviderTask(record, "rig")
+                    : previous.ProviderTaskId;
             if (string.IsNullOrEmpty(input))
                 throw new Ai3dWorkflowException(
                     "AI3D_PROVIDER_TASK_MISSING", "Node " + node.Id + " has no reviewed provider input reference.");
             payload["input"] = input;
-            if (node.Operation == "rig" && string.Equals((string)payload["rig_type"], "auto", StringComparison.Ordinal))
+            if (record.Provider == "tripo" && node.Operation == "rig" &&
+                string.Equals((string)payload["rig_type"], "auto", StringComparison.Ordinal))
             {
                 var recommended = (string)previous.ProviderResult?["output"]?["rig_type"];
                 if (string.IsNullOrWhiteSpace(recommended))
                     throw new Ai3dWorkflowException("AI3D_RIG_TYPE_MISSING", "rig-check returned no recommended rig type.");
                 payload["rig_type"] = recommended;
             }
-            var next = await Gateway.CreateJobAsync(
+            var next = await ProviderCreateJobAsync(
+                record.Provider,
                 node.Operation, payload, node.EstimatedCredits, node.BudgetCapCredits,
                 new[] { "task_reference" }, Array.Empty<string>(),
                 NodeIdempotencyKey(record.WorkflowId, node.Id), record.PlanHash, token);
@@ -998,6 +1145,18 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             ApplyJobSnapshot(record, next);
             Touch(record);
             SaveRecord(record);
+        }
+
+        private static string FindNodeProviderTask(Ai3dWorkflowRecord record, string operation)
+        {
+            if (record?.NodeJobs == null) return null;
+            for (int i = record.NodeJobs.Count - 1; i >= 0; i--)
+            {
+                if (!(record.NodeJobs[i] is JObject node)) continue;
+                if (string.Equals((string)node["operation"], operation, StringComparison.Ordinal))
+                    return (string)node["providerTaskId"];
+            }
+            return null;
         }
 
         private static void ApplyRigCheck(Ai3dWorkflowRecord record, Ai3dJobSnapshot job)
@@ -1037,6 +1196,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             {
                 WorkflowId = record.WorkflowId,
                 PlanHash = record.PlanHash,
+                Provider = record.Provider,
                 WorkflowKind = record.WorkflowKind,
                 Preset = record.Preset,
                 SourceKind = record.SourceKind,
@@ -1055,6 +1215,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         {
             WorkflowId = record.WorkflowId,
             PlanHash = record.PlanHash,
+            Provider = record.Provider,
             WorkflowKind = record.WorkflowKind,
             Preset = record.Preset,
             SourceKind = record.SourceKind,
@@ -1074,6 +1235,55 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             record.Message = job.Message;
             var nodeCount = Math.Max(1, record.PipelineNodes?.Count ?? 0);
             record.Progress = Mathf.Clamp01((record.CurrentNodeIndex + Mathf.Clamp01(job.Progress)) / nodeCount);
+        }
+
+        private static Task<JObject> ProviderBalanceAsync(string provider, CancellationToken token)
+        {
+            if (Gateway is IAi3dMultiProviderWorkflowGateway multi)
+                return multi.BalanceAsync(provider, token);
+            if (provider != "tripo")
+                throw new Ai3dWorkflowException(
+                    "AI3D_PROVIDER_NOT_AVAILABLE", "The active gateway does not support provider " + provider + ".");
+            return Gateway.BalanceAsync(token);
+        }
+
+        private static Task<Ai3dCredentialStatus> ProviderCredentialStatusAsync(
+            string provider, CancellationToken token)
+        {
+            if (Gateway is IAi3dMultiProviderWorkflowGateway multi)
+                return multi.CredentialStatusAsync(provider, token);
+            if (provider != "tripo")
+                throw new Ai3dWorkflowException(
+                    "AI3D_PROVIDER_NOT_AVAILABLE", "The active gateway does not support provider " + provider + ".");
+            return Gateway.CredentialStatusAsync(token);
+        }
+
+        private static Task<Ai3dUploadSnapshot> ProviderUploadAsync(
+            string path, string provider, CancellationToken token)
+        {
+            if (Gateway is IAi3dMultiProviderWorkflowGateway multi)
+                return multi.UploadAsync(path, provider, token);
+            if (provider != "tripo")
+                throw new Ai3dWorkflowException(
+                    "AI3D_PROVIDER_NOT_AVAILABLE", "The active gateway does not support provider " + provider + ".");
+            return Gateway.UploadAsync(path, token);
+        }
+
+        private static Task<Ai3dJobSnapshot> ProviderCreateJobAsync(
+            string provider, string operation, JObject payload, int estimate, int cap,
+            IEnumerable<string> disclosureKinds, IEnumerable<string> sourceHashes,
+            string idempotencyKey, string planHash, CancellationToken token)
+        {
+            if (Gateway is IAi3dMultiProviderWorkflowGateway multi)
+                return multi.CreateJobAsync(
+                    provider, operation, payload, estimate, cap, disclosureKinds,
+                    sourceHashes, idempotencyKey, planHash, token);
+            if (provider != "tripo")
+                throw new Ai3dWorkflowException(
+                    "AI3D_PROVIDER_NOT_AVAILABLE", "The active gateway does not support provider " + provider + ".");
+            return Gateway.CreateJobAsync(
+                operation, payload, estimate, cap, disclosureKinds, sourceHashes,
+                idempotencyKey, planHash, token);
         }
 
         private static void RequirePlan(Ai3dWorkflowRecord record, string planHash)

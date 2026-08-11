@@ -8,9 +8,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from fakes import FakeArtifactVault, FakeTripoProvider
+from fakes import FakeArtifactVault, FakeMeshyProvider, FakeTripoProvider
 from tripo_gateway.app import create_app
 from tripo_gateway.config import GatewaySettings
+from tripo_gateway.secrets import MemoryCredentialStore, TripoCredentialManager
 
 
 AUTH = {"Authorization": "Bearer local-gateway-token"}
@@ -76,6 +77,42 @@ def test_health_is_secret_free_and_v1_requires_auth(tmp_path: Path) -> None:
         assert Path(capabilities["artifactVaultRoot"]).resolve() == (
             settings(tmp_path).data_dir / "artifacts"
         ).resolve()
+
+
+def test_meshy_credential_and_job_are_provider_scoped(tmp_path: Path) -> None:
+    tripo = FakeTripoProvider()
+    meshy = FakeMeshyProvider()
+    meshy_credentials = TripoCredentialManager(None, MemoryCredentialStore())
+    app = create_app(
+        settings(tmp_path),
+        provider=tripo,
+        meshy_provider=meshy,
+        meshy_credential_manager=meshy_credentials,
+        artifact_vault=FakeArtifactVault(),
+    )
+    body = job_body("meshy cube")
+    body["provider"] = "meshy"
+    body["payload"]["model"] = "latest"
+    body["budget"] = {"estimated_credits": 20, "cap_credits": 30}
+    with TestClient(app) as client:
+        saved = client.put(
+            "/v1/credentials/meshy", headers=AUTH,
+            json={"apiKey": "msy_test-secret-123456"},
+        )
+        assert saved.status_code == 200
+        assert "msy_test-secret" not in saved.text
+        response = client.post(
+            "/v1/jobs",
+            headers={**AUTH, "Idempotency-Key": "meshy-logical-request"},
+            json=body,
+        )
+        assert response.status_code == 202
+        completed = wait_for_terminal(client, response.json()["job"]["job_id"])
+        assert completed["provider"] == "meshy"
+        assert meshy.created == [
+            ("text_to_model", {"prompt": "meshy cube", "model": "latest"})
+        ]
+        assert tripo.created == []
 
 
 def test_successful_job_is_durable_and_idempotent(tmp_path: Path) -> None:

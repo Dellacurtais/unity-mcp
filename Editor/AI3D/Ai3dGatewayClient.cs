@@ -45,31 +45,51 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         }
 
         public static async Task<JObject> GetBalanceAsync(CancellationToken cancellationToken = default)
+            => await GetBalanceAsync("tripo", cancellationToken);
+
+        public static async Task<JObject> GetBalanceAsync(
+            string provider, CancellationToken cancellationToken = default)
         {
-            var response = await SendAsync("GET", "/v1/account/balance", null, true, null, cancellationToken);
+            provider = NormalizeProvider(provider);
+            var response = await SendAsync(
+                "GET", "/v1/account/balance?provider=" + provider,
+                null, true, null, cancellationToken);
             return ParseObject(response.Text, "balance");
         }
 
         public static async Task<Ai3dCredentialStatus> GetCredentialStatusAsync(
             CancellationToken cancellationToken = default)
+            => await GetCredentialStatusAsync("tripo", cancellationToken);
+
+        public static async Task<Ai3dCredentialStatus> GetCredentialStatusAsync(
+            string provider, CancellationToken cancellationToken = default)
         {
+            provider = NormalizeProvider(provider);
             var response = await SendAsync(
-                "GET", "/v1/credentials/tripo", null, true, null, cancellationToken);
+                "GET", "/v1/credentials/" + provider, null, true, null, cancellationToken);
             return Ai3dCredentialStatus.Parse(ParseObject(response.Text, "credential status"));
         }
 
         public static async Task<Ai3dCredentialStatus> SetTripoApiKeyAsync(
             string apiKey, CancellationToken cancellationToken = default)
+            => await SetProviderApiKeyAsync("tripo", apiKey, cancellationToken);
+
+        public static async Task<Ai3dCredentialStatus> SetProviderApiKeyAsync(
+            string provider, string apiKey, CancellationToken cancellationToken = default)
         {
+            provider = NormalizeProvider(provider);
             if (string.IsNullOrEmpty(apiKey) || apiKey.Length < 8 || apiKey.Length > 2048)
-                throw new ArgumentException("Tripo API key must contain 8-2048 characters.", nameof(apiKey));
+                throw new ArgumentException("Provider API key must contain 8-2048 characters.", nameof(apiKey));
             if (!string.Equals(apiKey, apiKey.Trim(), StringComparison.Ordinal))
-                throw new ArgumentException("Tripo API key cannot start or end with whitespace.", nameof(apiKey));
+                throw new ArgumentException("Provider API key cannot start or end with whitespace.", nameof(apiKey));
+            var prefix = provider == "meshy" ? "msy_" : "tsk_";
+            if (!apiKey.StartsWith(prefix, StringComparison.Ordinal))
+                throw new ArgumentException(provider + " API key must start with " + prefix + ".", nameof(apiKey));
             var body = new JObject { ["apiKey"] = apiKey };
             try
             {
                 var response = await SendAsync(
-                    "PUT", "/v1/credentials/tripo", body, true, null, cancellationToken);
+                    "PUT", "/v1/credentials/" + provider, body, true, null, cancellationToken);
                 return Ai3dCredentialStatus.Parse(ParseObject(response.Text, "credential update"));
             }
             finally
@@ -80,9 +100,14 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
         public static async Task<Ai3dCredentialStatus> DeleteTripoApiKeyAsync(
             CancellationToken cancellationToken = default)
+            => await DeleteProviderApiKeyAsync("tripo", cancellationToken);
+
+        public static async Task<Ai3dCredentialStatus> DeleteProviderApiKeyAsync(
+            string provider, CancellationToken cancellationToken = default)
         {
+            provider = NormalizeProvider(provider);
             var response = await SendAsync(
-                "DELETE", "/v1/credentials/tripo", null, true, null, cancellationToken);
+                "DELETE", "/v1/credentials/" + provider, null, true, null, cancellationToken);
             return Ai3dCredentialStatus.Parse(ParseObject(response.Text, "credential removal"));
         }
 
@@ -185,6 +210,16 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             int capCredits,
             string idempotencyKey,
             CancellationToken cancellationToken = default)
+            => CreateConvertToFbxJobAsync(
+                providerTaskId, estimatedCredits, capCredits, idempotencyKey, "tripo", cancellationToken);
+
+        public static Task<Ai3dJobSnapshot> CreateConvertToFbxJobAsync(
+            string providerTaskId,
+            int estimatedCredits,
+            int capCredits,
+            string idempotencyKey,
+            string provider,
+            CancellationToken cancellationToken = default)
         {
             ValidateProviderTaskId(providerTaskId);
             var payload = new JObject
@@ -197,14 +232,20 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 ["with_animation"] = true,
                 ["fbx_preset"] = "blender",
             };
-            return CreateJobAsync(
+            return CreateJobCoreAsync(
                 "convert", payload, estimatedCredits, capCredits,
-                new[] { "task_reference" }, Array.Empty<string>(), idempotencyKey, cancellationToken);
+                new[] { "task_reference" }, Array.Empty<string>(), idempotencyKey,
+                null, provider, cancellationToken);
         }
 
         public static async Task<Ai3dUploadSnapshot> UploadAsync(
             string sourcePath, CancellationToken cancellationToken = default)
+            => await UploadAsync(sourcePath, "tripo", cancellationToken);
+
+        public static async Task<Ai3dUploadSnapshot> UploadAsync(
+            string sourcePath, string provider, CancellationToken cancellationToken = default)
         {
+            provider = NormalizeProvider(provider);
             if (string.IsNullOrWhiteSpace(sourcePath))
                 throw new ArgumentException("Source path is required.", nameof(sourcePath));
             var absolute = Path.GetFullPath(sourcePath);
@@ -213,6 +254,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             var body = new JObject
             {
                 ["project_key"] = Ai3dGatewaySettings.ProjectKey,
+                ["provider"] = provider,
                 ["source_path"] = absolute,
                 ["expected_sha256"] = sha256,
                 ["external_send_approved"] = true,
@@ -221,6 +263,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             var json = ParseObject(response.Text, "upload");
             return new Ai3dUploadSnapshot
             {
+                Provider = (string)json["provider"] ?? provider,
                 FileToken = (string)json["fileToken"],
                 SourceName = (string)json["sourceName"],
                 ByteCount = (long?)json["byteCount"] ?? 0L,
@@ -239,7 +282,26 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             CancellationToken cancellationToken = default)
             => CreateJobCoreAsync(
                 operation, payload, estimatedCredits, capCredits, disclosureKinds,
-                sourceHashes, idempotencyKey, null, cancellationToken);
+                sourceHashes, idempotencyKey, null, "tripo", cancellationToken);
+
+        internal static Task<Ai3dJobSnapshot> CreateWorkflowJobAsync(
+            string operation,
+            JObject payload,
+            int estimatedCredits,
+            int capCredits,
+            IEnumerable<string> disclosureKinds,
+            IEnumerable<string> sourceHashes,
+            string idempotencyKey,
+            string planHash,
+            string provider,
+            CancellationToken cancellationToken = default)
+        {
+            if (!IsSha256(planHash))
+                throw new ArgumentException("planHash must be a SHA-256 hex value.", nameof(planHash));
+            return CreateJobCoreAsync(
+                operation, payload, estimatedCredits, capCredits, disclosureKinds,
+                sourceHashes, idempotencyKey, planHash.ToLowerInvariant(), provider, cancellationToken);
+        }
 
         internal static Task<Ai3dJobSnapshot> CreateWorkflowJobAsync(
             string operation,
@@ -251,13 +313,9 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             string idempotencyKey,
             string planHash,
             CancellationToken cancellationToken = default)
-        {
-            if (!IsSha256(planHash))
-                throw new ArgumentException("planHash must be a SHA-256 hex value.", nameof(planHash));
-            return CreateJobCoreAsync(
+            => CreateWorkflowJobAsync(
                 operation, payload, estimatedCredits, capCredits, disclosureKinds,
-                sourceHashes, idempotencyKey, planHash.ToLowerInvariant(), cancellationToken);
-        }
+                sourceHashes, idempotencyKey, planHash, "tripo", cancellationToken);
 
         private static async Task<Ai3dJobSnapshot> CreateJobCoreAsync(
             string operation,
@@ -268,8 +326,10 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             IEnumerable<string> sourceHashes,
             string idempotencyKey,
             string explicitPlanHash,
+            string provider,
             CancellationToken cancellationToken)
         {
+            provider = NormalizeProvider(provider);
             if (string.IsNullOrWhiteSpace(idempotencyKey))
                 throw new ArgumentException("Idempotency key is required.", nameof(idempotencyKey));
             estimatedCredits = Math.Max(0, estimatedCredits);
@@ -278,12 +338,14 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             var plan = new JObject
             {
                 ["project_key"] = Ai3dGatewaySettings.ProjectKey,
+                ["provider"] = provider,
                 ["operation"] = operation,
                 ["payload"] = payload.DeepClone(),
             };
             var body = new JObject
             {
                 ["project_key"] = Ai3dGatewaySettings.ProjectKey,
+                ["provider"] = provider,
                 ["operation"] = operation,
                 ["plan_hash"] = explicitPlanHash ?? Ai3dGatewaySettings.Sha256(plan.ToString(Formatting.None)),
                 ["payload"] = payload,
@@ -453,6 +515,14 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         {
             if (string.IsNullOrEmpty(value) || !value.StartsWith("task_", StringComparison.Ordinal) || value.Length > 256)
                 throw new ArgumentException("providerTaskId is invalid.", nameof(value));
+        }
+
+        private static string NormalizeProvider(string value)
+        {
+            var provider = (value ?? "tripo").Trim().ToLowerInvariant();
+            if (provider != "tripo" && provider != "meshy")
+                throw new ArgumentException("AI 3D provider must be tripo or meshy.", nameof(value));
+            return provider;
         }
     }
 }

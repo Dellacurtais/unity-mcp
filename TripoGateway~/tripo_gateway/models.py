@@ -19,7 +19,11 @@ OperationName = Literal[
     "rig_check",
     "rig",
     "retarget",
+    "animate",
+    "resize",
+    "uv_unwrap",
 ]
+ProviderName = Literal["tripo", "meshy"]
 
 
 class StrictModel(BaseModel):
@@ -78,6 +82,7 @@ class DataDisclosure(StrictModel):
 
 class JobCreateRequest(StrictModel):
     project_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    provider: ProviderName = "tripo"
     operation: OperationName
     plan_hash: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
     payload: dict[str, Any]
@@ -111,12 +116,13 @@ class JobCreateRequest(StrictModel):
                 raise ValueError("image_to_model disclosure must include image")
         if self.operation == "multiview_to_model":
             inputs = self.payload.get("inputs")
-            if not isinstance(inputs, list) or not inputs:
-                raise ValueError("multiview_to_model requires a non-empty inputs array")
+            if not isinstance(inputs, list) or not 1 <= len(inputs) <= 4:
+                raise ValueError("multiview_to_model requires 1-4 inputs")
             if "image" not in self.disclosure.kinds and "task_reference" not in self.disclosure.kinds:
                 raise ValueError("multiview_to_model disclosure must include image or task_reference")
         model_input_operations = {
-            "texture", "convert", "segment", "complete", "retopology", "rig_check", "rig", "retarget"
+            "texture", "convert", "segment", "complete", "retopology", "rig_check", "rig",
+            "retarget", "animate", "resize", "uv_unwrap"
         }
         if self.operation in model_input_operations:
             if not _non_empty_string(self.payload.get("input")):
@@ -133,6 +139,39 @@ class JobCreateRequest(StrictModel):
                 "GLTF", "FBX", "USDZ", "OBJ", "STL", "3MF"
             }:
                 raise ValueError("convert requires a supported format")
+        if self.provider == "meshy":
+            supported = {
+                "text_to_model", "image_to_model", "multiview_to_model", "texture", "convert",
+                "retopology", "rig", "animate", "resize", "uv_unwrap"
+            }
+            if self.operation not in supported:
+                raise ValueError(f"Meshy does not support operation {self.operation}")
+            if self.operation == "text_to_model" and len(str(self.payload["prompt"])) > 600:
+                raise ValueError("Meshy text_to_model prompt cannot exceed 600 characters")
+            if self.operation == "retopology":
+                face_limit = self.payload.get("face_limit", 30_000)
+                if not isinstance(face_limit, int) or not 100 <= face_limit <= 300_000:
+                    raise ValueError("Meshy retopology face_limit must be between 100 and 300000")
+                if not isinstance(self.payload.get("quad", False), bool):
+                    raise ValueError("Meshy retopology quad must be boolean")
+            if self.operation == "rig":
+                height = self.payload.get("height_meters", 1.7)
+                if not isinstance(height, (int, float)) or height <= 0:
+                    raise ValueError("Meshy rig height_meters must be positive")
+            if self.operation == "animate":
+                action_id = self.payload.get("action_id")
+                if not isinstance(action_id, int) or action_id <= 0:
+                    raise ValueError("Meshy animate requires a positive action_id")
+                fps = self.payload.get("fps", 30)
+                if fps not in {24, 25, 30, 60}:
+                    raise ValueError("Meshy animate fps must be 24, 25, 30 or 60")
+            if self.operation == "resize":
+                height = self.payload.get("resize_height", self.payload.get("height_meters", 1.0))
+                if not isinstance(height, (int, float)) or height <= 0:
+                    raise ValueError("Meshy resize height must be positive")
+                if self.payload.get("origin_at", "bottom") not in {"bottom", "center"}:
+                    raise ValueError("Meshy resize origin_at must be bottom or center")
+            return self
         if self.operation == "retopology":
             model = self.payload.get("model", "v2.0")
             if model not in {"v1.0", "v2.0"}:
@@ -199,6 +238,7 @@ class JobCreateRequest(StrictModel):
 
 class UploadRequest(StrictModel):
     project_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    provider: ProviderName = "tripo"
     source_path: str = Field(min_length=1, max_length=4096)
     expected_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
     external_send_approved: bool
@@ -229,6 +269,7 @@ class JobRecord(StrictModel):
     schema_version: int = 1
     job_id: str
     project_key: str
+    provider: ProviderName = "tripo"
     operation: OperationName
     plan_hash: str
     request_hash: str

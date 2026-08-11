@@ -221,9 +221,15 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
     public sealed class Ai3dPlanWorkflowTool : IMcpTool
     {
         public string Name => "ai3d_plan_workflow";
-        public string Description => "Builds a non-billable, hash-bound Tripo generation, retopology, segmentation/completion or rig/animation workflow. Local inputs are hash-checked; no data is sent and no provider job is started.";
+        public string Description => "Builds a non-billable, hash-bound Tripo or Meshy generation, retopology, segmentation/completion or rig/animation workflow. Provider auto prefers Meshy except for Tripo-only segmentation. Local inputs are hash-checked; no data is sent and no provider job is started.";
         public JObject InputSchema => Ai3dMcpSchemas.Object(new JObject
         {
+            ["provider"] = new JObject
+            {
+                ["type"] = "string",
+                ["enum"] = new JArray { "tripo", "meshy", "auto" },
+                ["default"] = "tripo",
+            },
             ["workflowKind"] = new JObject
             {
                 ["type"] = "string",
@@ -264,6 +270,19 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             ["rigSpec"] = new JObject { ["type"] = "string", ["enum"] = new JArray { "mixamo", "tripo" } },
             ["animations"] = new JObject { ["type"] = "array", ["items"] = Ai3dMcpSchemas.String, ["maxItems"] = 5 },
             ["animateInPlace"] = new JObject { ["type"] = "boolean", ["default"] = false },
+            ["heightMeters"] = new JObject { ["type"] = "number", ["exclusiveMinimum"] = 0.0, ["default"] = 1.7 },
+            ["animationActionIds"] = new JObject
+            {
+                ["type"] = "array",
+                ["items"] = new JObject { ["type"] = "integer", ["minimum"] = 1 },
+                ["maxItems"] = 5,
+            },
+            ["animationFps"] = new JObject
+            {
+                ["type"] = "integer",
+                ["enum"] = new JArray { 24, 25, 30, 60 },
+                ["default"] = 30,
+            },
             ["estimatedCredits"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 100000 },
             ["budgetCapCredits"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 100000 },
         }, new JArray { "sourceKind", "preset" });

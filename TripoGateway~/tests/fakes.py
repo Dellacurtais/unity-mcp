@@ -10,6 +10,7 @@ from tripo_gateway.models import ArtifactRecord
 
 
 class FakeTripoProvider:
+    provider_id = "tripo"
     def __init__(self, *, block_polling: bool = False) -> None:
         self.balance = {"balance": 10_000, "frozen": 0}
         self.usage = [
@@ -68,6 +69,24 @@ class FakeTripoProvider:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class FakeMeshyProvider(FakeTripoProvider):
+    provider_id = "meshy"
+    operations = frozenset(
+        {
+            "text_to_model", "image_to_model", "multiview_to_model", "texture",
+            "convert", "retopology", "rig", "animate", "resize", "uv_unwrap",
+        }
+    )
+
+    async def upload_file(self, path: Path) -> str:
+        self.uploaded.append(path)
+        return "meshy-local:" + "a" * 64 + ":" + path.suffix.lower()
+
+    async def get_task(self, task_id: str, operation: str | None = None) -> dict[str, Any]:
+        assert operation in self.operations
+        return await super().get_task(task_id)
 
 
 class FakeArtifactVault:

@@ -90,6 +90,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
         public string WorkflowId;
         public string PlanHash;
+        public string Provider = "tripo";
         public string WorkflowKind = "generate_asset";
         public string Preset;
         public string SourceKind;
@@ -125,7 +126,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 ["schemaVersion"] = SchemaVersion,
                 ["workflowId"] = WorkflowId,
                 ["planHash"] = PlanHash,
-                ["provider"] = "tripo",
+                ["provider"] = Provider,
                 ["workflowKind"] = WorkflowKind,
                 ["preset"] = Preset,
                 ["source"] = new JObject
@@ -156,7 +157,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             {
                 ["schemaVersion"] = SchemaVersion,
                 ["projectKey"] = Ai3dGatewaySettings.ProjectKey,
-                ["provider"] = "tripo",
+                ["provider"] = Provider,
                 ["workflowKind"] = WorkflowKind,
                 ["preset"] = Preset,
                 ["sourceKind"] = SourceKind,
@@ -241,6 +242,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
 
         public string WorkflowId;
         public string PlanHash;
+        public string Provider = "tripo";
         public string WorkflowKind = "generate_asset";
         public string Status;
         public string Preset;
@@ -292,7 +294,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 ["schemaVersion"] = SchemaVersion,
                 ["workflowId"] = WorkflowId,
                 ["planHash"] = PlanHash,
-                ["provider"] = "tripo",
+                ["provider"] = Provider,
                 ["status"] = Status,
                 ["workflowKind"] = WorkflowKind,
                 ["preset"] = Preset,
@@ -368,6 +370,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             {
                 WorkflowId = (string)json["workflowId"],
                 PlanHash = (string)json["planHash"],
+                Provider = (string)json["provider"] ?? "tripo",
                 WorkflowKind = (string)json["workflowKind"] ?? "generate_asset",
                 Status = (string)json["status"],
                 Preset = (string)json["preset"],
@@ -410,6 +413,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 {
                     WorkflowId = record.WorkflowId,
                     PlanHash = record.PlanHash,
+                    Provider = record.Provider,
                     WorkflowKind = (string)resume["workflowKind"] ?? record.WorkflowKind,
                     Preset = record.Preset,
                     SourceKind = record.SourceKind,

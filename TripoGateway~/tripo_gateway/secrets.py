@@ -39,8 +39,9 @@ class CredentialStore(Protocol):
 
 
 class UnavailableCredentialStore:
-    def __init__(self, platform_name: str | None = None) -> None:
+    def __init__(self, platform_name: str | None = None, environment_name: str = "TRIPO_API_KEY") -> None:
         self._platform_name = platform_name or sys.platform
+        self._environment_name = environment_name
 
     @property
     def available(self) -> bool:
@@ -60,7 +61,7 @@ class UnavailableCredentialStore:
     def write(self, value: str) -> None:
         raise CredentialStoreError(
             "CREDENTIAL_STORE_UNAVAILABLE",
-            f"Secure credential storage is unavailable on {self._platform_name}; use TRIPO_API_KEY.",
+            f"Secure credential storage is unavailable on {self._platform_name}; use {self._environment_name}.",
         )
 
     def delete(self) -> None:
@@ -114,7 +115,7 @@ if sys.platform == "win32":
 
 
 class WindowsCredentialStore:
-    def __init__(self, target: str) -> None:
+    def __init__(self, target: str, provider_label: str = "Tripo") -> None:
         if sys.platform != "win32":
             raise CredentialStoreError(
                 "CREDENTIAL_STORE_UNAVAILABLE", "Windows Credential Manager is unavailable."
@@ -122,6 +123,7 @@ class WindowsCredentialStore:
         if not target or len(target) > 256:
             raise ValueError("credential target must contain 1-256 characters")
         self._target = target
+        self._provider_label = provider_label
         self._advapi = ctypes.WinDLL("Advapi32.dll", use_last_error=True)
         self._cred_read = self._advapi.CredReadW
         self._cred_read.argtypes = [
@@ -173,7 +175,7 @@ class WindowsCredentialStore:
                 return raw.decode("utf-8")
             except UnicodeDecodeError as exception:
                 raise CredentialStoreError(
-                    "CREDENTIAL_VALUE_INVALID", "Stored Tripo credential is not valid UTF-8."
+                    "CREDENTIAL_VALUE_INVALID", f"Stored {self._provider_label} credential is not valid UTF-8."
                 ) from exception
         finally:
             self._cred_free(pointer)
@@ -183,19 +185,19 @@ class WindowsCredentialStore:
         if not encoded or len(encoded) > MAX_API_KEY_BYTES:
             raise CredentialStoreError(
                 "CREDENTIAL_VALUE_INVALID",
-                f"Tripo API key must contain 1-{MAX_API_KEY_BYTES} UTF-8 bytes.",
+                f"{self._provider_label} API key must contain 1-{MAX_API_KEY_BYTES} UTF-8 bytes.",
             )
         blob = ctypes.create_string_buffer(encoded, len(encoded))
         credential = _CREDENTIALW()
         credential.Type = CRED_TYPE_GENERIC
         credential.TargetName = self._target
-        credential.Comment = "Unity Scene Analyzer Tripo API key"
+        credential.Comment = f"Unity Scene Analyzer {self._provider_label} API key"
         credential.CredentialBlobSize = len(encoded)
         credential.CredentialBlob = ctypes.cast(
             blob, ctypes.POINTER(ctypes.c_ubyte)
         )
         credential.Persist = CRED_PERSIST_LOCAL_MACHINE
-        credential.UserName = "Tripo API"
+        credential.UserName = f"{self._provider_label} API"
         try:
             if not self._cred_write(ctypes.byref(credential), 0):
                 raise self._windows_error(
@@ -290,20 +292,32 @@ class TripoCredentialManager:
             return self.status()
 
 
-def validate_api_key(value: str) -> None:
+def validate_api_key(value: str, provider: str | None = None) -> None:
+    provider_id = provider or "tripo"
+    provider_label = provider_id.title()
+    error_code = f"{provider_id.upper()}_API_KEY_INVALID"
     if not isinstance(value, str):
         raise CredentialStoreError(
-            "TRIPO_API_KEY_INVALID", "Tripo API key must be a string."
+            error_code, f"{provider_label} API key must be a string."
         )
     encoded = value.encode("utf-8")
     if len(value) < 8 or len(encoded) > MAX_API_KEY_BYTES:
         raise CredentialStoreError(
-            "TRIPO_API_KEY_INVALID",
-            f"Tripo API key must contain 8-{MAX_API_KEY_BYTES} UTF-8 bytes.",
+            error_code,
+            f"{provider_label} API key must contain 8-{MAX_API_KEY_BYTES} UTF-8 bytes.",
         )
     if value != value.strip() or any(ord(character) < 33 or ord(character) == 127 for character in value):
         raise CredentialStoreError(
-            "TRIPO_API_KEY_INVALID", "Tripo API key cannot contain whitespace or control characters."
+            error_code,
+            f"{provider_label} API key cannot contain whitespace or control characters.",
+        )
+    # Callers that identify a provider enforce its official prefix. The manager's
+    # internal second pass intentionally remains format-only for backwards
+    # compatibility after the provider-aware API layer already validated it.
+    expected_prefix = {"tripo": "tsk_", "meshy": "msy_"}.get(provider or "")
+    if expected_prefix and not value.startswith(expected_prefix):
+        raise CredentialStoreError(
+            error_code, f"{provider_label} API key must start with {expected_prefix}."
         )
 
 
@@ -311,5 +325,17 @@ def create_platform_credential_store(api_base_url: str) -> CredentialStore:
     region = "cn" if api_base_url.endswith(".com/v3") else "global"
     target = f"Maicon.UnitySceneAnalyzer.TripoGateway.TripoApiKey.{region}"
     if os.name == "nt" and sys.platform == "win32":
-        return WindowsCredentialStore(target)
-    return UnavailableCredentialStore()
+        return WindowsCredentialStore(target, "Tripo")
+    return UnavailableCredentialStore(environment_name="TRIPO_API_KEY")
+
+
+def create_provider_credential_store(provider: str, api_base_url: str) -> CredentialStore:
+    if provider == "tripo":
+        return create_platform_credential_store(api_base_url)
+    if provider == "meshy":
+        if os.name == "nt" and sys.platform == "win32":
+            return WindowsCredentialStore(
+                "Maicon.UnitySceneAnalyzer.Ai3dGateway.MeshyApiKey.global", "Meshy"
+            )
+        return UnavailableCredentialStore(environment_name="MESHY_API_KEY")
+    raise ValueError(f"unsupported AI 3D provider: {provider}")

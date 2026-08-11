@@ -142,6 +142,15 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D.Tests
                 var valid = Ai3dCandidateService.ValidateArtifact(job, artifact, vaultRoot);
                 Assert.That(valid.IsValid, Is.True, string.Join(" | ", valid.Issues));
 
+                job.Provider = "meshy";
+                artifact.SourceHost = "assets.meshy.ai";
+                var meshyValid = Ai3dCandidateService.ValidateArtifact(job, artifact, vaultRoot);
+                Assert.That(meshyValid.IsValid, Is.True, string.Join(" | ", meshyValid.Issues));
+                artifact.SourceHost = "cdn.tripo3d.ai";
+                var crossProvider = Ai3dCandidateService.ValidateArtifact(job, artifact, vaultRoot);
+                Assert.That(crossProvider.Issues.Exists(issue => issue.Code == "ARTIFACT_HOST_REJECTED"), Is.True);
+                job.Provider = "tripo";
+
                 artifact.SourceHost = "example.com";
                 var rejected = Ai3dCandidateService.ValidateArtifact(job, artifact, vaultRoot);
                 Assert.That(rejected.IsValid, Is.False);

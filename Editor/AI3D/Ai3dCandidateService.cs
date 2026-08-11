@@ -111,8 +111,10 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
                 Add(result.Issues, "ARTIFACT_MIME_MISSING", "Artifact has no content type; FBX magic bytes are still required.", Ai3dIssueSeverity.Warning);
             else if (!IsApprovedFbxContentType(artifact.ContentType))
                 Add(result.Issues, "ARTIFACT_MIME_REJECTED", "Artifact content type is not an approved FBX/binary MIME type.", Ai3dIssueSeverity.Error);
-            if (!IsApprovedTripoHost(artifact.SourceHost))
-                Add(result.Issues, "ARTIFACT_HOST_REJECTED", "Artifact source host is not an approved Tripo host.", Ai3dIssueSeverity.Error);
+            if (!IsApprovedProviderHost(artifact.SourceHost, job.Provider))
+                Add(result.Issues, "ARTIFACT_HOST_REJECTED",
+                    "Artifact source host is not approved for provider " + (job.Provider ?? "tripo") + ".",
+                    Ai3dIssueSeverity.Error);
             if (artifact.ByteCount <= 0 || artifact.ByteCount > MaximumArtifactBytes)
                 Add(result.Issues, "ARTIFACT_SIZE_REJECTED", "Artifact size is empty or exceeds the 1 GB limit.", Ai3dIssueSeverity.Error);
             if (!IsSha256(artifact.Sha256))
@@ -308,9 +310,16 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         }
 
         internal static bool IsApprovedTripoHost(string host)
+            => IsApprovedProviderHost(host, "tripo");
+
+        internal static bool IsApprovedProviderHost(string host, string provider)
         {
             if (string.IsNullOrWhiteSpace(host)) return false;
             host = host.Trim().TrimEnd('.').ToLowerInvariant();
+            provider = (provider ?? "tripo").Trim().ToLowerInvariant();
+            if (provider == "meshy")
+                return host == "assets.meshy.ai" || host.EndsWith(".meshy.ai", StringComparison.Ordinal);
+            if (provider != "tripo") return false;
             return host.EndsWith(".tripo3d.ai", StringComparison.Ordinal)
                    || host.EndsWith(".tripo3d.com", StringComparison.Ordinal);
         }

@@ -12,7 +12,7 @@ Two Unity windows work together:
 - **Window → Coder Chat (Unity MCP)** talks to the configured coder runtime over HTTP/SSE. The coder can call the authenticated Unity MCP endpoint to inspect and author the project.
 - **Window → Asset Modeler (Unity MCP)** previews semantic body regions and creates validated modular mesh parts without modifying the imported source mesh.
 - **Window → Asset Modeler → Rig & Animation Studio** separates rig diagnostics, skin weights, skeleton/bind, clips/poses, retarget, IK/bake, and auto-rig into seven focused pages with Scene View tooling.
-- **Window → AI 3D Studio (Unity MCP)** creates Tripo text/image jobs through the local gateway, reviews downloaded FBX candidates in quarantine, and provides a non-mutating Scene View preview before explicit acceptance.
+- **Window → AI 3D Studio (Unity MCP)** creates Tripo or Meshy jobs through the local gateway, reviews downloaded FBX candidates in quarantine, and provides a non-mutating Scene View preview before explicit acceptance.
 
 The MCP surface covers scene and asset inspection, safe authoring, project settings, multi-scene and Prefab workflows, importers, Package Manager, builds, tests, UI, input, rendering, 2D, terrain, animation, audio, profiling, Play Mode, runtime gameplay commands, mesh analytics, and optional Unity ecosystem packages.
 
@@ -119,13 +119,13 @@ Open **Window → Asset Modeler → Rig & Animation Studio** and select a charac
 
 The implementation matrix, gates, limitations, and validation record are maintained in `Documentation~/rig-animation-studio-implementation-spec.md`.
 
-## Tripo AI integration — Phase 0–2
+## Multi-provider AI 3D integration
 
-`TripoGateway~/` now provides the provider-neutral foundation for the future AI 3D Studio. It runs as a separate loopback FastAPI process, keeps `TRIPO_API_KEY` outside Unity assets, authenticates local callers, checks explicit disclosure and credit budgets, persists idempotent jobs across restarts, retries rate limits, and immediately stores successful Tripo outputs in a size-limited SHA-256 artifact vault.
+`TripoGateway~/` is the provider-neutral gateway for AI 3D Studio. It runs as a separate loopback FastAPI process, keeps `TRIPO_API_KEY` and `MESHY_API_KEY` outside Unity assets, authenticates local callers, checks explicit disclosure and credit budgets, persists provider-scoped idempotent jobs across restarts, retries rate limits, and immediately stores successful outputs in a size-limited SHA-256 artifact vault.
 
-The Unity Studio connects only to a loopback gateway and stores only its local token. On Windows, the Tripo API key can be entered in the Studio and is sent once to the authenticated gateway, persisted by Windows Credential Manager, and immediately removed from the Unity field; it never enters `Assets`, `EditorPrefs`, logs or MCP arguments. Results remain outside `Assets/` until the user validates the authenticated artifact-vault root, job/plan/hash chain and FBX content, then explicitly copies the candidate into quarantine. Acceptance additionally requires unchanged imported bytes, local mesh validation and a reviewed Scene View preview hash. Scene instantiation is a separate Undo-aware action and scene saving remains explicit.
+The Unity Studio connects only to a loopback gateway and stores only its local token. On Windows, each provider key is sent once to the authenticated gateway, persisted in a separate Windows Credential Manager entry, and immediately removed from the Unity field; keys never enter `Assets`, `EditorPrefs`, logs or MCP arguments. Results remain outside `Assets/` until the user validates the authenticated artifact-vault root, provider/job/plan/hash chain and FBX content, then explicitly copies the candidate into quarantine. Acceptance additionally requires unchanged imported bytes, provider-specific host validation, local mesh validation and a reviewed Scene View preview hash. Scene instantiation is a separate Undo-aware action and scene saving remains explicit.
 
-Phase 2 does not register `ai3d_*` MCP tools or let an agent spend credits. Agent workflow tools, policy confirmation and MCP-driven correction are Phase 3. Setup and API examples are in `TripoGateway~/README.md`; the normative architecture, security rules and phase gates are in `Documentation~/tripo-ai-integration-spec.md`.
+The typed `ai3d_*` MCP surface plans locally without billing and requires the reviewed plan hash, exact budget, disclosure consent, external-service policy and single-use confirmation before starting work. `provider: auto` selects Meshy for generation/retopology/rig and Tripo for semantic segment/complete. Setup is in `TripoGateway~/README.md`; the original Tripo contract remains in `Documentation~/tripo-ai-integration-spec.md`, and the Meshy extension is specified in `Documentation~/meshy-ai-integration-spec.md`.
 
 ## Safety model
 

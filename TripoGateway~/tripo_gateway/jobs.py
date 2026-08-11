@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from .config import GatewaySettings
 from .models import (
@@ -37,12 +37,17 @@ class TripoJobManager:
         self,
         settings: GatewaySettings,
         store: DurableJobStore,
-        provider: TripoProvider,
+        provider: TripoProvider | Mapping[str, TripoProvider],
         artifacts: ArtifactSink,
     ) -> None:
         self.settings = settings
         self.store = store
-        self.provider = provider
+        self.providers = (
+            dict(provider)
+            if isinstance(provider, Mapping)
+            else {getattr(provider, "provider_id", "tripo"): provider}
+        )
+        self.provider = self.providers.get("tripo") or next(iter(self.providers.values()))
         self.artifacts = artifacts
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._task_lock = asyncio.Lock()
@@ -70,6 +75,21 @@ class TripoJobManager:
     async def submit(
         self, request: JobCreateRequest, idempotency_key: str
     ) -> tuple[JobRecord, bool]:
+        selected_provider = self.providers.get(request.provider)
+        if selected_provider is None:
+            raise GatewayPolicyError(
+                "PROVIDER_NOT_AVAILABLE", f"AI 3D provider {request.provider} is not available"
+            )
+        if not selected_provider.configured:
+            raise GatewayPolicyError(
+                "PROVIDER_NOT_CONFIGURED", f"AI 3D provider {request.provider} is not configured"
+            )
+        operations = getattr(selected_provider, "operations", frozenset())
+        if operations and request.operation not in operations:
+            raise GatewayPolicyError(
+                "PROVIDER_OPERATION_UNSUPPORTED",
+                f"provider {request.provider} does not support {request.operation}",
+            )
         if not request.disclosure.external_send_approved:
             raise GatewayPolicyError(
                 "EXTERNAL_SEND_APPROVAL_REQUIRED",
@@ -99,6 +119,7 @@ class TripoJobManager:
         record = JobRecord(
             job_id=uuid.uuid4().hex,
             project_key=request.project_key,
+            provider=request.provider,
             operation=request.operation,
             plan_hash=request.plan_hash,
             request_hash=request_hash,
@@ -145,7 +166,10 @@ class TripoJobManager:
         if not isinstance(task_id, str) or not task_id:
             raise GatewayPolicyError("WEBHOOK_TASK_ID_MISSING", "task webhook has no task_id")
         record = next(
-            (value for value in self.store.list(500) if value.provider_task_id == task_id),
+            (
+                value for value in self.store.list(500)
+                if value.provider == "tripo" and value.provider_task_id == task_id
+            ),
             None,
         )
         if record is None:
@@ -174,12 +198,14 @@ class TripoJobManager:
             records = [record for record in records if record.project_key == project_key]
         statuses: dict[str, int] = {}
         operations: dict[str, int] = {}
+        providers: dict[str, int] = {}
         estimated = 0
         consumed = 0
         completed_with_usage = 0
         for record in records:
             statuses[record.status.value] = statuses.get(record.status.value, 0) + 1
             operations[record.operation] = operations.get(record.operation, 0) + 1
+            providers[record.provider] = providers.get(record.provider, 0) + 1
             estimated += record.estimated_credits
             if record.credits_consumed is not None:
                 consumed += record.credits_consumed
@@ -194,6 +220,7 @@ class TripoJobManager:
             "jobsWithProviderUsage": completed_with_usage,
             "statuses": dict(sorted(statuses.items())),
             "operations": dict(sorted(operations.items())),
+            "providers": dict(sorted(providers.items())),
             "containsPrompts": False,
             "containsCredentials": False,
         }
@@ -238,7 +265,7 @@ class TripoJobManager:
             existing = self._tasks.get(job_id)
             if existing and not existing.done():
                 return
-            task = asyncio.create_task(self._run(job_id), name=f"tripo-job-{job_id}")
+            task = asyncio.create_task(self._run(job_id), name=f"ai3d-job-{job_id}")
             self._tasks[job_id] = task
             task.add_done_callback(lambda _: self._tasks.pop(job_id, None))
 
@@ -266,8 +293,9 @@ class TripoJobManager:
             self._fail(job_id, "GATEWAY_JOB_FAILED", _safe_exception_message(exception))
 
     async def _submit_provider_task(self, record: JobRecord) -> None:
+        provider = self._provider_for(record)
         self._transition(record.job_id, JobStatus.SUBMITTING, 0.02, "checking balance")
-        balance = await self.provider.get_balance()
+        balance = await provider.get_balance()
         available = int(balance.get("balance", 0))
         if available < record.estimated_credits:
             raise GatewayPolicyError(
@@ -283,7 +311,7 @@ class TripoJobManager:
         payload = current.safe_input.get("payload")
         if not isinstance(payload, dict):
             raise GatewayPolicyError("JOB_INPUT_INVALID", "persisted payload is invalid")
-        task_id = await self.provider.create_task(current.operation, payload)
+        task_id = await provider.create_task(current.operation, payload)
 
         def mutate(value: JobRecord) -> None:
             value.provider_task_id = task_id
@@ -295,13 +323,17 @@ class TripoJobManager:
         self.store.update(record.job_id, mutate)
 
     async def _poll_provider_task(self, record: JobRecord) -> None:
+        provider = self._provider_for(record)
         while True:
             current = self.store.get(record.job_id)
             if current is None or current.terminal:
                 return
             if not current.provider_task_id:
                 raise GatewayPolicyError("PROVIDER_TASK_ID_MISSING", "job cannot be reconciled")
-            task = await self.provider.get_task(current.provider_task_id)
+            if getattr(provider, "provider_id", current.provider) == "meshy":
+                task = await provider.get_task(current.provider_task_id, current.operation)
+            else:
+                task = await provider.get_task(current.provider_task_id)
             refreshed_after_wait = self.store.get(current.job_id)
             if refreshed_after_wait is None or refreshed_after_wait.terminal:
                 return
@@ -317,7 +349,7 @@ class TripoJobManager:
             if provider_status in {"failed", "banned", "expired"}:
                 self._fail(
                     current.job_id,
-                    str(task.get("error_code") or "TRIPO_TASK_FAILED"),
+                    str(task.get("error_code") or "PROVIDER_TASK_FAILED"),
                     str(task.get("error_message") or f"provider task ended as {provider_status}"),
                     provider_result=task,
                 )
@@ -329,6 +361,15 @@ class TripoJobManager:
                 else self.settings.poll_interval_seconds
             )
             await asyncio.sleep(delay)
+
+    def _provider_for(self, record: JobRecord) -> TripoProvider:
+        provider = self.providers.get(record.provider)
+        if provider is None:
+            raise GatewayPolicyError(
+                "PROVIDER_NOT_AVAILABLE",
+                f"AI 3D provider {record.provider} is not available after restart",
+            )
+        return provider
 
     async def _handle_success(self, job_id: str, task: dict[str, Any]) -> None:
         current = self.store.get(job_id)
