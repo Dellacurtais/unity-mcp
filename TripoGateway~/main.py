@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
+from pathlib import Path
 
 import uvicorn
 
@@ -21,7 +23,25 @@ def main() -> None:
     if port < 1 or port > 65535:
         raise SystemExit("TRIPO_GATEWAY_PORT must be between 1 and 65535")
     settings = GatewaySettings.from_environment()
-    uvicorn.run(create_app(settings), host=host, port=port, log_level="info")
+    log_path = os.environ.get("TRIPO_GATEWAY_LOG")
+    run_options: dict[str, object] = {}
+    if log_path:
+        resolved_log = Path(log_path).expanduser().resolve()
+        resolved_log.parent.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+            handlers=[logging.FileHandler(resolved_log, encoding="utf-8")],
+            force=True,
+        )
+        run_options["log_config"] = None
+    uvicorn.run(
+        create_app(settings),
+        host=host,
+        port=port,
+        log_level="info",
+        **run_options,
+    )
 
 
 if __name__ == "__main__":

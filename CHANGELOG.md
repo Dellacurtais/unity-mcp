@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.6] - 2026-08-16
+
+### Fixed
+
+- Stop reporting a free managed-broker port as occupied when the HTTP health probe times out without receiving a response. Startup now confirms an actual TCP listener before blocking launch, while still protecting ports used by unhealthy or non-Unity services.
+
+### Changed
+
+- Bump package, C# fallback, Python broker, managed Unity Build agent, and release validator versions to `0.18.6`.
+
 ## [0.18.4] - 2026-08-10
 
 ### Added

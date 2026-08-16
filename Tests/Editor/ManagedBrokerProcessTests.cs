@@ -264,6 +264,41 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void EndpointProbe_DoesNotTreatClosedPortTimeoutAsOccupied()
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+
+            var probe = ManagedBrokerProcess.ProbeBrokerEndpoint("127.0.0.1", port);
+
+            Assert.That(probe.Occupied, Is.False, probe.Error);
+            Assert.That(probe.Healthy, Is.False);
+            Assert.That(probe.Error, Is.Null);
+        }
+
+        [Test]
+        public void EndpointProbe_KeepsListeningButUnhealthyPortOccupied()
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            try
+            {
+                var probe = ManagedBrokerProcess.ProbeBrokerEndpoint("127.0.0.1", port);
+
+                Assert.That(probe.Occupied, Is.True);
+                Assert.That(probe.Healthy, Is.False);
+                Assert.That(probe.Error, Does.Contain("health check failed"));
+            }
+            finally
+            {
+                listener.Stop();
+            }
+        }
+
+        [Test]
         public void PersistedState_RecognizesInstallerOwnedByCurrentProcess()
         {
             var runtime = Path.Combine(_root, "runtime");

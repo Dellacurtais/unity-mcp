@@ -40,6 +40,7 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         private string _meshyApiKeyInput;
         private bool _showTripoApiKey;
         private bool _showMeshyApiKey;
+        private Ai3dGatewayProcessSnapshot _gatewayProcess;
         private JObject _balance;
         private string _provider = "tripo";
 
@@ -603,6 +604,8 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
         {
             EditorGUILayout.LabelField("Gateway local", EditorStyles.boldLabel);
             _gatewayUrl = EditorGUILayout.TextField("URL", _gatewayUrl ?? string.Empty);
+            _gatewayProcess = Ai3dGatewayProcess.Inspect(_gatewayUrl);
+            DrawGatewayProcessControls();
             using (new EditorGUILayout.HorizontalScope())
             {
                 _gatewayToken = _showGatewayToken
@@ -666,6 +669,95 @@ namespace Maicon.SceneAnalyzer.Editor.AI3D
             {
                 EditorGUILayout.LabelField("Saldo disponível", ((int?)_balance["balance"] ?? 0).ToString("N0"));
                 EditorGUILayout.LabelField("Créditos congelados", ((int?)_balance["frozen"] ?? 0).ToString("N0"));
+            }
+        }
+
+        private void DrawGatewayProcessControls()
+        {
+            var process = _gatewayProcess ?? Ai3dGatewayProcess.Inspect(_gatewayUrl);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                using (new EditorGUI.DisabledScope(_busy || !process.CanStart))
+                    if (GUILayout.Button("▶ Iniciar", GUILayout.Height(26f))) _ = StartGatewayAsync(false);
+                using (new EditorGUI.DisabledScope(_busy || !process.CanStop))
+                    if (GUILayout.Button("■ Parar", GUILayout.Height(26f))) _ = StopGatewayAsync();
+                using (new EditorGUI.DisabledScope(_busy || process.IsExternal))
+                    if (GUILayout.Button("↻ Reiniciar", GUILayout.Height(26f))) _ = StartGatewayAsync(true);
+                if (GUILayout.Button("Logs", GUILayout.Width(52f), GUILayout.Height(26f)))
+                    Ai3dGatewayProcess.RevealLogs();
+            }
+
+            var stateLabel = process.State == Ai3dGatewayProcessState.Running ? "rodando"
+                : process.State == Ai3dGatewayProcessState.Starting ? "iniciando"
+                : process.State == Ai3dGatewayProcessState.External ? "externo"
+                : process.State == Ai3dGatewayProcessState.Failed ? "falhou"
+                : "parado";
+            EditorGUILayout.LabelField(
+                "Processo: " + stateLabel + (process.ProcessId > 0 ? " · PID " + process.ProcessId : string.Empty),
+                EditorStyles.miniLabel);
+            if (!string.IsNullOrWhiteSpace(process.Version))
+                EditorGUILayout.LabelField("Versão do gateway: " + process.Version, EditorStyles.miniLabel);
+            if (!string.IsNullOrWhiteSpace(process.Message))
+                EditorGUILayout.LabelField(process.Message, EditorStyles.miniLabel);
+            if (process.IsExternal)
+                EditorGUILayout.HelpBox(
+                    "Já existe um gateway saudável nessa URL. Ele pode ser usado, mas só deve ser parado pelo programa que o iniciou.",
+                    MessageType.Info);
+            if (!string.IsNullOrWhiteSpace(process.Error))
+                EditorGUILayout.HelpBox(process.Error, MessageType.Error);
+        }
+
+        private async Task StartGatewayAsync(bool restart)
+        {
+            if (_busy) return;
+            SetBusy(true);
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_gatewayToken))
+                    _gatewayToken = Ai3dGatewaySettings.GenerateGatewayToken();
+                SaveSettings();
+                var options = Ai3dGatewayProcess.CreateLaunchOptions(
+                    _gatewayUrl, _gatewayToken, _maxWorkflowCredits);
+                await Task.Run(() =>
+                {
+                    if (restart) Ai3dGatewayProcess.Restart(options);
+                    else Ai3dGatewayProcess.Start(options);
+                });
+                _gatewayProcess = Ai3dGatewayProcess.Inspect(_gatewayUrl, true);
+                _health = await Ai3dGatewayClient.HealthAsync(Token);
+                _capabilities = await Ai3dGatewayClient.GetCapabilitiesAsync(Token);
+                _credentialStatus = await Ai3dGatewayClient.GetCredentialStatusAsync("tripo", Token);
+                _meshyCredentialStatus = await Ai3dGatewayClient.GetCredentialStatusAsync("meshy", Token);
+                SetStatus(restart ? "Gateway reiniciado e conectado." : "Gateway iniciado e conectado.", MessageType.Info);
+            }
+            catch (Exception exception) { SetException(exception); }
+            finally
+            {
+                _gatewayProcess = Ai3dGatewayProcess.Inspect(_gatewayUrl, true);
+                SetBusy(false);
+            }
+        }
+
+        private async Task StopGatewayAsync()
+        {
+            if (_busy) return;
+            SetBusy(true);
+            try
+            {
+                await Task.Run(Ai3dGatewayProcess.Stop);
+                _health = null;
+                _capabilities = null;
+                _credentialStatus = null;
+                _meshyCredentialStatus = null;
+                _balance = null;
+                _gatewayProcess = Ai3dGatewayProcess.Inspect(_gatewayUrl, true);
+                SetStatus("Gateway parado. Jobs remotos já enviados não são cancelados automaticamente.", MessageType.Warning);
+            }
+            catch (Exception exception) { SetException(exception); }
+            finally
+            {
+                _gatewayProcess = Ai3dGatewayProcess.Inspect(_gatewayUrl, true);
+                SetBusy(false);
             }
         }
 

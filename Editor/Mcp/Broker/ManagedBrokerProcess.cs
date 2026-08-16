@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
@@ -518,9 +519,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             }
             catch (WebException exception)
             {
-                result.Occupied = exception.Response != null
-                    || exception.Status != WebExceptionStatus.ConnectFailure
-                    && exception.Status != WebExceptionStatus.NameResolutionFailure;
+                result.Occupied = exception.Response != null || CanConnectTcp(host, port);
                 if (result.Occupied)
                     result.Error = "Unity MCP health check failed: " + exception.Message;
                 return result;
@@ -531,6 +530,21 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 result.Error = "Unity MCP health check failed: " + exception.Message;
                 return result;
             }
+        }
+
+        internal static bool CanConnectTcp(string host, int port)
+        {
+            try
+            {
+                using (var client = new TcpClient())
+                {
+                    var connect = client.ConnectAsync(host, port);
+                    return connect.Wait(EndpointProbeTimeoutMilliseconds) && client.Connected;
+                }
+            }
+            catch (AggregateException) { return false; }
+            catch (SocketException) { return false; }
+            catch (ObjectDisposedException) { return false; }
         }
 
         internal static string QuoteArgument(string value)
