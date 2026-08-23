@@ -313,6 +313,17 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void RuntimePackage_DeclaresBuiltInAnimationAndImageConversionDependencies()
+        {
+            var package = PackageInfo.FindForPackageName("com.maicon.scene-analyzer");
+
+            Assert.That(package, Is.Not.Null, "The Unity MCP package must be installed for this test.");
+            var dependencies = package.dependencies.Select(dependency => dependency.name).ToArray();
+            CollectionAssert.Contains(dependencies, "com.unity.modules.animation");
+            CollectionAssert.Contains(dependencies, "com.unity.modules.imageconversion");
+        }
+
+        [Test]
         public void OptionalSrpValidation_ValidReflectsDefaultAndPerQualityAssignments()
         {
             var expectedTypeNames = new[] { typeof(AuditRenderPipelineAsset).FullName };

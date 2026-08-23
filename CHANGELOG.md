@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Declare Unity's built-in Animation and Image Conversion modules as package dependencies so `Avatar`, `AnimationClip`, and runtime PNG capture compile in minimal Unity projects.
+
 ## [0.18.6] - 2026-08-16
 
 ### Fixed
