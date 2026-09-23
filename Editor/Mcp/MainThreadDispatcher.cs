@@ -22,6 +22,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         private static readonly int MainThreadId;
         private const double MaxPumpMs = 5.0;
         private const double SlowClosureWarnMs = 200.0;
+        private static long _lastPumpUtcTicks;
+        public static string LastPumpUtc => new DateTime(Interlocked.Read(ref _lastPumpUtcTicks), DateTimeKind.Utc).ToString("O");
 
         static MainThreadDispatcher()
         {
@@ -84,6 +86,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 
         private static void Pump()
         {
+            Interlocked.Exchange(ref _lastPumpUtcTicks, DateTime.UtcNow.Ticks);
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed.TotalMilliseconds < MaxPumpMs)
             {

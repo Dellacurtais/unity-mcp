@@ -22,7 +22,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Operations.Transform
         private readonly int[] _vertices;
 
         public MeshOperationDescriptor Descriptor { get; } = new MeshOperationDescriptor(
-            "mesh.transform_vertices", "Transform mesh vertices", false, true, true, false, true);
+            "mesh.transform_vertices", "Transform mesh vertices", false, false, false, false, true);
 
         public TransformVerticesOperation(Matrix4x4 matrix, IReadOnlyList<int> vertices = null)
         {
@@ -44,6 +44,12 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Operations.Transform
                     report.Error("TRANSFORM_NOT_FINITE", "Transform matrix contains NaN or Infinity.");
                     break;
                 }
+            if (context.WorkingMesh.bindposeCount != 0 || context.WorkingMesh.blendShapeCount != 0)
+                report.Error("TRANSFORM_RIG_UNSUPPORTED", "Vertex-only transforms cannot preserve rig or blendshape scale. Use model scale normalization on the complete hierarchy.");
+            if (Mathf.Abs(_matrix.determinant) < 1e-8f || _matrix.m30 != 0f || _matrix.m31 != 0f || _matrix.m32 != 0f || _matrix.m33 != 1f)
+                report.Error("TRANSFORM_MATRIX_UNSUPPORTED", "Transform must be affine and invertible.");
+            if (_matrix.determinant < 0f)
+                report.Error("TRANSFORM_REFLECTION_UNSUPPORTED", "Use the dedicated Mirror operation to preserve winding and tangent handedness.");
             for (int i = 0; i < _vertices.Length; i++)
                 if (_vertices[i] < 0 || _vertices[i] >= context.WorkingMesh.vertexCount)
                 {
@@ -72,7 +78,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Operations.Transform
                     normals[i] = normalMatrix.MultiplyVector(normals[i]).normalized;
                 if (tangents.Length == positions.Length)
                 {
-                    var transformed = normalMatrix.MultiplyVector(new Vector3(tangents[i].x, tangents[i].y, tangents[i].z)).normalized;
+                    var transformed = _matrix.MultiplyVector(new Vector3(tangents[i].x, tangents[i].y, tangents[i].z));
+                    if (normals.Length == positions.Length) transformed -= normals[i] * Vector3.Dot(normals[i], transformed);
+                    transformed.Normalize();
                     tangents[i] = new Vector4(transformed.x, transformed.y, transformed.z, tangents[i].w);
                 }
             }

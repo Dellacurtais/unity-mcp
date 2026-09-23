@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -26,6 +28,65 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             public int FailedAtIndex = -1;
             public int OpsApplied;
             public List<OpResult> Results = new();
+            public string Outcome = "notApplied";
+            public bool? RollbackComplete;
+            public List<string> RollbackErrors = new();
+        }
+
+        [ThreadStatic] private static DeferredAssetSaves _assetSaves;
+
+        // Standalone tools persist immediately; a changeset owns the commit boundary.
+        internal static bool SaveAssetIfDirty(UnityEngine.Object asset)
+        {
+            if (_assetSaves != null) { _assetSaves.Track(asset); return false; }
+            AssetDatabase.SaveAssetIfDirty(asset);
+            return true;
+        }
+
+        private sealed class DeferredAssetSaves : IDisposable
+        {
+            private readonly DeferredAssetSaves _previous = _assetSaves;
+            private readonly Dictionary<int, UnityEngine.Object> _assets = new();
+            private readonly Dictionary<string, byte[]> _before = new(StringComparer.Ordinal);
+            private bool _commitStarted;
+
+            public DeferredAssetSaves() { _assetSaves = this; }
+            public void Track(UnityEngine.Object asset)
+            {
+                var path = AssetDatabase.GetAssetPath(asset);
+                if (string.IsNullOrEmpty(path)) throw new InvalidOperationException("Deferred save requires an asset path.");
+                if (!_before.ContainsKey(path)) _before[path] = File.Exists(path) ? File.ReadAllBytes(path) : null;
+                _assets[asset.GetInstanceID()] = asset;
+            }
+            public void Commit()
+            {
+                _commitStarted = true;
+                foreach (var asset in _assets.Values)
+                {
+                    if (asset == null) throw new InvalidOperationException("An asset scheduled for saving was destroyed.");
+                    AssetDatabase.SaveAssetIfDirty(asset);
+                    if (EditorUtility.IsDirty(asset))
+                        throw new InvalidOperationException($"Asset remained dirty after save: {AssetDatabase.GetAssetPath(asset)}");
+                }
+            }
+            public void VerifyOrRestore(Report report)
+            {
+                foreach (var entry in _before)
+                {
+                    if (report.Results.Any(result => string.Equals(result?.CreatedAssetPath, entry.Key, StringComparison.Ordinal))) continue;
+                    if (entry.Value == null) continue; // Created assets are removed by RevertAndCleanup.
+                    try
+                    {
+                        var unchanged = File.Exists(entry.Key) && File.ReadAllBytes(entry.Key).SequenceEqual(entry.Value);
+                        if (unchanged) continue;
+                        if (_commitStarted) File.WriteAllBytes(entry.Key, entry.Value);
+                        if (!File.Exists(entry.Key) || !File.ReadAllBytes(entry.Key).SequenceEqual(entry.Value))
+                            report.RollbackErrors.Add($"Asset contents were not restored: {entry.Key}");
+                    }
+                    catch (Exception e) { report.RollbackErrors.Add($"Asset restore failed for {entry.Key}: {e.Message}"); }
+                }
+            }
+            public void Dispose() { _assetSaves = _previous; }
         }
 
         private static readonly Dictionary<string, Func<JObject, OpResult>> Handlers
@@ -116,6 +177,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var preflight = Preflight(ops);
             if (preview || preflight.Failed) return preflight;
 
+            using var assetSaves = new DeferredAssetSaves();
+
             Undo.IncrementCurrentGroup();
             Undo.SetCurrentGroupName(string.IsNullOrEmpty(name) ? "Apply Changeset" : name);
             int group = Undo.GetCurrentGroup();
@@ -185,15 +248,18 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 report.OpsApplied++;
             }
 
+            try { assetSaves.Commit(); }
+            catch (Exception e)
+            {
+                report.Failed = true;
+                report.Error = $"asset commit failed: {e.Message}";
+                RevertAndCleanup(report, group);
+                return report;
+            }
             Undo.CollapseUndoOperations(group);
+            report.Outcome = "applied";
             try { OnApplied?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
             return report;
-        }
-
-        private static void SafeRevertAll(int group)
-        {
-            try { Undo.RevertAllDownToGroup(group); }
-            catch (Exception e) { Debug.LogException(e); }
         }
 
         /// Reverts the Undo group AND deletes any assets created earlier in
@@ -203,13 +269,22 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         /// orphan files behind.
         private static void RevertAndCleanup(Report report, int group)
         {
-            SafeRevertAll(group);
+            try { Undo.FlushUndoRecordObjects(); Undo.RevertAllDownToGroup(group); }
+            catch (Exception e) { report.RollbackErrors.Add($"Undo rollback failed: {e.Message}"); }
             foreach (var prior in report.Results)
             {
                 if (string.IsNullOrEmpty(prior?.CreatedAssetPath)) continue;
-                try { AssetDatabase.DeleteAsset(prior.CreatedAssetPath); }
-                catch (Exception e) { Debug.LogException(e); }
+                try
+                {
+                    if (AssetDatabase.AssetPathExists(prior.CreatedAssetPath)
+                        && (!AssetDatabase.DeleteAsset(prior.CreatedAssetPath) || AssetDatabase.AssetPathExists(prior.CreatedAssetPath)))
+                        report.RollbackErrors.Add($"Created asset was not removed: {prior.CreatedAssetPath}");
+                }
+                catch (Exception e) { report.RollbackErrors.Add($"Asset cleanup failed for {prior.CreatedAssetPath}: {e.Message}"); }
             }
+            _assetSaves?.VerifyOrRestore(report);
+            report.RollbackComplete = report.RollbackErrors.Count == 0;
+            report.Outcome = report.RollbackComplete.Value ? "rolledBack" : "rollbackIncomplete";
         }
 
         /// Walks args looking for unresolved `{ ref: "x" }` objects and

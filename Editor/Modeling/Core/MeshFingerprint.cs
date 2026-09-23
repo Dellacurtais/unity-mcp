@@ -18,6 +18,23 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
                 writer.Write(mesh.vertexCount);
                 writer.Write(mesh.subMeshCount);
                 writer.Write((int)mesh.indexFormat);
+                writer.Write(snapshot.Manifest.VertexAttributes.Count);
+                foreach (var attribute in snapshot.Manifest.VertexAttributes)
+                {
+                    writer.Write((int)attribute.attribute);
+                    writer.Write((int)attribute.format);
+                    writer.Write(attribute.dimension);
+                    writer.Write(attribute.stream);
+                }
+                writer.Write(snapshot.VertexStreams.Count);
+                for (int streamIndex = 0; streamIndex < snapshot.VertexStreams.Count; streamIndex++)
+                {
+                    writer.Write(snapshot.VertexStrides[streamIndex]);
+                    writer.Write(snapshot.VertexStreams[streamIndex].Length);
+                    writer.Write(snapshot.VertexStreams[streamIndex]);
+                }
+                Write(writer, snapshot.Bounds.center);
+                Write(writer, snapshot.Bounds.size);
                 Write(writer, snapshot.Positions);
                 Write(writer, snapshot.Normals);
                 Write(writer, snapshot.Tangents);
@@ -52,6 +69,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
                 for (int submesh = 0; submesh < mesh.subMeshCount; submesh++)
                 {
                     writer.Write((int)mesh.GetTopology(submesh));
+                    writer.Write(mesh.GetBaseVertex(submesh));
                     var indices = mesh.GetIndices(submesh, true);
                     writer.Write(indices.Length);
                     for (int i = 0; i < indices.Length; i++) writer.Write(indices[i]);

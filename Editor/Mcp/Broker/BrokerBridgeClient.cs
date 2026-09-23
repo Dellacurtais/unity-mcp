@@ -246,7 +246,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 var state = Snapshot.State;
                 await SendCurrentAsync(BrokerProtocol.Envelope(
                     "heartbeat",
-                    new JObject { ["state"] = state },
+                    new JObject
+                    {
+                        ["state"] = state,
+                        ["mainThreadLastTickUtc"] = MainThreadDispatcher.LastPumpUtc,
+                        ["dispatcherQueueDepth"] = MainThreadDispatcher.PendingCount,
+                        ["inFlightRequests"] = _processor.InFlightCount,
+                    },
                     _projectKey,
                     _processId), cancellationToken);
             }

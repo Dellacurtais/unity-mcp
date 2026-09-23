@@ -89,7 +89,10 @@ def main() -> int:
         "GetBonesPerVertex",
         "GetBlendShapeFrameVertices",
         "AddBlendShapeFrame",
-        "for (int channel = 0; channel < Uvs.Length; channel++)",
+        "new MeshUvSnapshot[8]",
+        "GetVertexData<byte>",
+        "SetVertexBufferData",
+        "source.BaseVertex",
     ):
         require(token in snapshot, f"full channel snapshot contract lost token: {token}", failures)
 

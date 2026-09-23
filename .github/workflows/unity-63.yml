@@ -1,0 +1,50 @@
+name: Unity 6.3 Editor validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  prerequisites:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report Unity runner configuration
+        env:
+          ENABLED: ${{ vars.ENABLE_UNITY_63_CI }}
+        run: |
+          if [ "$ENABLED" != "true" ]; then
+            echo "::warning::Unity validation is not configured. Set ENABLE_UNITY_63_CI=true and provide a licensed Windows runner labeled unity-6000.3.5f2. Skipped Unity jobs are not compatibility evidence."
+          fi
+
+  editor:
+    if: vars.ENABLE_UNITY_63_CI == 'true'
+    needs: prerequisites
+    # Deliberately no pull_request trigger on a persistent licensed runner.
+    # Use a dedicated account and ephemeral workspace for trusted revisions.
+    runs-on: [self-hosted, Windows, unity-6000.3.5f2]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [minimal, representative]
+    env:
+      UNITY63_EDITOR_PATH: ${{ vars.UNITY63_EDITOR_PATH }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Import, compile, EditMode, Play Mode and reload smoke
+        shell: pwsh
+        run: ./Tools~/run_unity63_ci.ps1 -EditorPath $env:UNITY63_EDITOR_PATH -Profile '${{ matrix.profile }}'
+      - name: Upload actual logs and test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-6000.3.5f2-${{ matrix.profile }}
+          path: |
+            .validation/unity63-ci/${{ matrix.profile }}/artifacts/**
+            .validation/unity63-ci/${{ matrix.profile }}/project/Packages/manifest.json
+            .validation/unity63-ci/${{ matrix.profile }}/project/Packages/packages-lock.json
+          if-no-files-found: warn

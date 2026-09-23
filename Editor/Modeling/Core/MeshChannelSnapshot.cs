@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Unity.Collections;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -54,11 +55,13 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
     {
         public MeshTopology Topology { get; }
         public int[] Indices { get; }
+        public int BaseVertex { get; }
 
-        public MeshSubMeshSnapshot(MeshTopology topology, int[] indices)
+        public MeshSubMeshSnapshot(MeshTopology topology, int[] indices, int baseVertex = 0)
         {
             Topology = topology;
             Indices = indices ?? Array.Empty<int>();
+            BaseVertex = baseVertex;
         }
     }
 
@@ -80,6 +83,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
         public IReadOnlyList<MeshSubMeshSnapshot> SubMeshes { get; }
         public IndexFormat IndexFormat { get; }
         public Bounds Bounds { get; }
+        private readonly byte[][] _vertexStreams;
+        private readonly int[] _vertexStrides;
+        internal IReadOnlyList<byte[]> VertexStreams => _vertexStreams;
+        internal IReadOnlyList<int> VertexStrides => _vertexStrides;
 
         private MeshChannelSnapshot(
             MeshChannelManifest manifest,
@@ -97,7 +104,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
             List<BlendShapeSnapshot> blendShapes,
             List<MeshSubMeshSnapshot> subMeshes,
             IndexFormat indexFormat,
-            Bounds bounds)
+            Bounds bounds,
+            byte[][] vertexStreams,
+            int[] vertexStrides)
         {
             Manifest = manifest;
             Positions = positions;
@@ -115,12 +124,26 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
             SubMeshes = subMeshes;
             IndexFormat = indexFormat;
             Bounds = bounds;
+            _vertexStreams = vertexStreams;
+            _vertexStrides = vertexStrides;
         }
 
         public static MeshChannelSnapshot Capture(Mesh mesh)
         {
             if (mesh == null) throw new ArgumentNullException(nameof(mesh));
             var manifest = MeshChannelManifest.Capture(mesh);
+            var vertexStreams = new byte[mesh.vertexBufferCount][];
+            var vertexStrides = new int[mesh.vertexBufferCount];
+            using (var data = Mesh.AcquireReadOnlyMeshData(mesh))
+            {
+                for (int stream = 0; stream < vertexStreams.Length; stream++)
+                {
+                    vertexStrides[stream] = mesh.GetVertexBufferStride(stream);
+                    vertexStreams[stream] = data[0].GetVertexData<byte>(stream).ToArray();
+                    if (vertexStreams[stream].Length != checked(mesh.vertexCount * vertexStrides[stream]))
+                        throw new InvalidOperationException("MESH_CHANNEL_LAYOUT_UNSUPPORTED: vertex stream size does not match its stride.");
+                }
+            }
             var positions = mesh.vertices;
             var normals = manifest.HasNormals ? mesh.normals : Array.Empty<Vector3>();
             var tangents = manifest.HasTangents ? mesh.tangents : Array.Empty<Vector4>();
@@ -189,7 +212,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
             for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
                 subMeshes.Add(new MeshSubMeshSnapshot(
                     mesh.GetTopology(subMesh),
-                    mesh.GetIndices(subMesh, true)));
+                    mesh.GetIndices(subMesh, true), checked((int)mesh.GetBaseVertex(subMesh))));
 
             return new MeshChannelSnapshot(
                 manifest,
@@ -207,33 +230,38 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
                 blendShapes,
                 subMeshes,
                 mesh.indexFormat,
-                mesh.bounds);
+                mesh.bounds,
+                vertexStreams,
+                vertexStrides);
         }
 
         public Mesh CreateMesh(string name = null)
         {
-            var mesh = new Mesh { name = string.IsNullOrWhiteSpace(name) ? "EditableMesh" : name };
-            ApplyAll(mesh);
-            return mesh;
+            var allVertices = new int[Positions.Length];
+            for (int i = 0; i < allVertices.Length; i++) allVertices[i] = i;
+            var mesh = CreateVertexSubset(string.IsNullOrWhiteSpace(name) ? "EditableMesh" : name, allVertices, IndexFormat);
+            try
+            {
+                mesh.subMeshCount = SubMeshes.Count;
+                for (int subMesh = 0; subMesh < SubMeshes.Count; subMesh++)
+                {
+                    var source = SubMeshes[subMesh];
+                    var local = new int[source.Indices.Length];
+                    for (int i = 0; i < local.Length; i++) local[i] = checked(source.Indices[i] - source.BaseVertex);
+                    mesh.SetIndices(local, source.Topology, subMesh, false, source.BaseVertex);
+                }
+                mesh.bounds = Bounds;
+                return mesh;
+            }
+            catch { UnityEngine.Object.DestroyImmediate(mesh); throw; }
         }
 
         public void ApplyAll(Mesh destination)
         {
             if (destination == null) throw new ArgumentNullException(nameof(destination));
-            var name = destination.name;
-            destination.Clear(false);
-            destination.indexFormat = IndexFormat;
-            var allVertices = new int[Positions.Length];
-            for (int i = 0; i < allVertices.Length; i++) allVertices[i] = i;
-            ApplyVertexChannels(destination, allVertices);
-            destination.subMeshCount = SubMeshes.Count;
-            for (int subMesh = 0; subMesh < SubMeshes.Count; subMesh++)
-            {
-                var source = SubMeshes[subMesh];
-                destination.SetIndices(source.Indices, source.Topology, subMesh, false);
-            }
-            destination.bounds = Bounds;
-            destination.name = name;
+            var prepared = CreateMesh(destination.name);
+            try { EditorUtility.CopySerialized(prepared, destination); }
+            finally { UnityEngine.Object.DestroyImmediate(prepared); }
         }
 
         public void ApplyVertexChannels(Mesh destination, IReadOnlyList<int> sourceVertexIndices)
@@ -241,25 +269,48 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
             if (destination == null) throw new ArgumentNullException(nameof(destination));
             if (sourceVertexIndices == null) throw new ArgumentNullException(nameof(sourceVertexIndices));
 
-            var vertices = Select(Positions, sourceVertexIndices);
-            destination.SetVertices(vertices);
-            if (Normals.Length == Positions.Length) destination.SetNormals(Select(Normals, sourceVertexIndices));
-            if (Tangents.Length == Positions.Length) destination.SetTangents(Select(Tangents, sourceVertexIndices));
-            if (ColorsAre32Bit && Colors32.Length == Positions.Length)
-                destination.SetColors(Select(Colors32, sourceVertexIndices));
-            else if (Colors.Length == Positions.Length)
-                destination.SetColors(Select(Colors, sourceVertexIndices));
+            var prepared = CreateVertexSubset(destination.name, sourceVertexIndices, destination.indexFormat);
+            try { EditorUtility.CopySerialized(prepared, destination); }
+            finally { UnityEngine.Object.DestroyImmediate(prepared); }
+        }
 
-            for (int channel = 0; channel < Uvs.Length; channel++)
+        // Build off to the side: unsupported skin/layout combinations fail before
+        // changing an asset or the caller's working mesh. No typed setter widens UV1,
+        // Float16 or normalized attributes, or silently repacks vertex streams.
+        internal Mesh CreateVertexSubset(string name, IReadOnlyList<int> sourceVertexIndices, IndexFormat format)
+        {
+            if (sourceVertexIndices == null) throw new ArgumentNullException(nameof(sourceVertexIndices));
+            for (int i = 0; i < sourceVertexIndices.Count; i++) CheckedSourceIndex(sourceVertexIndices[i]);
+            var attributes = new VertexAttributeDescriptor[Manifest.VertexAttributes.Count];
+            for (int i = 0; i < attributes.Length; i++) attributes[i] = Manifest.VertexAttributes[i];
+            var result = new Mesh { name = name, indexFormat = format };
+            try
             {
-                var uv = Uvs[channel];
-                if (uv.Dimension <= 0 || uv.Values.Length != Positions.Length) continue;
-                ApplyUv(destination, channel, uv.Dimension, uv.Values, sourceVertexIndices);
+                if (attributes.Length > 0) result.SetVertexBufferParams(sourceVertexIndices.Count, attributes);
+                result.bindposes = BindPoses != null ? (Matrix4x4[])BindPoses.Clone() : Array.Empty<Matrix4x4>();
+                ApplyBoneWeights(result, sourceVertexIndices);
+                var restored = result.GetVertexAttributes();
+                if (restored.Length != attributes.Length)
+                    throw new InvalidOperationException("MESH_CHANNEL_LAYOUT_UNSUPPORTED: restoring skin weights changed the vertex layout.");
+                for (int i = 0; i < attributes.Length; i++)
+                    if (!restored[i].Equals(attributes[i]))
+                        throw new InvalidOperationException("MESH_CHANNEL_LAYOUT_UNSUPPORTED: restoring skin weights changed an attribute format or stream.");
+                for (int stream = 0; stream < _vertexStreams.Length; stream++)
+                {
+                    int stride = _vertexStrides[stream];
+                    if (result.GetVertexBufferStride(stream) != stride)
+                        throw new InvalidOperationException("MESH_CHANNEL_LAYOUT_UNSUPPORTED: restored stream stride differs.");
+                    var filtered = new byte[checked(sourceVertexIndices.Count * stride)];
+                    for (int vertex = 0; vertex < sourceVertexIndices.Count; vertex++)
+                        Buffer.BlockCopy(_vertexStreams[stream], checked(sourceVertexIndices[vertex] * stride), filtered, checked(vertex * stride), stride);
+                    if (filtered.Length > 0)
+                        result.SetVertexBufferData(filtered, 0, 0, filtered.Length, stream, MeshUpdateFlags.DontRecalculateBounds);
+                }
+                ApplyBlendShapes(result, sourceVertexIndices);
+                result.bounds = Bounds;
+                return result;
             }
-
-            destination.bindposes = BindPoses != null ? (Matrix4x4[])BindPoses.Clone() : Array.Empty<Matrix4x4>();
-            ApplyBoneWeights(destination, sourceVertexIndices);
-            ApplyBlendShapes(destination, sourceVertexIndices);
+            catch { UnityEngine.Object.DestroyImmediate(result); throw; }
         }
 
         private void ApplyBoneWeights(Mesh destination, IReadOnlyList<int> sourceVertexIndices)
@@ -296,43 +347,6 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
                         Select(frame.DeltaNormals, sourceVertexIndices).ToArray(),
                         Select(frame.DeltaTangents, sourceVertexIndices).ToArray());
                 }
-            }
-        }
-
-        private static void ApplyUv(
-            Mesh destination,
-            int channel,
-            int dimension,
-            Vector4[] values,
-            IReadOnlyList<int> sourceVertexIndices)
-        {
-            switch (dimension)
-            {
-                case 2:
-                {
-                    var selected = new List<Vector2>(sourceVertexIndices.Count);
-                    for (int i = 0; i < sourceVertexIndices.Count; i++)
-                    {
-                        var value = values[sourceVertexIndices[i]];
-                        selected.Add(new Vector2(value.x, value.y));
-                    }
-                    destination.SetUVs(channel, selected);
-                    break;
-                }
-                case 3:
-                {
-                    var selected = new List<Vector3>(sourceVertexIndices.Count);
-                    for (int i = 0; i < sourceVertexIndices.Count; i++)
-                    {
-                        var value = values[sourceVertexIndices[i]];
-                        selected.Add(new Vector3(value.x, value.y, value.z));
-                    }
-                    destination.SetUVs(channel, selected);
-                    break;
-                }
-                default:
-                    destination.SetUVs(channel, Select(values, sourceVertexIndices));
-                    break;
             }
         }
 

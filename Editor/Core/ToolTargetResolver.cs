@@ -24,12 +24,19 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             error = null;
             if (target == null) { error = "TARGET_REQUIRED: target or instanceId is required"; return null; }
 
-            var hasStableIdentity = !string.IsNullOrEmpty(target.GlobalObjectId)
-                || !string.IsNullOrEmpty(target.AssetGuid)
-                || !string.IsNullOrEmpty(target.AssetPath)
-                || !string.IsNullOrEmpty(target.HierarchyPath)
-                || !string.IsNullOrEmpty(target.SceneGuid)
-                || !string.IsNullOrEmpty(target.ScenePath);
+            var hasCaptureDomain = !string.IsNullOrEmpty(target.CaptureDomainId);
+            var sameCaptureDomain = hasCaptureDomain && target.CaptureDomainId == ToolTargetRef.CurrentCaptureDomainId;
+            UnityEngine.Object capturedInstance = null;
+            if (sameCaptureDomain)
+            {
+                capturedInstance = target.InstanceId != 0 ? EditorUtility.InstanceIDToObject(target.InstanceId) : null;
+                if (capturedInstance == null)
+                {
+                    error = "TARGET_IDENTITY_STALE: the captured instance was destroyed or unloaded; refresh the target";
+                    return null;
+                }
+            }
+
             var prefabStage = target.IsPrefabStage ? PrefabStageUtility.GetCurrentPrefabStage() : null;
             if (target.IsPrefabStage)
             {
@@ -53,22 +60,87 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             }
 
             UnityEngine.Object resolved = null;
-            if (!string.IsNullOrEmpty(target.GlobalObjectId) && GlobalObjectId.TryParse(target.GlobalObjectId, out var globalId))
-                resolved = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(globalId);
-            if (resolved == null && !target.IsPrefabStage && !string.IsNullOrEmpty(target.AssetGuid)) resolved = ResolveAsset(target.AssetGuid, target.LocalFileId);
-            if (resolved == null && !target.IsPrefabStage && !string.IsNullOrEmpty(target.AssetPath)) resolved = ResolveAssetPath(target.AssetPath, target.LocalFileId);
+            var hasGlobalIdentity = false;
+            if (!string.IsNullOrEmpty(target.GlobalObjectId))
+            {
+                if (!GlobalObjectId.TryParse(target.GlobalObjectId, out var globalId))
+                {
+                    error = "TARGET_IDENTITY_INVALID: globalObjectId is malformed";
+                    return null;
+                }
+                // Unsaved scenes have no durable global identity. Captured references
+                // to those objects must retain their live instance, not rebind by name.
+                hasGlobalIdentity = globalId.identifierType != 0
+                    && globalId.assetGUID.ToString() != "00000000000000000000000000000000";
+                if (hasGlobalIdentity) resolved = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(globalId);
+            }
+            if (target.IsPrefabStage && target.InstanceId != 0)
+            {
+                // Global IDs in a Prefab Stage can resolve the source asset. The
+                // captured live instance is acceptable only inside the same stage
+                // and with the same durable identity; never fall back by name.
+                var candidate = EditorUtility.InstanceIDToObject(target.InstanceId);
+                var owner = candidate as GameObject ?? (candidate as Component)?.gameObject;
+                if (owner != null && owner.scene == prefabStage.scene
+                    && (!hasGlobalIdentity || GlobalObjectId.GetGlobalObjectIdSlow(candidate).ToString() == target.GlobalObjectId))
+                    resolved = candidate;
+            }
+            var hasAssetIdentity = !target.IsPrefabStage && !string.IsNullOrEmpty(target.AssetGuid);
+            if (hasCaptureDomain && !sameCaptureDomain && !hasGlobalIdentity && !hasAssetIdentity)
+            {
+                error = "TARGET_SESSION_EXPIRED: a transient target cannot survive a domain reload; refresh the target";
+                return null;
+            }
+            if (!hasGlobalIdentity && hasAssetIdentity) resolved = ResolveAsset(target.AssetGuid, target.LocalFileId);
+            if ((hasGlobalIdentity || hasAssetIdentity) && resolved == null)
+            {
+                error = "TARGET_IDENTITY_STALE: the captured identity no longer resolves; refresh the target";
+                return null;
+            }
+            if (!hasGlobalIdentity && !hasAssetIdentity)
+            {
+                if (target.InstanceId != 0)
+                {
+                    resolved = EditorUtility.InstanceIDToObject(target.InstanceId);
+                    if (resolved == null)
+                    {
+                        error = "TARGET_IDENTITY_STALE: the captured live instance no longer exists; refresh the target";
+                        return null;
+                    }
+                }
+                else if (!target.IsPrefabStage && !string.IsNullOrEmpty(target.AssetPath))
+                    resolved = ResolveAssetPath(target.AssetPath, target.LocalFileId);
+                else if (!string.IsNullOrEmpty(target.HierarchyPath))
+                    resolved = ResolveHierarchy(target, out error);
+            }
             if (resolved != null && target.IsPrefabStage)
             {
                 var resolvedGameObject = resolved as GameObject ?? (resolved as Component)?.gameObject;
                 if (resolvedGameObject == null || resolvedGameObject.scene != prefabStage.scene) resolved = null;
             }
-            if (resolved == null && !string.IsNullOrEmpty(target.HierarchyPath)) resolved = ResolveHierarchy(target, out error);
-            if (resolved == null && !hasStableIdentity && target.InstanceId != 0)
-                resolved = EditorUtility.InstanceIDToObject(target.InstanceId);
             if (resolved == null)
             {
                 if (error == null) error = "TARGET_NOT_FOUND: the target no longer resolves; refresh and use its globalObjectId";
                 return null;
+            }
+            if (sameCaptureDomain && resolved != capturedInstance)
+            {
+                error = "TARGET_IDENTITY_STALE: the durable ID now resolves a different live instance; refresh the target";
+                return null;
+            }
+
+            var resolvedOwner = resolved as GameObject ?? (resolved as Component)?.gameObject;
+            if (resolvedOwner != null && !target.IsPrefabStage && !EditorUtility.IsPersistent(resolvedOwner))
+            {
+                var scene = resolvedOwner.scene;
+                if ((!string.IsNullOrEmpty(target.SceneGuid) && AssetDatabase.AssetPathToGUID(scene.path) != target.SceneGuid)
+                    || (string.IsNullOrEmpty(target.SceneGuid) && !string.IsNullOrEmpty(target.ScenePath) && scene.path != target.ScenePath)
+                    || (!hasGlobalIdentity && string.IsNullOrEmpty(target.SceneGuid) && string.IsNullOrEmpty(target.ScenePath)
+                        && target.SceneHandle != 0 && scene.handle != target.SceneHandle))
+                {
+                    error = "TARGET_SCENE_MISMATCH: the captured target is no longer in its expected scene";
+                    return null;
+                }
             }
 
             if (!string.IsNullOrEmpty(target.ComponentType))
@@ -77,6 +149,15 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                 if (gameObject == null) { error = "TARGET_TYPE_MISMATCH: component target requires a GameObject"; return null; }
                 var type = ResolveType(target.ComponentType);
                 if (type == null || !typeof(Component).IsAssignableFrom(type)) { error = $"COMPONENT_TYPE_NOT_FOUND: {target.ComponentType}"; return null; }
+                if (resolved is Component exactComponent)
+                {
+                    if (!type.IsInstanceOfType(exactComponent))
+                    {
+                        error = "TARGET_TYPE_MISMATCH: the resolved component does not match componentType";
+                        return null;
+                    }
+                    return exactComponent;
+                }
                 var components = gameObject.GetComponents(type);
                 var ordinal = target.ComponentOrdinal < 0 ? 0 : target.ComponentOrdinal;
                 if (ordinal >= components.Length) { error = $"COMPONENT_NOT_FOUND: ordinal {ordinal} exceeds {components.Length}"; return null; }
@@ -96,10 +177,18 @@ namespace Maicon.SceneAnalyzer.Editor.Core
 
         public static Component ResolveComponent(JObject arguments, string componentType, int ordinal, out string error)
         {
-            var gameObject = ResolveGameObject(arguments, out error);
-            if (gameObject == null) return null;
+            var target = Resolve(ReadTarget(arguments), out error);
+            if (target == null) return null;
             var type = ResolveType(componentType);
             if (type == null || !typeof(Component).IsAssignableFrom(type)) { error = $"COMPONENT_TYPE_NOT_FOUND: {componentType}"; return null; }
+            if (target is Component exactComponent)
+            {
+                if (type.IsInstanceOfType(exactComponent)) return exactComponent;
+                error = "TARGET_TYPE_MISMATCH: the resolved component does not match componentType";
+                return null;
+            }
+            var gameObject = target as GameObject;
+            if (gameObject == null) { error = "TARGET_TYPE_MISMATCH: expected GameObject or Component"; return null; }
             var components = gameObject.GetComponents(type);
             if (ordinal < 0) ordinal = 0;
             if (ordinal >= components.Length) { error = $"COMPONENT_NOT_FOUND: {componentType} ordinal {ordinal}"; return null; }

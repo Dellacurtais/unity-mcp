@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hmac
 import json
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
@@ -18,7 +20,7 @@ from store import BrokerStore
 
 def create_app(config: BrokerConfig | None = None) -> FastAPI:
     settings = config or BrokerConfig.from_env()
-    store = BrokerStore(settings.database_path)
+    store = BrokerStore(settings.database_path, response_inline_bytes=settings.response_inline_bytes)
     store.reconcile_startup()
     registry = RegistryCache()
     for snapshot in store.load_registry_snapshots():
@@ -35,10 +37,33 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
     )
     broker = McpBroker(settings, store, registry, router)
 
+    async def maintain_history() -> None:
+        while True:
+            await asyncio.sleep(settings.history_maintenance_seconds)
+            maintenance = asyncio.create_task(asyncio.to_thread(
+                store.prune_history,
+                retention_days=settings.history_retention_days,
+                max_response_bytes=settings.history_max_response_bytes,
+            ))
+            try:
+                await asyncio.shield(maintenance)
+            except asyncio.CancelledError:
+                # SQLite must remain open until the worker thread has released it.
+                await asyncio.gather(maintenance, return_exceptions=True)
+                raise
+            except Exception:
+                logging.getLogger(__name__).exception("Broker history maintenance failed")
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        yield
-        store.close()
+        maintenance_task = asyncio.create_task(maintain_history())
+        try:
+            yield
+        finally:
+            maintenance_task.cancel()
+            await asyncio.gather(maintenance_task, return_exceptions=True)
+            await broker.close()
+            store.close()
 
     app = FastAPI(title="unity-mcp-broker", version=BROKER_VERSION, lifespan=lifespan)
     app.state.config = settings
@@ -69,9 +94,7 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
     async def health() -> dict[str, object]:
         active = router.active_project_key
         connection = router.connections.get(active or "")
-        route_ready = connection is not None and connection.state in {
-            "ready", "compiling", "compile_failed",
-        }
+        liveness = router.connection_status(active)
         registry_snapshot = registry.get(active)
         return {
             "service": "unity-mcp-broker",
@@ -81,9 +104,7 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
             "activeProjectName": connection.identity.project_name if connection else None,
             "activeProjectPath": connection.identity.project_path if connection else None,
             "bridgeConnected": connection is not None,
-            "bridgeState": connection.state if connection else "offline",
-            "routeReady": route_ready,
-            "routeError": None if route_ready else "no active Unity bridge is ready",
+            **liveness,
             "connectedProjects": len(router.connections),
             "registryCount": len(registry_snapshot.tools) if registry_snapshot else 0,
             "focusAssistEnabled": settings.focus_assist_enabled,
@@ -96,11 +117,14 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
         request: Request,
         authorization: str | None = Header(default=None),
         mcp_protocol_version: str | None = Header(default=None, alias="MCP-Protocol-Version"),
+        mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id"),
     ) -> Response:
         if not allowed_origin(request.headers.get("origin")):
             raise HTTPException(status_code=403, detail="Origin is not an allowed loopback origin")
         if not authorized(authorization):
             raise HTTPException(status_code=401, detail="Bearer token is required")
+        if mcp_session_id is not None and not broker.has_session(mcp_session_id):
+            raise HTTPException(status_code=404, detail="MCP session expired; initialize a new session")
         content_type = request.headers.get("content-type", "")
         if not content_type.lower().startswith("application/json"):
             raise HTTPException(status_code=415, detail="Content-Type must be application/json")
@@ -131,14 +155,38 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
         except (json.JSONDecodeError, UnicodeDecodeError):
             status, result = 200, {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}}
         else:
-            status, result = await broker.process(payload, mcp_protocol_version)
+            if (mcp_session_id is None and isinstance(payload, dict)
+                    and payload.get("jsonrpc") == "2.0" and payload.get("method") == "initialize"
+                    and "id" in payload):
+                try:
+                    mcp_session_id = broker.create_session()
+                except ValueError as exception:
+                    raise HTTPException(status_code=503, detail=str(exception))
+            status, result = await broker.process(payload, mcp_protocol_version, mcp_session_id)
+        session_headers = {"Mcp-Session-Id": mcp_session_id} if mcp_session_id else {}
         if result is None:
-            return Response(status_code=status)
+            return Response(status_code=status, headers=session_headers)
         return Response(
             content=json.dumps(result, separators=(",", ":")),
             status_code=status,
             media_type="application/json",
+            headers=session_headers,
         )
+
+    @app.delete("/mcp/")
+    async def delete_session(
+        request: Request,
+        authorization: str | None = Header(default=None),
+        mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id"),
+    ) -> Response:
+        if not allowed_origin(request.headers.get("origin")):
+            raise HTTPException(status_code=403, detail="Origin is not an allowed loopback origin")
+        if not authorized(authorization):
+            raise HTTPException(status_code=401, detail="Bearer token is required")
+        if not mcp_session_id or not broker.has_session(mcp_session_id):
+            raise HTTPException(status_code=404, detail="MCP session was not found")
+        broker.drop_session(mcp_session_id)
+        return Response(status_code=204)
 
     @app.websocket("/bridge")
     async def bridge_endpoint(websocket: WebSocket) -> None:

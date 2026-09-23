@@ -2,7 +2,9 @@
 
 Production-grade Unity Editor automation exposed to AI agents over the Model Context Protocol (MCP). The package targets Unity **6000.1–6000.3**, keeps legacy tool names and `instanceId` inputs compatible, and adds stable Unity identities, structured results, capability gates, optional confirmation for high-risk operations, explicit persistence, jobs, health reporting, and package-gated ecosystem modules.
 
-Legacy performance/validation tools and automatic scene-change hooks have been removed. Scene snapshots are now refreshed only when an explicit MCP tool needs them.
+Legacy performance/validation tools have been removed. Lightweight hierarchy, Undo and Play events invalidate scene snapshots; snapshots are refreshed only when an explicit MCP read needs them.
+
+Agent coordination and Unity 6.3 validation are documented in [Agent environment](Documentation~/agent-environment-implementation.md), [bounded read contracts](Documentation~/agent-read-contracts.md), and the [Unity 6.3 CI harness](Tools~/Unity63Ci/README.md).
 
 ## What you get
 
@@ -10,7 +12,7 @@ Two Unity windows work together:
 
 - **Window → Unity MCP Transport** selects Embedded or Broker mode, controls the active transport, shows bridge identity/state, and exposes safety switches.
 - **Window → Coder Chat (Unity MCP)** talks to the configured coder runtime over HTTP/SSE. The coder can call the authenticated Unity MCP endpoint to inspect and author the project.
-- **Window → Asset Modeler (Unity MCP)** previews semantic body regions and creates validated modular mesh parts without modifying the imported source mesh.
+- **Window → Asset Modeler (Unity MCP)** opens task-focused cleanup, size normalization and save-copy flows. Advanced modeling and semantic body splitting remain available. See [the cleanup/size workflow](Documentation~/asset-modeler-preparation.md).
 - **Window → Asset Modeler → Rig & Animation Studio** separates rig diagnostics, skin weights, skeleton/bind, clips/poses, retarget, IK/bake, and auto-rig into seven focused pages with Scene View tooling.
 - **Window → AI 3D Studio (Unity MCP)** creates Tripo or Meshy jobs through the local gateway, reviews downloaded FBX candidates in quarantine, and provides a non-mutating Scene View preview before explicit acceptance.
 
@@ -132,14 +134,14 @@ The typed `ai3d_*` MCP surface plans locally without billing and requires the re
 - The listener binds only to `127.0.0.1`.
 - Every MCP request requires a bearer token.
 - `Origin`, `Accept`, `Content-Type`, protocol version, JSON-RPC envelope, body size, concurrency, deadlines, and notifications are validated centrally.
-- Reads and mutations use a request coordinator; mutations are serialized.
+- Reads and mutations use a request coordinator; mutations, refresh, builds, tests, reimports and package jobs share an Editor-wide mutation gate. Cancellation control remains available while ordinary requests wait.
 - `notifications/cancelled`, deadlines, jobs, bridge scripts, sidecar requests, and pending main-thread work support cooperative cancellation.
 - Capability switches separately gate writes, reflection, destructive operations, packages, builds, project settings, Play control, and runtime commands.
 - High-risk confirmation is disabled by default so authorized agents execute tools directly. Enable **Confirm high-risk tools** under **Window → Unity MCP Transport → Safety** to require a second call for destructive, reflection, Package Manager, project-settings, and build operations.
 - Confirmation tokens are single-use and bound to exact normalized arguments and the current project.
 - Reflection has explicit allow/deny policy for filesystem, process, modal menu, and other unsafe surfaces.
 - Mutations use Undo-aware APIs, record Prefab instance overrides, and dirty the actual affected scene or asset.
-- Stable targets are preferred; `instanceId` remains a session-local compatibility fallback.
+- Stable targets are preferred; stale explicit identities fail without rebinding to a replacement at the same path. `instanceId` remains a session-local compatibility fallback. Authorization and target identity are checked again after waiting for mutation access.
 - No normal mutation implicitly calls `SaveAssets` or saves a scene. Use `save_scene` / `save_all_scenes` explicitly.
 
 ## Jobs and long-running work
@@ -147,6 +149,8 @@ The typed `ai3d_*` MCP surface plans locally without billing and requires the re
 Builds, tests, reimports, Package Manager operations, captures, and Addressables content builds expose job records with status, progress, timestamps, cancellation support when the underlying Unity API permits it, result, and structured error.
 
 A job can be `Queued`, `Running`, `CancelRequested`, `Completed`, `Failed`, or `Cancelled`. Some Unity APIs are synchronous once started; their preview/result explicitly states when cancellation is not possible.
+
+Receipts are written atomically to the project's `Library/UnityMcp/jobs.json`. Interrupted jobs restore as failed with `OUTCOME_UNKNOWN`, requiring inspection of their effects; they are not silently replayed. A completed operation retains its known result even when cancellation arrives late. This journal is recovery evidence, not resumable execution of Unity's native APIs.
 
 ## Install
 

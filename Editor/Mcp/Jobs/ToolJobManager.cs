@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Linq;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
@@ -81,12 +82,23 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
             new ConcurrentDictionary<string, ToolJobRecord>(StringComparer.Ordinal);
         private static readonly object CreateSync = new object();
         private static int _initialized;
+        private static readonly object PersistSync = new object();
+        private static string _journalPath;
+        public static string PersistenceError { get; private set; }
+
+        public static bool IsControlTool(string name) => name == "cancel_tool_job"
+            || name == "cancel_build_job" || name == "cancel_reimport_job" || name == "cancel_test_job";
+
+        private static bool UsesMutationResource(string kind) => kind == "build" || kind == "test"
+            || kind == "asset_reimport" || kind == "addressables_build"
+            || (kind != null && kind.StartsWith("package_", StringComparison.Ordinal));
 
         internal static void InitializeOnMainThread()
         {
             if (Interlocked.CompareExchange(ref _initialized, 1, 0) != 0) return;
             try
             {
+                _journalPath = Path.Combine(Path.GetDirectoryName(UnityEngine.Application.dataPath), "Library", "UnityMcp", "jobs.json");
                 RestorePersistedJobs();
                 AssemblyReloadEvents.beforeAssemblyReload -= PersistTrackedJobs;
                 AssemblyReloadEvents.beforeAssemblyReload += PersistTrackedJobs;
@@ -225,6 +237,37 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
             ToolJobRecord record,
             Func<ToolJobRecord, CancellationToken, Task<JToken>> operation)
         {
+            bool mutationHeld = false;
+            try
+            {
+                if (UsesMutationResource(record.Kind))
+                {
+                    lock (record.Sync) record.Message = "waiting for exclusive Editor mutation access";
+                    await EditorMutationGate.Semaphore.WaitAsync(record.Cancellation.Token);
+                    mutationHeld = true;
+                }
+                await ExecuteAsync(record, operation);
+            }
+            catch (OperationCanceledException)
+            {
+                lock (record.Sync)
+                {
+                    record.Status = ToolJobStatus.Cancelled;
+                    record.Message = "cancelled before execution";
+                    record.CompletedUtc = DateTimeOffset.UtcNow;
+                }
+            }
+            finally
+            {
+                if (mutationHeld) EditorMutationGate.Semaphore.Release();
+                PersistTrackedJobs();
+            }
+        }
+
+        private static async Task ExecuteAsync(
+            ToolJobRecord record,
+            Func<ToolJobRecord, CancellationToken, Task<JToken>> operation)
+        {
             var cancelledBeforeStart = false;
             lock (record.Sync)
             {
@@ -255,10 +298,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                 {
                     record.Result = result;
                     record.Progress = 1d;
-                    record.Status = record.Cancellation.IsCancellationRequested
-                        ? ToolJobStatus.Cancelled
-                        : ToolJobStatus.Completed;
-                    record.Message = record.Status == ToolJobStatus.Completed ? "completed" : "cancelled";
+                    // A returned result is known. A late cancellation cannot undo completed effects.
+                    record.Status = ToolJobStatus.Completed;
+                    record.Message = "completed";
                     record.CompletedUtc = DateTimeOffset.UtcNow;
                 }
             }
@@ -299,35 +341,51 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
             }
         }
 
-        private static bool ShouldPersist(ToolJobRecord record) => record != null
-            && (string.Equals(record.Kind, "build", StringComparison.Ordinal)
-                || string.Equals(record.Kind, "test", StringComparison.Ordinal)
-                || record.Kind.StartsWith("package_", StringComparison.Ordinal));
+        private static bool ShouldPersist(ToolJobRecord record) => record != null;
 
         private static void PersistTrackedJobs()
         {
+            if (string.IsNullOrEmpty(_journalPath)) return;
+            lock (PersistSync)
+            {
             try
             {
                 var records = new System.Collections.Generic.List<ToolJobRecord>();
                 foreach (var record in Jobs.Values) if (ShouldPersist(record)) records.Add(record);
-                records.Sort((left, right) => right.CreatedUtc.CompareTo(left.CreatedUtc));
+                records.Sort((left, right) =>
+                {
+                    var terminal = IsTerminal(left.Status).CompareTo(IsTerminal(right.Status));
+                    return terminal != 0 ? terminal : right.CreatedUtc.CompareTo(left.CreatedUtc);
+                });
                 var json = new JArray();
                 foreach (var record in records)
                 {
-                    if (json.Count >= MaxPersistedJobs) break;
+                    if (json.Count >= MaxPersistedJobs && IsTerminal(record.Status)) break;
                     json.Add(record.ToJson());
                 }
-                SessionState.SetString(PersistedJobsKey, json.ToString(Newtonsoft.Json.Formatting.None));
+                Directory.CreateDirectory(Path.GetDirectoryName(_journalPath));
+                var temporary = _journalPath + ".tmp";
+                var bytes = System.Text.Encoding.UTF8.GetBytes(json.ToString(Newtonsoft.Json.Formatting.None));
+                using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    stream.Write(bytes, 0, bytes.Length);
+                    stream.Flush(true);
+                }
+                if (File.Exists(_journalPath)) File.Replace(temporary, _journalPath, null);
+                else File.Move(temporary, _journalPath);
+                PersistenceError = null;
             }
-            catch { }
+            catch (Exception exception) { PersistenceError = exception.Message; }
+            }
         }
 
         private static void RestorePersistedJobs()
         {
-            var serialized = SessionState.GetString(PersistedJobsKey, string.Empty);
-            if (string.IsNullOrEmpty(serialized)) return;
             try
             {
+                var serialized = File.Exists(_journalPath) ? File.ReadAllText(_journalPath)
+                    : SessionState.GetString(PersistedJobsKey, string.Empty);
+                if (string.IsNullOrEmpty(serialized)) return;
                 var now = DateTimeOffset.UtcNow;
                 foreach (var item in JArray.Parse(serialized).OfType<JObject>())
                 {
@@ -342,7 +400,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                         Kind = kind,
                         Status = interrupted ? ToolJobStatus.Failed : status,
                         Progress = (double?)item["progress"] ?? 0d,
-                        Message = interrupted ? "interrupted by assembly reload" : (string)item["message"],
+                        Message = interrupted ? "interrupted; verify effects before retrying" : (string)item["message"],
                         Error = interrupted ? InterruptionError(kind) : (string)item["error"],
                         Result = item["result"]?.DeepClone(),
                         Input = item["input"] as JObject != null ? (JObject)item["input"].DeepClone() : new JObject(),
@@ -355,14 +413,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                     Jobs[id] = record;
                 }
             }
-            catch { SessionState.EraseString(PersistedJobsKey); }
+            catch (Exception exception) { PersistenceError = exception.Message; }
         }
 
         private static string InterruptionError(string kind)
         {
             if (string.Equals(kind, "test", StringComparison.Ordinal))
-                return "DOMAIN_RELOAD_INTERRUPTED: the TestRunner may continue, but this MCP callback cannot be recovered; rerun or inspect Unity Test Runner results";
-            return "DOMAIN_RELOAD_INTERRUPTED: reconcile the operation with list_packages/read_build_report";
+                return "OUTCOME_UNKNOWN: Editor domain/process restarted; inspect Test Runner results before retrying";
+            return "OUTCOME_UNKNOWN: Editor domain/process restarted; reconcile affected assets, packages or build reports before retrying";
         }
 
         private static bool IsTerminal(ToolJobStatus status) =>

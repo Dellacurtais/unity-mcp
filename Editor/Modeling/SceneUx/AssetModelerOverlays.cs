@@ -8,7 +8,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
     [Overlay(typeof(SceneView), "asset-modeler-modeling", "Asset Modeler")]
     internal sealed class AssetModelerToolsOverlay : IMGUIOverlay
     {
-        private static readonly string[] ModeLabels = { "Objeto", "Vértice", "Aresta", "Face", "Região", "Bone" };
+        private static readonly string[] ModeLabels = { "Unity", "Vértice", "Aresta", "Face", "Região", "Osso" };
         private static readonly string[] OrientationLabels = { "Global", "Local", "Normal" };
 
         public override void OnGUI()
@@ -29,12 +29,15 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             }
             EditorGUILayout.EndHorizontal();
 
-            EditorGUILayout.BeginHorizontal();
-            int orientation = GUILayout.Toolbar((int)AssetModelerModelingState.Orientation, OrientationLabels, EditorStyles.miniButton);
-            AssetModelerModelingState.Orientation = (ModelingHandleOrientation)orientation;
-            AssetModelerModelingState.Symmetry = GUILayout.Toggle(AssetModelerModelingState.Symmetry, "Simetria X", EditorStyles.miniButton);
-            AssetModelerModelingState.SnapEnabled = GUILayout.Toggle(AssetModelerModelingState.SnapEnabled, "Snap", EditorStyles.miniButton);
-            EditorGUILayout.EndHorizontal();
+            if (AssetModelerModelingState.Mode != AssetModelerEditMode.Object)
+            {
+                EditorGUILayout.BeginHorizontal();
+                int orientation = GUILayout.Toolbar((int)AssetModelerModelingState.Orientation, OrientationLabels, EditorStyles.miniButton);
+                AssetModelerModelingState.Orientation = (ModelingHandleOrientation)orientation;
+                AssetModelerModelingState.Symmetry = GUILayout.Toggle(AssetModelerModelingState.Symmetry, "Simetria X", EditorStyles.miniButton);
+                AssetModelerModelingState.SnapEnabled = GUILayout.Toggle(AssetModelerModelingState.SnapEnabled, "Incrementos", EditorStyles.miniButton);
+                EditorGUILayout.EndHorizontal();
+            }
 
             var modeler = AssetModelerSceneController.AttachedWindow;
             if (modeler == null)
@@ -44,26 +47,26 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             }
 
             EditorGUILayout.BeginHorizontal();
-            if (modeler.SceneDocument == null)
+            if (modeler.SceneSupportsPreview && modeler.SceneDocument == null)
             {
                 using (new EditorGUI.DisabledScope(modeler.SceneTarget == null))
                     if (GUILayout.Button("Criar cópia editável", EditorStyles.miniButton)) modeler.SceneCreateEditableCopy();
             }
             else if (modeler.SceneSupportsPreview)
             {
-                if (GUILayout.Button(modeler.SceneHasPreview ? "Atualizar" : "Preview", EditorStyles.miniButton)) modeler.ScenePreviewCurrent();
-                using (new EditorGUI.DisabledScope(!modeler.SceneHasPreview))
+                if (GUILayout.Button(modeler.SceneHasPreview ? "Atualizar" : "Prévia", EditorStyles.miniButton)) modeler.ScenePreviewCurrent();
+                using (new EditorGUI.DisabledScope(!modeler.SceneCanApplyPreview))
                 {
                     if (GUILayout.Button("Aplicar", EditorStyles.miniButton)) modeler.SceneApplyCurrent();
                     if (GUILayout.Button("×", EditorStyles.miniButton, GUILayout.Width(24f))) modeler.SceneCancelPreview();
                 }
             }
-            else EditorGUILayout.LabelField("A ferramenta atual executa direto na cena.", EditorStyles.miniLabel);
+            else EditorGUILayout.LabelField("Continue na janela Asset Modeler.", EditorStyles.miniLabel);
             EditorGUILayout.EndHorizontal();
         }
     }
 
-    [Overlay(typeof(SceneView), "asset-modeler-diagnostics", "Mesh Diagnostics")]
+    [Overlay(typeof(SceneView), "asset-modeler-diagnostics", "Diagnóstico da malha")]
     internal sealed class AssetModelerDiagnosticsOverlay : IMGUIOverlay
     {
         public override void OnGUI()
@@ -75,11 +78,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneUx
             AssetModelerModelingState.ShowBoundaries = GUILayout.Toggle(
                 AssetModelerModelingState.ShowBoundaries, $"Bordas abertas ({boundaries})", EditorStyles.miniButton);
             AssetModelerModelingState.ShowNonManifold = GUILayout.Toggle(
-                AssetModelerModelingState.ShowNonManifold, $"Non-manifold ({nonManifold})", EditorStyles.miniButton);
+                AssetModelerModelingState.ShowNonManifold, $"Arestas não manifold ({nonManifold})", EditorStyles.miniButton);
             AssetModelerModelingState.ShowFlippedNormals = GUILayout.Toggle(
                 AssetModelerModelingState.ShowFlippedNormals, $"Normais invertidas ({AssetModelerMeshDiagnostics.FlippedCount})", EditorStyles.miniButton);
             AssetModelerModelingState.ShowUvSeams = GUILayout.Toggle(
-                AssetModelerModelingState.ShowUvSeams, $"UV seams ({AssetModelerMeshDiagnostics.UvSeamCount})", EditorStyles.miniButton);
+                AssetModelerModelingState.ShowUvSeams, $"Costuras UV ({AssetModelerMeshDiagnostics.UvSeamCount})", EditorStyles.miniButton);
 
             if (topology == null)
                 EditorGUILayout.LabelField("Ative o contexto Asset Modeler com uma cópia editável.", EditorStyles.miniLabel);

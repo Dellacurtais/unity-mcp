@@ -80,6 +80,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             var node = new JObject
             {
                 ["instanceId"] = instanceId,
+                ["target"] = info.ToTargetRef().ToJson(),
                 ["name"] = info.Name,
                 ["sceneName"] = info.SceneName,
                 ["scenePath"] = info.ScenePath,

@@ -97,3 +97,41 @@ def test_idempotency_key_rejects_changed_arguments(tmp_path) -> None:
     else:
         raise AssertionError("expected idempotency conflict")
     store.close()
+
+
+def test_restart_reconciles_started_sends_and_unacknowledged_cancellations(tmp_path) -> None:
+    path = tmp_path / "restart.sqlite3"
+    store = BrokerStore(path)
+    for name, read_only, idempotent in (("read", True, False), ("idempotent", False, True), ("write", False, False)):
+        store.create_request(name, name, "p", "g", name, "hash", read_only, idempotent)
+        store.update_request(name, "sending_to_unity")
+    job = store.create_job("refresh_compile", "p")
+    store.update_job(job["job_id"], "cancel_requested")
+    store.close()
+    store = BrokerStore(path)
+    store.reconcile_startup()
+    assert store.get_request("read")["state"] == "waiting_for_reconnect"
+    assert store.get_request("idempotent")["state"] == "waiting_for_reconnect"
+    assert store.get_request("write")["state"] == "outcome_unknown"
+    assert store.get_job(job["job_id"])["state"] == "waiting_for_reconnect"
+    store.close()
+
+
+def test_schema_two_migrates_without_losing_receipts_and_old_reader_rejects_vault_schema(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    store = BrokerStore(path)
+    store.create_request("legacy", "key", "p", "g", "write", "hash", False, False)
+    response = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    store.update_request("legacy", "completed", response=response)
+    store._connection.execute("UPDATE metadata SET value='2' WHERE key='schema_version'")
+    store._connection.commit()
+    store.close()
+    store = BrokerStore(path)
+    assert store.schema_version() == CURRENT_SCHEMA_VERSION == 3
+    assert store.get_request("legacy")["response"] == response
+    store.close()
+    monkeypatch.setattr("store.CURRENT_SCHEMA_VERSION", 2)
+    with pytest.raises(RuntimeError, match="newer than supported"):
+        BrokerStore(path)
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[0] == "3"

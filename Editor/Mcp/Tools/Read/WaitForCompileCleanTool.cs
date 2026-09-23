@@ -65,6 +65,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var diagnostics = new List<JObject>();
             var compilationStarted = false;
+            var refreshReturned = false;
+            var refreshIdle = new AssetRefreshIdleTracker();
             var diagnosticsTruncated = false;
             const int maxDiagnostics = 1000;
             double startTime = 0d;
@@ -90,6 +92,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                 }
             };
             Action<object> onFinished = _ => completion.TrySetResult(true);
+            EditorApplication.CallbackFunction onUpdate = () =>
+            {
+                if (!refreshReturned || compilationStarted || completion.Task.IsCompleted) return;
+                if (refreshIdle.Observe(EditorApplication.timeSinceStartup,
+                    EditorApplication.isCompiling, EditorApplication.isUpdating,
+                    AssetDatabase.GlobalArtifactDependencyVersion))
+                    completion.TrySetResult(false);
+            };
 
             try
             {
@@ -108,13 +118,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                     CompilationPipeline.compilationStarted += onStarted;
                     CompilationPipeline.assemblyCompilationFinished += onAssemblyFinished;
                     CompilationPipeline.compilationFinished += onFinished;
+                    EditorApplication.update += onUpdate;
                     startTime = EditorApplication.timeSinceStartup;
                     AssetDatabase.Refresh();
-                    EditorApplication.delayCall += () =>
-                    {
-                        if (!compilationStarted && !EditorApplication.isCompiling)
-                            completion.TrySetResult(false);
-                    };
+                    refreshReturned = true;
+                    refreshIdle.Reset();
                 }, token);
 
                 using (token.Register(() => completion.TrySetCanceled(token)))
@@ -164,6 +172,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                         CompilationPipeline.compilationStarted -= onStarted;
                         CompilationPipeline.assemblyCompilationFinished -= onAssemblyFinished;
                         CompilationPipeline.compilationFinished -= onFinished;
+                        EditorApplication.update -= onUpdate;
                     });
                 }
                 catch { }

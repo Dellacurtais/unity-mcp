@@ -3,18 +3,21 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
+import time
 from typing import Any
 from uuid import uuid4
 
 from broker_version import BROKER_VERSION
 from config import BrokerConfig
-from registry import BROKER_TOOLS, RegistryCache
+from registry import RegistryCache
 from router import BridgeRouter, BridgeUnavailable
 from store import BrokerStore
 
 SUPPORTED_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 TERMINAL_REQUEST_STATES = {"completed", "cancelled", "failed", "outcome_unknown"}
 UNITY_ACCEPTED_STATES = {"accepted_by_unity", "running_in_unity"}
+UNCERTAIN_REQUEST_STATES = UNITY_ACCEPTED_STATES | {"sending_to_unity"}
 TERMINAL_JOB_STATES = {"completed", "failed", "cancelled"}
 
 
@@ -47,75 +50,169 @@ def tool_error(request_id: Any, code: str, message: str, data: Any = None) -> di
 
 
 class McpBroker:
+    MAX_SESSIONS = 1024
+    SESSION_TTL_SECONDS = 24 * 60 * 60
+    MAX_INFLIGHT_REQUESTS = 128
+    MAX_REQUESTS_PER_CLIENT = 32
+
     def __init__(self, config: BrokerConfig, store: BrokerStore, registry: RegistryCache, router: BridgeRouter) -> None:
         self.config = config
         self.store = store
         self.registry = registry
         self.router = router
+        self.sessions: dict[str, str | None] = {}
+        self._session_access: dict[str, float] = {}
+        self._inflight: dict[str, asyncio.Task[dict[str, Any]]] = {}
+        self._operation_jobs: dict[str, str] = {}
+        self._client_requests: dict[tuple[str, str], tuple[str, str]] = {}
+        self._notifications: set[asyncio.Task[Any]] = set()
 
-    async def process(self, payload: Any, protocol_header: str | None = None) -> tuple[int, Any | None]:
+    def create_session(self) -> str:
+        now = time.monotonic()
+        active_sessions = {key[0] for key in self._client_requests}
+        for session_id, last_access in list(self._session_access.items()):
+            if now - last_access > self.SESSION_TTL_SECONDS and session_id not in active_sessions:
+                self.drop_session(session_id)
+        if len(self.sessions) >= self.MAX_SESSIONS:
+            raise ValueError("MCP session capacity reached; close an unused session before initializing")
+        session_id = uuid4().hex
+        self.sessions[session_id] = self.router.active_project_key
+        self._session_access[session_id] = now
+        return session_id
+
+    def has_session(self, session_id: str) -> bool:
+        last_access = self._session_access.get(session_id)
+        if last_access is None:
+            return False
+        if time.monotonic() - last_access > self.SESSION_TTL_SECONDS and not any(
+            key[0] == session_id for key in self._client_requests
+        ):
+            self.drop_session(session_id)
+            return False
+        self._session_access[session_id] = time.monotonic()
+        return True
+
+    def drop_session(self, session_id: str) -> None:
+        self.sessions.pop(session_id, None)
+        self._session_access.pop(session_id, None)
+
+    def _project_key(self, session_id: str | None, meta: dict[str, Any] | None = None) -> str | None:
+        explicit = (meta or {}).get("projectKey")
+        if isinstance(explicit, str) and explicit:
+            return explicit
+        if session_id is not None:
+            if session_id not in self.sessions:
+                return None
+            project = self.sessions.get(session_id)
+            if project is None:
+                project = self.router.active_project_key
+                self.sessions[session_id] = project
+            return project
+        return self.router.active_project_key
+
+    @staticmethod
+    def _client_key(session_id: str | None, request_id: Any) -> tuple[str, str]:
+        return session_id or "legacy", json.dumps(request_id, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _client_response(response: dict[str, Any], request_id: Any) -> dict[str, Any]:
+        result = dict(response)
+        if request_id is None:
+            result.pop("id", None)
+        else:
+            result["id"] = request_id
+        return result
+
+    async def close(self) -> None:
+        tasks = [*self._inflight.values(), *self._notifications]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def process(self, payload: Any, protocol_header: str | None = None, session_id: str | None = None) -> tuple[int, Any | None]:
         if isinstance(payload, list):
             if not payload:
                 return 200, error_response(None, -32600, "Invalid Request: empty batch")
             results = []
             for item in payload:
-                result = await self._process_one(item, protocol_header)
+                result = await self._process_one(item, protocol_header, session_id)
                 if result is not None:
                     results.append(result)
             return (200, results) if results else (202, None)
-        result = await self._process_one(payload, protocol_header)
+        result = await self._process_one(payload, protocol_header, session_id)
         return (200, result) if result is not None else (202, None)
 
-    async def _process_one(self, request: Any, protocol_header: str | None) -> dict[str, Any] | None:
+    async def _process_one(self, request: Any, protocol_header: str | None, session_id: str | None = None) -> dict[str, Any] | None:
         if not isinstance(request, dict) or request.get("jsonrpc") != "2.0":
             return error_response(None, -32600, "Invalid Request")
         request_id = request.get("id")
         notification = "id" not in request
         method = request.get("method")
         params = request.get("params") if isinstance(request.get("params"), dict) else {}
-        if not method:
+        if not isinstance(method, str) or not method:
             return None if notification else error_response(request_id, -32600, "Invalid Request: method is required")
 
         if method == "initialize":
             requested = params.get("protocolVersion")
-            selected = requested if requested in SUPPORTED_PROTOCOLS else "2025-03-26"
+            selected = requested if isinstance(requested, str) and requested in SUPPORTED_PROTOCOLS else "2025-03-26"
             return None if notification else ok_response(request_id, {
                 "protocolVersion": selected,
-                "capabilities": {"tools": {"listChanged": True}},
+                "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "unity-mcp-broker", "version": BROKER_VERSION},
                 "instructions": "Unity tools are routed through a reload-safe broker. Non-idempotent writes may return OUTCOME_UNKNOWN after a disconnect.",
             })
         if method in {"notifications/initialized", "ping"}:
             return None if notification else ok_response(request_id, {})
         if method == "notifications/cancelled":
-            await self.router.cancel(str(params.get("requestId", "")))
+            target = self._client_requests.get(self._client_key(session_id, params.get("requestId")))
+            if target is not None:
+                ledger_id, project_key = target
+                try:
+                    job_id = self._operation_jobs.get(ledger_id)
+                    if job_id:
+                        await self._call_broker_tool(None, "broker_cancel_job", {"jobId": job_id}, project_key, session_id)
+                    else:
+                        await self.router.cancel(ledger_id, project_key=project_key)
+                except (BridgeUnavailable, asyncio.TimeoutError):
+                    pass
             return None if notification else ok_response(request_id, {"cancelled": params.get("requestId")})
         if method == "tools/list":
-            tools, registry_hash = self.registry.combined(self.router.active_project_key)
-            return None if notification else ok_response(request_id, {
-                "tools": tools,
-                "_meta": {
-                    "registryCount": len(tools),
-                    "registryHash": registry_hash,
-                    "unityProjectKey": self.router.active_project_key,
-                },
-            })
+            meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+            try:
+                result = self.registry.list_tools(self._project_key(session_id, meta), params)
+            except ValueError as exception:
+                return None if notification else error_response(request_id, -32602, str(exception))
+            return None if notification else ok_response(request_id, result)
         if method == "tools/call":
             if notification:
-                asyncio.create_task(self._call_tool(None, params, request))
+                if len(self._notifications) >= self.MAX_INFLIGHT_REQUESTS:
+                    return None
+                task = asyncio.create_task(self._call_tool(None, params, request, session_id))
+                self._notifications.add(task)
+                def retire_notification(completed: asyncio.Task[Any]) -> None:
+                    self._notifications.discard(completed)
+                    if not completed.cancelled():
+                        completed.exception()
+                task.add_done_callback(retire_notification)
                 return None
-            return await self._call_tool(request_id, params, request)
+            return await self._call_tool(request_id, params, request, session_id)
         return None if notification else error_response(request_id, -32601, f"Method not found: {method}")
 
-    async def _call_tool(self, request_id: Any, params: dict[str, Any], raw_request: dict[str, Any]) -> dict[str, Any]:
+    async def _call_tool(self, request_id: Any, params: dict[str, Any], raw_request: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
         name = params.get("name")
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
-        if not name:
+        if not isinstance(name, str) or not name:
             return error_response(request_id, -32602, "Tool name is required.")
+        meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+        project_key = self._project_key(session_id, meta)
         if name.startswith("broker_"):
-            return await self._call_broker_tool(request_id, name, arguments)
+            try:
+                return await self._call_broker_tool(request_id, name, arguments, project_key, session_id)
+            except (ValueError, TypeError) as exception:
+                return error_response(request_id, -32602, str(exception))
 
-        descriptor = self.registry.descriptor(self.router.active_project_key, name)
+        descriptor = self.registry.descriptor(project_key, name)
         if descriptor is None:
             return error_response(request_id, -32602, f"Tool not found: {name}")
         annotations = descriptor.get("annotations", {})
@@ -124,11 +221,22 @@ class McpBroker:
         args_hash = hashlib.sha256(
             json.dumps(arguments, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
         idempotency_key = meta.get("idempotencyKey")
+        if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key or len(idempotency_key) > 256):
+            return error_response(request_id, -32602, "idempotencyKey must be a nonempty string of at most 256 characters")
+        client_key = self._client_key(session_id, request_id)
+        if request_id is not None and client_key in self._client_requests:
+            return error_response(request_id, -32600, "A request with this id is already running in this client session")
+        if sum(key[0] == client_key[0] for key in self._client_requests) >= self.MAX_REQUESTS_PER_CLIENT:
+            return tool_error(request_id, "BROKER_BUSY", "This client has too many pending requests; await an existing operation")
+        if len(self._inflight) >= self.MAX_INFLIGHT_REQUESTS:
+            return tool_error(request_id, "BROKER_BUSY", "Broker execution capacity reached; await an existing operation")
         ledger_id = uuid4().hex
         try:
-            connection = self.router.active_connection()
+            connection = self.router.connection_for(project_key)
+            expected_generation = meta.get("expectedGenerationId")
+            if expected_generation is not None and expected_generation != connection.identity.generation_id:
+                return tool_error(request_id, "STALE_GENERATION", "Unity generation changed; inspect the project before retrying")
             existing = self.store.create_request(
                 ledger_id, idempotency_key, connection.identity.project_key,
                 connection.identity.generation_id, name, args_hash, read_only, idempotent,
@@ -141,10 +249,7 @@ class McpBroker:
         ledger_id = str(existing.get("request_id") or ledger_id)
         if existing.get("state") in TERMINAL_REQUEST_STATES:
             if existing.get("response"):
-                response = dict(existing["response"])
-                if request_id is not None:
-                    response["id"] = request_id
-                return response
+                return self._client_response(existing["response"], request_id)
             return tool_error(
                 request_id,
                 "REQUEST_TERMINAL",
@@ -153,12 +258,53 @@ class McpBroker:
             )
 
         project_key = str(existing.get("project_key") or connection.identity.project_key)
+        task = self._inflight.get(ledger_id)
+        if task is None:
+            # No await separates the ledger reservation from the task reservation.
+            # All duplicate callers join this task instead of resetting accepted state.
+            if existing.get("state") in UNCERTAIN_REQUEST_STATES:
+                return tool_error(request_id, "REQUEST_IN_PROGRESS", "The existing operation is still accepted by Unity", {"requestId": ledger_id})
+            internal_request = {**raw_request, "id": ledger_id}
+            task = asyncio.create_task(self._execute_tool(
+                ledger_id, internal_request, descriptor, meta, project_key, read_only, idempotent,
+            ))
+            self._inflight[ledger_id] = task
+            def retire(completed: asyncio.Task[dict[str, Any]]) -> None:
+                if self._inflight.get(ledger_id) is completed:
+                    self._inflight.pop(ledger_id, None)
+                    self._operation_jobs.pop(ledger_id, None)
+                if not completed.cancelled():
+                    completed.exception()
+            task.add_done_callback(retire)
+        if request_id is not None:
+            self._client_requests[client_key] = (ledger_id, project_key)
+        try:
+            response = await asyncio.shield(task)
+            return self._client_response(response, request_id)
+        finally:
+            if request_id is not None:
+                self._client_requests.pop(client_key, None)
+
+    async def _execute_tool(
+        self, ledger_id: str, raw_request: dict[str, Any], descriptor: dict[str, Any],
+        meta: dict[str, Any], project_key: str, read_only: bool, idempotent: bool,
+    ) -> dict[str, Any]:
+        request_id = ledger_id
         self.store.update_request(ledger_id, "dispatched")
         deadline = asyncio.get_running_loop().time() + self.config.request_timeout_seconds
         while True:
             try:
-                remaining = max(0.1, deadline - asyncio.get_running_loop().time())
-                response = await self.router.dispatch(ledger_id, raw_request, timeout=remaining)
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                expected_generation = meta.get("expectedGenerationId")
+                if expected_generation is not None:
+                    current_connection = self.router.connection_for(project_key)
+                    if current_connection.identity.generation_id != expected_generation:
+                        response = tool_error(request_id, "STALE_GENERATION", "Unity generation changed before execution; inspect the project before retrying")
+                        self.store.update_request(ledger_id, "failed", response=response)
+                        return response
+                response = await self.router.dispatch(ledger_id, raw_request, timeout=remaining, project_key=project_key)
                 if self._should_auto_wait_job(descriptor, meta, response):
                     response = await self._auto_wait_unity_job(
                         response,
@@ -171,7 +317,7 @@ class McpBroker:
                 return response
             except BridgeUnavailable as exception:
                 current = self.store.get_request(ledger_id) or {}
-                accepted = current.get("state") in UNITY_ACCEPTED_STATES
+                accepted = current.get("state") in UNCERTAIN_REQUEST_STATES
                 retry_safe = not accepted or read_only or idempotent
                 if not retry_safe:
                     self.store.update_request(ledger_id, "outcome_unknown", error=str(exception))
@@ -192,7 +338,7 @@ class McpBroker:
                     )
                 reconnect_wait = min(remaining, self.config.reconnect_grace_seconds)
                 reconnected = await self.router.wait_for_connection(project_key, reconnect_wait)
-                if reconnected is None or self.router.active_project_key != project_key:
+                if reconnected is None:
                     return tool_error(
                         request_id,
                         "UNITY_RECONNECT_REQUIRED",
@@ -206,7 +352,7 @@ class McpBroker:
                 )
             except asyncio.TimeoutError:
                 current = self.store.get_request(ledger_id) or {}
-                accepted = current.get("state") in UNITY_ACCEPTED_STATES
+                accepted = current.get("state") in UNCERTAIN_REQUEST_STATES
                 state = "waiting_for_reconnect" if not accepted or read_only or idempotent else "outcome_unknown"
                 self.store.update_request(ledger_id, state, error="Unity tool timed out")
                 code = "UNITY_RECONNECT_REQUIRED" if state == "waiting_for_reconnect" else "OUTCOME_UNKNOWN"
@@ -318,6 +464,7 @@ class McpBroker:
         lifecycle = descriptor_meta.get("jobLifecycle") if isinstance(descriptor_meta, dict) else {}
         wait_tool = str(lifecycle.get("waitTool") or "wait_tool_job")
         job_id = str(record["jobId"])
+        self._operation_jobs[ledger_id] = job_id
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
@@ -341,6 +488,7 @@ class McpBroker:
                     f"{ledger_id}:job",
                     poll_request,
                     timeout=min(remaining, poll_seconds + 5.0),
+                    project_key=project_key,
                 )
             except (BridgeUnavailable, asyncio.TimeoutError):
                 self.store.update_job(
@@ -348,12 +496,13 @@ class McpBroker:
                     "waiting_for_reconnect",
                     message="waiting for Unity bridge",
                 )
-                reconnected = await self.router.wait_for_connection(
-                    project_key,
-                    min(max(0.1, remaining), self.config.reconnect_grace_seconds),
-                )
-                if reconnected is None or self.router.active_project_key != project_key:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
                     continue
+                await self.router.wait_for_connection(
+                    project_key,
+                    min(remaining, self.config.reconnect_grace_seconds),
+                )
                 continue
 
             poll_result = poll_response.get("result")
@@ -371,22 +520,18 @@ class McpBroker:
             if job.get("state") in TERMINAL_JOB_STATES:
                 return self._job_response(response, job)
 
-    async def _call_broker_tool(self, request_id: Any, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _call_broker_tool(self, request_id: Any, name: str, arguments: dict[str, Any], project_key: str | None = None, session_id: str | None = None) -> dict[str, Any]:
         if name == "broker_get_status":
-            active = self.router.active_project_key
+            active = project_key
             connection = self.router.connections.get(active or "")
-            route_ready = connection is not None and connection.state in {
-                "ready", "compiling", "compile_failed",
-            }
+            liveness = self.router.connection_status(active)
             return self._broker_result(request_id, {
                 "service": "unity-mcp-broker",
                 "activeProjectKey": active,
                 "activeProjectName": connection.identity.project_name if connection else None,
                 "activeProjectPath": connection.identity.project_path if connection else None,
                 "bridgeConnected": connection is not None,
-                "bridgeState": connection.state if connection else "offline",
-                "routeReady": route_ready,
-                "routeError": None if route_ready else "no active Unity bridge is ready",
+                **liveness,
                 "generationId": connection.identity.generation_id if connection else None,
                 "registryHash": connection.identity.registry_hash if connection else None,
                 "connectedProjects": len(self.router.connections),
@@ -395,10 +540,15 @@ class McpBroker:
                 "autoWaitJobs": self.config.auto_wait_jobs,
             })
         if name == "broker_list_projects":
-            return self._broker_result(request_id, {"projects": self.store.list_projects(), "activeProjectKey": self.router.active_project_key})
+            return self._broker_result(request_id, {"projects": self.store.list_projects(), "activeProjectKey": project_key})
         if name == "broker_activate_project":
             try:
-                connection = await self.router.activate(str(arguments.get("projectKey", "")))
+                selected = str(arguments.get("projectKey", ""))
+                if session_id is None:
+                    connection = await self.router.activate(selected)
+                else:
+                    connection = self.router.connection_for(selected)
+                    self.sessions[session_id] = selected
             except BridgeUnavailable as exception:
                 return tool_error(request_id, "PROJECT_OFFLINE", str(exception))
             return self._broker_result(request_id, {"activeProjectKey": connection.identity.project_key})
@@ -409,16 +559,26 @@ class McpBroker:
             job = self.store.get_job(str(arguments.get("jobId", "")))
             return self._broker_result(request_id, job) if job else tool_error(request_id, "JOB_NOT_FOUND", "job was not found")
         if name == "broker_wait_job":
-            job = await self.router.wait_job(str(arguments.get("jobId", "")), float(arguments.get("timeoutSeconds", 60)))
+            timeout = float(arguments.get("timeoutSeconds", 60))
+            if not math.isfinite(timeout) or timeout < 0:
+                raise ValueError("timeoutSeconds must be a finite nonnegative number")
+            job = await self.router.wait_job(str(arguments.get("jobId", "")), min(timeout, 60, self.config.request_timeout_seconds))
             return self._broker_result(request_id, job) if job else tool_error(request_id, "JOB_NOT_FOUND", "job was not found")
         if name == "broker_cancel_job":
             job_id = str(arguments.get("jobId", ""))
             job = self.store.get_job(job_id)
             if not job:
                 return tool_error(request_id, "JOB_NOT_FOUND", "job was not found")
+            if job.get("state") in TERMINAL_JOB_STATES:
+                return self._broker_result(request_id, job)
+            job_project = str(job.get("project_key") or "")
             if job.get("kind") == "refresh_compile":
-                self.store.update_job(job_id, "cancelled", progress=1, message="cancelled")
-                await self.router.dispatch_control("cancel_job", {"jobId": job_id})
+                self.store.update_job(job_id, "cancel_requested", message="cancellation requested; awaiting Unity acknowledgement")
+                try:
+                    await self.router.dispatch_control("cancel_job", {"jobId": job_id}, project_key=job_project,
+                                                       timeout=min(60.0, self.config.request_timeout_seconds))
+                except (BridgeUnavailable, asyncio.TimeoutError) as exception:
+                    return tool_error(request_id, "UNITY_OFFLINE", str(exception))
                 return self._broker_result(request_id, self.store.get_job(job_id))
             self.store.update_job(job_id, "cancel_requested", message="cancellation requested")
             try:
@@ -431,6 +591,7 @@ class McpBroker:
                         "params": {"name": "cancel_tool_job", "arguments": {"jobId": job_id}},
                     },
                     timeout=min(60.0, self.config.request_timeout_seconds),
+                    project_key=job_project,
                 )
             except (BridgeUnavailable, asyncio.TimeoutError) as exception:
                 return tool_error(request_id, "UNITY_OFFLINE", str(exception))
@@ -444,17 +605,17 @@ class McpBroker:
             return self._broker_result(request_id, self.store.get_job(job_id))
         if name == "broker_start_refresh_compile":
             try:
-                connection = self.router.active_connection()
+                connection = self.router.connection_for(project_key)
             except BridgeUnavailable as exception:
                 return tool_error(request_id, "UNITY_OFFLINE", str(exception))
             job = self.store.create_job("refresh_compile", connection.identity.project_key)
             try:
+                self.store.update_job(job["job_id"], "dispatched", progress=0.05, message="sending to Unity")
                 await self.router.dispatch_control("refresh_compile", {
                     "jobId": job["job_id"],
                     "includeWarnings": bool(arguments.get("includeWarnings", True)),
-                })
-                self.store.update_job(job["job_id"], "dispatched", progress=0.05, message="sent to Unity")
-            except BridgeUnavailable as exception:
+                }, project_key=connection.identity.project_key, timeout=min(60.0, self.config.request_timeout_seconds))
+            except (BridgeUnavailable, asyncio.TimeoutError) as exception:
                 self.store.update_job(job["job_id"], "waiting_for_reconnect", message=str(exception))
             return self._broker_result(request_id, self.store.get_job(job["job_id"]))
         return error_response(request_id, -32602, f"Broker tool not found: {name}")

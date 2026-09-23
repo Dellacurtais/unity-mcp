@@ -67,6 +67,19 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools
                 ["error"] = new JObject { ["type"] = new JArray { "string", "null" } },
                 ["failedAtIndex"] = new JObject { ["type"] = "integer" },
                 ["opsApplied"] = new JObject { ["type"] = "integer", ["minimum"] = 0 },
+                ["receipt"] = new JObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JObject
+                    {
+                        ["outcome"] = new JObject { ["type"] = "string" },
+                        ["rollbackScope"] = new JObject { ["type"] = "string" },
+                        ["rollbackComplete"] = new JObject { ["type"] = new JArray { "boolean", "null" } },
+                        ["rollbackErrors"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" } },
+                    },
+                    ["required"] = new JArray { "outcome", "rollbackScope", "rollbackComplete", "rollbackErrors" },
+                    ["additionalProperties"] = false,
+                },
                 ["results"] = new JObject
                 {
                     ["type"] = "array",

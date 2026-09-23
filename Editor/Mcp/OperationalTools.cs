@@ -52,14 +52,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             var writeFilter = (bool?)arguments["writeOnly"];
             var capabilityFilter = ParseCapability((string)arguments["capability"]);
 
-            var moduleByTool = OptionalModuleRegistry.All
-                .SelectMany(module => (module.Tools ?? Array.Empty<string>()).Select(tool => new { tool, module.Id }))
-                .GroupBy(item => item.tool, StringComparer.Ordinal)
-                .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.Ordinal);
+            var moduleByTool = BuildModuleLookup();
             var compatibilityByModule = OptionalModuleRegistry.CompatibilitySnapshot()
                 .OfType<JObject>()
                 .ToDictionary(item => (string)item["id"], item => item, StringComparer.Ordinal);
-            var rows = new List<JObject>();
+            var candidates = new List<(IMcpTool tool, ToolDescriptor descriptor, string module, bool confirmationRequired)>();
             foreach (var tool in registry?.All ?? Array.Empty<IMcpTool>())
             {
                 var descriptor = registry.GetDescriptor(tool.Name) ?? ToolDescriptor.Infer(tool);
@@ -67,13 +64,25 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     ? knownModule
                     : ModuleFromType(tool.GetType());
                 var confirmationRequired = ToolAuthorization.RequiresConfirmation(descriptor);
-                var previewTool = PreviewToolFor(tool.Name, registry);
                 if (!Matches(module, moduleFilter) || !Matches(descriptor.Category, categoryFilter)) continue;
                 if (!Matches(descriptor.Risk.ToString(), riskFilter) || !Matches(descriptor.EditorMode.ToString(), editorModeFilter)) continue;
                 if (confirmationFilter.HasValue && confirmationFilter.Value != confirmationRequired) continue;
                 if (writeFilter == true && !descriptor.IsWrite) continue;
                 if (capabilityFilter != McpCapability.None && (descriptor.Capabilities & capabilityFilter) != capabilityFilter) continue;
 
+                candidates.Add((tool, descriptor, module, confirmationRequired));
+            }
+
+            var ordered = candidates.OrderBy(item => item.module, StringComparer.Ordinal)
+                .ThenBy(item => item.tool.Name, StringComparer.Ordinal).ToArray();
+            var page = new JArray();
+            foreach (var item in ordered.Skip(offset).Take(limit))
+            {
+                var tool = item.tool;
+                var descriptor = item.descriptor;
+                var module = item.module;
+                var confirmationRequired = item.confirmationRequired;
+                var previewTool = PreviewToolFor(tool.Name, registry);
                 var row = new JObject
                 {
                     ["name"] = tool.Name,
@@ -97,17 +106,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     row["packageCompatibility"] = moduleCompatibility.DeepClone();
                 if (includeSchemas)
                 {
-                    row["inputSchema"] = tool.InputSchema?.DeepClone();
-                    if (tool.OutputSchema != null) row["outputSchema"] = tool.OutputSchema.DeepClone();
+                    row["inputSchema"] = registry.GetInputSchema(tool.Name);
+                    var outputSchema = registry.GetOutputSchema(tool.Name);
+                    if (outputSchema != null) row["outputSchema"] = outputSchema;
                 }
-                rows.Add(row);
+                page.Add(row);
             }
-
-            var ordered = rows
-                .OrderBy(row => (string)row["module"], StringComparer.Ordinal)
-                .ThenBy(row => (string)row["name"], StringComparer.Ordinal)
-                .ToArray();
-            var page = new JArray(ordered.Skip(offset).Take(limit));
             return new JObject
             {
                 ["packageVersion"] = SceneAnalyzerVersion.Current,
@@ -122,7 +126,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             };
         }
 
-        public static JObject Health()
+        public static JObject Health(bool compact = false)
         {
             var registry = Bootstrap.ToolRegistry;
             var jobs = ToolJobManager.List(null, 200);
@@ -143,7 +147,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             var bridge = Bootstrap.BrokerBridgeState;
             return new JObject
             {
-                ["status"] = registry != null && compatibilityIssues == 0 && compileErrors == 0 && (bool)selfTest["valid"]
+                ["status"] = registry != null && compatibilityIssues == 0 && compileErrors == 0
+                    && string.IsNullOrEmpty(ToolJobManager.PersistenceError) && (bool)selfTest["valid"]
                     ? "ok"
                     : "degraded",
                 ["package"] = new JObject
@@ -179,6 +184,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     ["protocolSupported"] = new JArray(McpProtocolNegotiator.Supported),
                     ["inFlightRequests"] = Bootstrap.Server?.InFlightCount ?? 0,
                     ["dispatcherQueueDepth"] = MainThreadDispatcher.PendingCount,
+                    ["mainThreadLastTickUtc"] = MainThreadDispatcher.LastPumpUtc,
                     ["maxConcurrentRequests"] = Settings.MaxConcurrentRequests,
                     ["maxRequestBodyBytes"] = Settings.MaxRequestBodyBytes,
                     ["toolTimeoutSeconds"] = Settings.ToolTimeoutSeconds,
@@ -206,8 +212,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 ["jobs"] = new JObject
                 {
                     ["retained"] = jobs.Count,
+                    ["persistenceError"] = ToolJobManager.PersistenceError,
                     ["counts"] = jobCounts,
-                    ["recent"] = new JArray(jobs.Take(20).Select(job => new JObject
+                    ["recent"] = new JArray(jobs.Take(compact ? 0 : 20).Select(job => new JObject
                     {
                         ["jobId"] = job["jobId"],
                         ["kind"] = job["kind"],
@@ -233,8 +240,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     ["errors"] = selfTest["errors"],
                     ["warnings"] = selfTest["warnings"],
                 },
-                ["loadedModules"] = OptionalModuleRegistry.Snapshot(),
-                ["packageCompatibility"] = compatibility,
+                ["detail"] = compact ? "compact" : "full",
+                ["loadedModules"] = compact ? new JArray() : OptionalModuleRegistry.Snapshot(),
+                ["packageCompatibility"] = compact ? new JArray(compatibility.Where(item =>
+                    string.Equals((string)item["status"], "loaded_incompatible", StringComparison.Ordinal)
+                    || string.Equals((string)item["status"], "available_not_loaded", StringComparison.Ordinal)
+                    || string.Equals((string)item["status"], "version_unsupported", StringComparison.Ordinal))) : compatibility,
             };
         }
 
@@ -350,7 +361,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             return candidate != null && registry.TryGet(candidate, out _) ? candidate : null;
         }
 
-        private static string ModuleFromType(Type type)
+        internal static Dictionary<string, string> BuildModuleLookup() => OptionalModuleRegistry.All
+            .SelectMany(module => (module.Tools ?? Array.Empty<string>()).Select(tool => new { tool, module.Id }))
+            .GroupBy(item => item.tool, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.Ordinal);
+
+        internal static string ModuleFromType(Type type)
         {
             if (type == null) return "unknown";
             const string main = "com.maicon.scene-analyzer.Editor";
@@ -422,6 +438,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             ["properties"] = new JObject
             {
                 ["status"] = new JObject { ["type"] = "string" },
+                ["detail"] = new JObject { ["type"] = "string", ["enum"] = new JArray("full", "compact") },
                 ["package"] = new JObject { ["type"] = "object" },
                 ["transport"] = new JObject { ["type"] = "object" },
                 ["server"] = new JObject { ["type"] = "object" },
@@ -504,14 +521,19 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
     public sealed class GetServerHealthTool : IMcpTool
     {
         public string Name => "get_server_health";
-        public string Description => "Returns protocol, registry, module, compilation, queue, request, job, reload and package compatibility health.";
-        public JObject InputSchema => new JObject { ["type"] = "object", ["properties"] = new JObject(), ["additionalProperties"] = false };
+        public string Description => "Returns protocol, registry, module, compilation, queue, request, job, reload and package compatibility health. compact=true omits module listings, recent jobs and successful compatibility rows while preserving health checks and counts.";
+        public JObject InputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject { ["compact"] = new JObject { ["type"] = "boolean", ["default"] = false } },
+            ["additionalProperties"] = false,
+        };
         public JObject OutputSchema => OperationalSchemas.Health();
         public bool IsWrite => false;
         public ToolDescriptor Descriptor => GetToolInventoryTool.ReadDescriptor(Name);
         public ToolResult Execute(JObject arguments)
         {
-            var health = OperationalReport.Health();
+            var health = OperationalReport.Health((bool?)arguments?["compact"] ?? false);
             return ToolResult.Ok($"server health: {(string)health["status"]}", health);
         }
     }

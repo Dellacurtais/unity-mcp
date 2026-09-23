@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Maicon.SceneAnalyzer.Editor.Core;
+using Maicon.SceneAnalyzer.Editor.Mcp.Jobs;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -22,6 +23,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
     {
         private const string ServerName = "unity-mcp";
         private const string ConfirmationArgument = "_confirmationToken";
+        private static readonly JObject StableTargetReferenceSchema = SchemaHelpers.TargetRefSchema;
 
         private readonly McpToolRegistry _registry;
         private readonly ConfirmationTokenService _confirmations = new ConfirmationTokenService();
@@ -150,6 +152,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         internal JObject ListTools()
         {
             var tools = new JArray();
+            var moduleByTool = OperationalReport.BuildModuleLookup();
             foreach (var tool in _registry.All)
             {
                 var descriptor = _registry.GetDescriptor(tool.Name) ?? ToolDescriptor.Infer(tool);
@@ -181,6 +184,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     },
                     ["_meta"] = new JObject
                     {
+                        ["module"] = moduleByTool.TryGetValue(tool.Name, out var knownModule)
+                            ? knownModule : OperationalReport.ModuleFromType(tool.GetType()),
                         ["category"] = descriptor.Category,
                         ["capabilities"] = descriptor.Capabilities.ToString(),
                         ["risk"] = descriptor.Risk.ToString(),
@@ -272,14 +277,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             var executionArguments = (JObject)arguments.DeepClone();
             var confirmationToken = (string)executionArguments[ConfirmationArgument];
             executionArguments.Remove(ConfirmationArgument);
+            var sourceArguments = (JObject)executionArguments.DeepClone();
 
             ToolDescriptor descriptor = null;
             var inputSchema = _registry.GetInputSchema(name) ?? new JObject { ["type"] = "object" };
             var requiresConfirmation = false;
             string preparationCode = null;
             string preparationMessage = null;
-            var prepared = await MainThreadDispatcher.RunAsync(() =>
+            bool PrepareArguments()
             {
+                executionArguments = (JObject)sourceArguments.DeepClone();
                 if (executionArguments["target"] != null && inputSchema["properties"]?["instanceId"] != null)
                 {
                     var target = ToolTargetResolver.Resolve(
@@ -290,11 +297,36 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                         preparationMessage = targetError;
                         return false;
                     }
-                    var gameObject = target as GameObject ?? (target as Component)?.gameObject;
-                    executionArguments["instanceId"] = gameObject != null
-                        ? gameObject.GetInstanceID()
-                        : target.GetInstanceID();
-                    executionArguments.Remove("target");
+                    // Native target-aware tools must receive the exact component
+                    // identity. The legacy adapter is only for instanceId schemas.
+                    if (inputSchema["properties"]?["target"] == null)
+                    {
+                        if (target is Component component && executionArguments["componentType"] != null)
+                        {
+                            var componentType = ComponentEditor.ResolveComponentType((string)executionArguments["componentType"]);
+                            if (componentType == null || !typeof(Component).IsAssignableFrom(componentType)
+                                || !componentType.IsInstanceOfType(component))
+                            {
+                                preparationCode = "TARGET_TYPE_MISMATCH";
+                                preparationMessage = "componentType must match the captured component identity.";
+                                return false;
+                            }
+                            var ordinal = Array.IndexOf(component.gameObject.GetComponents(componentType), component);
+                            if (inputSchema["properties"]?["nth"] != null) executionArguments["nth"] = ordinal;
+                            else if (inputSchema["properties"]?["componentOrdinal"] != null) executionArguments["componentOrdinal"] = ordinal;
+                            else if (ordinal != 0)
+                            {
+                                preparationCode = "TARGET_COMPONENT_UNSUPPORTED";
+                                preparationMessage = "This legacy tool cannot address the captured component ordinal; use a target-aware component tool.";
+                                return false;
+                            }
+                        }
+                        var gameObject = target as GameObject ?? (target as Component)?.gameObject;
+                        executionArguments["instanceId"] = gameObject != null
+                            ? gameObject.GetInstanceID()
+                            : target.GetInstanceID();
+                        executionArguments.Remove("target");
+                    }
                 }
                 if (!ToolSchemaValidator.ValidateArguments(executionArguments, inputSchema, out var argumentError))
                 {
@@ -308,32 +340,37 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     tool, descriptor, out preparationCode, out preparationMessage)) return false;
                 requiresConfirmation = ToolAuthorization.RequiresConfirmation(descriptor);
                 return true;
-            }, cancellationToken);
+            }
+            var prepared = await MainThreadDispatcher.RunAsync(PrepareArguments, cancellationToken);
             if (!prepared) return OkResp(id, ToolErrorBody(preparationCode, preparationMessage));
 
+            string RequireConfirmation()
+            {
+                var issued = _confirmations.Issue(name, sourceArguments, Bootstrap.UnityProjectRoot ?? string.Empty, TimeSpan.FromMinutes(2));
+                return OkResp(id, ToolErrorBody("CONFIRMATION_REQUIRED",
+                    "Review the requested operation, then retry the same arguments with _confirmationToken.",
+                    new JObject
+                    {
+                        ["confirmationToken"] = issued,
+                        ["expiresInSeconds"] = 120,
+                        ["tool"] = name,
+                        ["risk"] = descriptor.Risk.ToString(),
+                        ["capabilities"] = descriptor.Capabilities.ToString(),
+                        ["arguments"] = sourceArguments.DeepClone(),
+                    }));
+            }
+            var confirmationGranted = false;
             if (requiresConfirmation)
             {
                 var projectKey = Bootstrap.UnityProjectRoot ?? string.Empty;
-                if (!_confirmations.TryConsume(confirmationToken, name, executionArguments, projectKey))
-                {
-                    var issued = _confirmations.Issue(name, executionArguments, projectKey, TimeSpan.FromMinutes(2));
-                    return OkResp(id, ToolErrorBody("CONFIRMATION_REQUIRED",
-                        "Review the requested operation, then retry the same arguments with _confirmationToken.",
-                        new JObject
-                        {
-                            ["confirmationToken"] = issued,
-                            ["expiresInSeconds"] = 120,
-                            ["tool"] = name,
-                            ["risk"] = descriptor.Risk.ToString(),
-                            ["capabilities"] = descriptor.Capabilities.ToString(),
-                            ["arguments"] = executionArguments.DeepClone(),
-                        }));
-                }
+                confirmationGranted = _confirmations.TryConsume(confirmationToken, name, sourceArguments, projectKey);
+                if (!confirmationGranted) return RequireConfirmation();
             }
 
             var requestId = id != null ? RequestIdKey(id) : Guid.NewGuid().ToString("N");
             var timeout = TimeSpan.FromSeconds(_toolTimeoutSeconds);
-            using (var lease = await _coordinator.BeginAsync(requestId, descriptor.IsWrite, cancellationToken, timeout))
+            using (var lease = await _coordinator.BeginAsync(requestId, descriptor.IsWrite && !ToolJobManager.IsControlTool(name),
+                cancellationToken, timeout, ToolJobManager.IsControlTool(name)))
             using (ToolExecutionContext.Push(new ToolExecutionContext
             {
                 ToolName = name,
@@ -347,8 +384,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 RequestMeta = parameters["_meta"] as JObject,
             }))
             {
+                // Queueing can span scene changes, target deletion, or capability changes.
+                // Resolve the original identity again, rather than the earlier instanceId.
+                if (!await MainThreadDispatcher.RunAsync(PrepareArguments, lease.CancellationToken))
+                    return OkResp(id, ToolErrorBody(preparationCode, preparationMessage));
+                if (requiresConfirmation && !confirmationGranted) return RequireConfirmation();
                 var activityLease = await EditorActivityLease.AcquireAsync(descriptor, lease.CancellationToken);
-                ToolResult result;
+                ToolResult result = null;
+                var invocationStarted = false;
+                var resultKnown = false;
+                var finalizationCompleted = false;
                 System.Collections.Generic.HashSet<int> preMutationScenes = null;
                 try
                 {
@@ -356,11 +401,17 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                         ? await MainThreadDispatcher.RunAsync(
                             () => MutationScope.CaptureLegacySceneHandles(executionArguments), lease.CancellationToken)
                         : null;
+                    lease.CancellationToken.ThrowIfCancellationRequested();
+                    invocationStarted = true;
                     result = await tool.ExecuteAsync(executionArguments);
+                    resultKnown = true;
                     if (result == null) result = ToolResult.Error("NULL_RESULT", $"Tool '{name}' returned no result.");
+                    // Once a tool returned, request cancellation cannot undo its effects.
+                    // Finish bookkeeping independently and preserve the known tool result.
+                    using var finalization = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                     if (!result.IsError && result.Json != null)
                         await MainThreadDispatcher.RunAsync(
-                            () => EnrichStableTargets(result.Json, 0), lease.CancellationToken);
+                            () => EnrichStableTargets(result.Json, 0), finalization.Token);
                     if (descriptor.IsWrite && !result.IsError)
                     {
                         if (RequiresLegacyMutationFinalization(descriptor))
@@ -371,16 +422,20 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                             var mutationMeta = await MainThreadDispatcher.RunAsync(
                                 () => MutationScope.FinalizeLegacyMutation(
                                     executionArguments, resultInstanceId, preMutationScenes),
-                                lease.CancellationToken);
+                                finalization.Token);
                             if (result.Metadata == null) result.Metadata = new JObject();
                             result.Metadata["mutation"] = mutationMeta;
                         }
-                        await MainThreadDispatcher.RunAsync(Bootstrap.NotifyWriteCompleted, lease.CancellationToken);
+                        await MainThreadDispatcher.RunAsync(Bootstrap.NotifyWriteCompleted, finalization.Token);
                     }
+                    finalizationCompleted = true;
                 }
                 catch (OperationCanceledException)
                 {
-                    result = ToolResult.Error("CANCELLED", $"Tool '{name}' was cancelled or exceeded its deadline.");
+                    if (resultKnown) AddFinalizationWarning(result, "Finalization timed out; the tool result is preserved. Re-observe the affected resources before another write.");
+                    else result = descriptor.IsWrite && invocationStarted
+                        ? ToolResult.Error("OUTCOME_UNKNOWN", $"Tool '{name}' was interrupted after invocation began; inspect its effects before retrying.")
+                        : ToolResult.Error("CANCELLED", $"Tool '{name}' was cancelled before a result was returned.");
                 }
                 catch (Exception exception)
                 {
@@ -391,7 +446,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                             CancellationToken.None);
                     }
                     catch { }
-                    result = ToolResult.Error("INTERNAL_ERROR", exception.Message,
+                    if (resultKnown) AddFinalizationWarning(result, $"Finalization failed: {exception.Message}. The tool result is preserved.");
+                    else result = ToolResult.Error(descriptor.IsWrite && invocationStarted ? "OUTCOME_UNKNOWN" : "INTERNAL_ERROR", exception.Message,
                         new JObject { ["exceptionType"] = exception.GetType().FullName });
                 }
                 finally
@@ -399,8 +455,22 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     await activityLease.ReleaseAsync();
                 }
 
+                if (result.Metadata == null) result.Metadata = new JObject();
+                result.Metadata["executionReceipt"] = new JObject
+                {
+                    ["requestId"] = requestId,
+                    ["status"] = resultKnown ? (result.IsError ? "toolError" : "completed") : invocationStarted ? "outcomeUnknown" : "notStarted",
+                    ["resultKnown"] = resultKnown,
+                    ["finalizationCompleted"] = finalizationCompleted,
+                };
                 return OkResp(id, BuildToolResult(result, name));
             }
+        }
+
+        private static void AddFinalizationWarning(ToolResult result, string message)
+        {
+            if (result.Warnings == null) result.Warnings = new JArray();
+            result.Warnings.Add(message);
         }
 
         private static IEnumerable<string> ExecutionRequirementNames(McpExecutionRequirement requirements)
@@ -417,6 +487,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             if (token == null || depth > 6) return;
             if (token is JObject obj)
             {
+                // A captured reference is already the reusable target payload. Wrapping it
+                // again adds an unknown field and can replace its original provenance.
+                if (IsSerializedTargetReference(obj)) return;
                 if (obj["target"] == null && obj["instanceId"]?.Type == JTokenType.Integer)
                 {
                     var unityObject = UnityEditor.EditorUtility.InstanceIDToObject((int)obj["instanceId"]);
@@ -432,6 +505,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 for (var i = 0; i < count; i++) EnrichStableTargets(array[i], depth + 1);
             }
         }
+
+        private static bool IsSerializedTargetReference(JObject obj)
+            => obj["kind"]?.Type == JTokenType.String
+                && obj["isPrefabStage"]?.Type == JTokenType.Boolean
+                && (obj["captureDomainId"]?.Type == JTokenType.String
+                    || obj["globalObjectId"]?.Type == JTokenType.String
+                    || obj["assetGuid"]?.Type == JTokenType.String)
+                && ToolSchemaValidator.ValidateArguments(obj, StableTargetReferenceSchema, out _);
 
         private JObject BuildToolResult(ToolResult result, string toolName)
         {

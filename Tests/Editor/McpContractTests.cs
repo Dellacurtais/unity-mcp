@@ -792,6 +792,43 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
+        public void OperationalInventory_PagesRegisteredSchemasWithoutReevaluatingTools()
+        {
+            var registry = new McpToolRegistry();
+            var tool = new OneShotSchemaTool();
+            registry.Register(new StubTool("a_probe"));
+            registry.Register(tool);
+            var first = OperationalReport.Inventory(registry, new JObject { ["includeSchemas"] = true, ["limit"] = 1 });
+            Assert.That((int)first["matched"], Is.EqualTo(2));
+            Assert.That((int)first["returned"], Is.EqualTo(1));
+            Assert.That((bool)first["hasMore"], Is.True);
+            var second = OperationalReport.Inventory(registry, new JObject { ["includeSchemas"] = true, ["limit"] = 1, ["offset"] = 1 });
+            Assert.That((string)second["tools"][0]["name"], Is.EqualTo(tool.Name));
+            Assert.That(second["tools"][0]["inputSchema"], Is.Not.Null);
+            Assert.That(second["tools"][0]["outputSchema"], Is.Not.Null);
+            Assert.That(tool.InputReads, Is.EqualTo(1));
+            Assert.That(tool.OutputReads, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void OperationalHealth_CompactPreservesChecksAndCountsWithSmallerPayload()
+        {
+            var tool = new GetServerHealthTool();
+            var full = tool.Execute(new JObject());
+            var compact = tool.Execute(new JObject { ["compact"] = true });
+            Assert.That(full.IsError, Is.False, full.Text);
+            Assert.That(compact.IsError, Is.False, compact.Text);
+            Assert.That(ToolSchemaValidator.ValidateArguments((JObject)compact.Json, tool.OutputSchema, out var error), Is.True, error);
+            Assert.That((string)compact.Json["detail"], Is.EqualTo("compact"));
+            Assert.That((string)compact.Json["status"], Is.EqualTo((string)full.Json["status"]));
+            Assert.That((int)compact.Json["registry"]["count"], Is.EqualTo((int)full.Json["registry"]["count"]));
+            Assert.That((int)compact.Json["selfTest"]["checks"], Is.EqualTo((int)full.Json["selfTest"]["checks"]));
+            Assert.That(((JArray)compact.Json["loadedModules"]).Count, Is.Zero);
+            Assert.That(((JArray)compact.Json["jobs"]["recent"]).Count, Is.Zero);
+            Assert.That(compact.Json.ToString().Length, Is.LessThan(full.Json.ToString().Length));
+        }
+
+        [Test]
         public void OperationalTools_AreReadOnlyAndHaveValidSchemas()
         {
             IMcpTool[] tools =

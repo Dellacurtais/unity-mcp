@@ -1,5 +1,7 @@
 using System;
+using System.Collections;
 using System.Linq;
+using Maicon.SceneAnalyzer.Editor.Modeling.Assets;
 using Maicon.SceneAnalyzer.Editor.Modeling.Commands;
 using Maicon.SceneAnalyzer.Editor.Modeling.Core;
 using Maicon.SceneAnalyzer.Editor.Modeling.Operations.Transform;
@@ -8,7 +10,9 @@ using Maicon.SceneAnalyzer.Editor.Modeling.SceneUx;
 using Maicon.SceneAnalyzer.Editor.Modeling.UI;
 using NUnit.Framework;
 using Unity.Collections;
+using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
 {
@@ -32,7 +36,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
         {
             Assert.That(
                 AssetModelerWorkspaceCatalog.ObjectToolLabels.Length,
-                Is.EqualTo(Enum.GetValues(typeof(AssetModelerObjectTool)).Length));
+                Is.EqualTo(AssetModelerWorkspaceCatalog.ObjectTools.Length));
+            CollectionAssert.DoesNotContain(AssetModelerWorkspaceCatalog.ObjectTools, AssetModelerObjectTool.Transform);
             Assert.That(
                 AssetModelerWorkspaceCatalog.TopologyToolLabels.Length,
                 Is.EqualTo(Enum.GetValues(typeof(AssetModelerTopologyTool)).Length));
@@ -43,13 +48,182 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
                     AssetModelerWorkspace.Objects,
                     AssetModelerObjectTool.Transform,
                     AssetModelerTopologyTool.Cleanup),
-                Is.True);
+                Is.False);
             Assert.That(
                 AssetModelerWorkspaceCatalog.SupportsMeshPreview(
                     AssetModelerWorkspace.Objects,
                     AssetModelerObjectTool.Array,
                     AssetModelerTopologyTool.Cleanup),
                 Is.False);
+        }
+
+        [Test]
+        public void SavedNavigationValues_PreserveOldIdsAndRetireObjectTransform()
+        {
+            Assert.That((int)AssetModelerWorkspace.SurfaceFit, Is.EqualTo(5));
+            Assert.That((int)AssetModelerWorkspace.Objects, Is.EqualTo(2));
+            Assert.That((int)AssetModelerObjectTool.Mirror, Is.EqualTo(1));
+            Assert.That((int)AssetModelerObjectTool.Export, Is.EqualTo(4));
+            Assert.That(AssetModelerWorkspaceCatalog.VisibleObjectTool((AssetModelerObjectTool)0), Is.EqualTo(AssetModelerObjectTool.Mirror));
+            Assert.That(AssetModelerWorkspaceCatalog.VisibleObjectTool((AssetModelerObjectTool)2), Is.EqualTo(AssetModelerObjectTool.Array));
+            var navigation = new AssetModelerNavigationState();
+            JsonUtility.FromJsonOverwrite("{\"_workspace\":5}", navigation);
+            Assert.That(navigation.Workspace, Is.EqualTo(AssetModelerWorkspace.SurfaceFit));
+        }
+
+        [Test]
+        public void RootAndRendererSelection_PreserveCopyAndRejectUnrelatedMesh()
+        {
+            var mesh = TestMesh();
+            var root = new GameObject("ExplicitRoot");
+            var other = new GameObject("OtherRoot");
+            var window = ScriptableObject.CreateInstance<AssetModelerWindow>();
+            var document = ScriptableObject.CreateInstance<MeshEditDocument>();
+            var previousSelection = Selection.activeObject;
+            try
+            {
+                var a = AddStaticMesh(root, "A", mesh);
+                var b = AddStaticMesh(root, "B", mesh);
+                var unrelated = AddStaticMesh(other, "Unrelated", mesh);
+                window.SetTarget(root);
+                Assert.That(window.CanSaveCopy, Is.False, "Selecting a source does not grant ownership of it.");
+                Assert.Throws<InvalidOperationException>(() => window.SetRenderer(unrelated));
+                document.Initialize(a.gameObject, mesh, mesh);
+                window.UseEditableCopy(new EditableMeshResult { EditableRoot = root, EditableObject = a.gameObject, EditableRenderer = a, Document = document });
+                window.SetRenderer(b);
+                Assert.That(window.SceneDocument, Is.Null);
+                Assert.That(window.CanSaveCopy, Is.True, "Choosing another mesh keeps the same editable hierarchy.");
+                window.SetRenderer(a);
+                Assert.That(window.SceneDocument, Is.SameAs(document));
+                Selection.activeGameObject = other;
+                Assert.That(window.SceneTarget, Is.SameAs(root), "Inspecting other scene objects must not replace the approved root.");
+                window.SetTarget(other);
+                Assert.That(window.SceneDocument, Is.Null);
+                Assert.That(window.CanSaveCopy, Is.False);
+            }
+            finally
+            {
+                Selection.activeObject = previousSelection;
+                UnityEngine.Object.DestroyImmediate(window);
+                UnityEngine.Object.DestroyImmediate(document);
+                UnityEngine.Object.DestroyImmediate(root);
+                UnityEngine.Object.DestroyImmediate(other);
+                UnityEngine.Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
+        public void CleanupPreview_RejectsChangedRevisionAndIsClearedByWorkspaceChange()
+        {
+            var source = TestMesh();
+            var working = UnityEngine.Object.Instantiate(source);
+            var root = new GameObject("Copy");
+            var window = ScriptableObject.CreateInstance<AssetModelerWindow>();
+            var document = ScriptableObject.CreateInstance<MeshEditDocument>();
+            try
+            {
+                var renderer = AddStaticMesh(root, "Mesh", working);
+                document.Initialize(renderer.gameObject, source, working);
+                window.UseEditableCopy(new EditableMeshResult { EditableRoot = root, EditableObject = renderer.gameObject, EditableRenderer = renderer, Document = document });
+                window.SceneOpenWorkspace(AssetModelerWorkspace.Cleanup);
+                window.ScenePreviewCurrent();
+                Assert.That(window.SceneHasPreview, Is.True);
+                Assert.That(window.SceneCanApplyPreview, Is.True);
+                var before = MeshFingerprint.Compute(working);
+                document.AdvanceGeometry();
+                Assert.That(window.SceneCanApplyPreview, Is.False);
+                window.SceneApplyCurrent();
+                Assert.That(MeshFingerprint.Compute(working), Is.EqualTo(before));
+                window.SceneOpenWorkspace(AssetModelerWorkspace.Size);
+                Assert.That(window.SceneHasPreview, Is.False);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(window);
+                UnityEngine.Object.DestroyImmediate(document);
+                UnityEngine.Object.DestroyImmediate(root);
+                UnityEngine.Object.DestroyImmediate(working);
+                UnityEngine.Object.DestroyImmediate(source);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator MainWorkflows_RenderLayoutAndRepaintAtNarrowAndWideSizes()
+        {
+            var source = TestMesh();
+            var staticRoot = new GameObject("MultiMeshRoot");
+            var rigRoot = new GameObject("RigRoot");
+            var document = ScriptableObject.CreateInstance<MeshEditDocument>();
+            var window = ScriptableObject.CreateInstance<AssetModelerWindow>();
+            try
+            {
+                var staticRenderer = AddStaticMesh(staticRoot, "Body", source);
+                AddStaticMesh(staticRoot, "Accessory", source);
+                var bone = new GameObject("Bone");
+                bone.transform.SetParent(rigRoot.transform, false);
+                var rigMesh = new GameObject("Skin");
+                rigMesh.transform.SetParent(rigRoot.transform, false);
+                var skin = rigMesh.AddComponent<SkinnedMeshRenderer>();
+                skin.sharedMesh = source;
+                skin.rootBone = bone.transform;
+                skin.bones = new[] { bone.transform };
+                source.bindposes = new[] { Matrix4x4.identity };
+                source.boneWeights = Enumerable.Repeat(new BoneWeight { boneIndex0 = 0, weight0 = 1f }, source.vertexCount).ToArray();
+                window.Show();
+                foreach (var root in new[] { staticRoot, rigRoot })
+                {
+                    var renderer = root == staticRoot ? (Renderer)staticRenderer : skin;
+                    document.Initialize(renderer.gameObject, source, source);
+                    window.UseEditableCopy(new EditableMeshResult { EditableRoot = root, EditableObject = renderer.gameObject, EditableRenderer = renderer, Document = document });
+                    foreach (float width in new[] { 390f, 650f })
+                    {
+                        window.position = new Rect(40f, 40f, width, 700f);
+                        foreach (var workspace in new[] { AssetModelerWorkspace.Home, AssetModelerWorkspace.Cleanup, AssetModelerWorkspace.Size, AssetModelerWorkspace.Save })
+                        {
+                            window.SceneOpenWorkspace(workspace);
+                            if (workspace == AssetModelerWorkspace.Cleanup) window.ScenePreviewCurrent();
+                            if (workspace == AssetModelerWorkspace.Size)
+                            {
+                                window.PreviewSize();
+                                Assert.That(window.HasSizePreview, Is.True);
+                            }
+                            window.SendEvent(new Event { type = EventType.Layout });
+                            window.Repaint();
+                            yield return null;
+                            window.SendEvent(new Event { type = EventType.Repaint });
+                            yield return null;
+                            Assert.That(window.SceneTarget, Is.SameAs(root));
+                            LogAssert.NoUnexpectedReceived();
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                window.Close();
+                UnityEngine.Object.DestroyImmediate(document);
+                UnityEngine.Object.DestroyImmediate(staticRoot);
+                UnityEngine.Object.DestroyImmediate(rigRoot);
+                UnityEngine.Object.DestroyImmediate(source);
+            }
+        }
+
+        private static Mesh TestMesh()
+        {
+            var mesh = new Mesh { name = "UxTriangle" };
+            mesh.vertices = new[] { Vector3.zero, Vector3.right, Vector3.up };
+            mesh.triangles = new[] { 0, 1, 2 };
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        private static MeshRenderer AddStaticMesh(GameObject root, string name, Mesh mesh)
+        {
+            var child = new GameObject(name);
+            child.transform.SetParent(root.transform, false);
+            child.AddComponent<MeshFilter>().sharedMesh = mesh;
+            return child.AddComponent<MeshRenderer>();
         }
 
         [Test]

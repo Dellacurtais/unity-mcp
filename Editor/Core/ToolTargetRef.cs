@@ -9,8 +9,12 @@ namespace Maicon.SceneAnalyzer.Editor.Core
     [Serializable]
     public sealed class ToolTargetRef
     {
+        // A fresh domain distinguishes live-instance provenance from durable IDs.
+        // Unity can reuse GUID/fileID pairs after deleting and recreating a target.
+        internal static readonly string CurrentCaptureDomainId = Guid.NewGuid().ToString("N");
         public string Kind;
         public int InstanceId;
+        public string CaptureDomainId;
         public string GlobalObjectId;
         public string AssetGuid;
         public long LocalFileId;
@@ -31,6 +35,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                 ["isPrefabStage"] = IsPrefabStage,
             };
             AddWhenPresent(json, "instanceId", InstanceId != 0 ? (JToken)InstanceId : null);
+            AddWhenPresent(json, "captureDomainId", StringToken(CaptureDomainId));
             AddWhenPresent(json, "globalObjectId", StringToken(GlobalObjectId));
             AddWhenPresent(json, "assetGuid", StringToken(AssetGuid));
             AddWhenPresent(json, "localFileId", LocalFileId != 0 ? (JToken)LocalFileId : null);
@@ -61,6 +66,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             {
                 Kind = (string)json["kind"],
                 InstanceId = (int?)json["instanceId"] ?? 0,
+                CaptureDomainId = (string)json["captureDomainId"],
                 GlobalObjectId = (string)json["globalObjectId"],
                 AssetGuid = (string)json["assetGuid"],
                 LocalFileId = (long?)json["localFileId"] ?? 0,
@@ -82,13 +88,18 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             var result = new ToolTargetRef
             {
                 InstanceId = target.GetInstanceID(),
+                CaptureDomainId = CurrentCaptureDomainId,
                 Kind = isPersistentAsset ? "asset" : target is GameObject ? "gameObject" : target is Component ? "component" : "object",
             };
 
             try
             {
                 var global = UnityEditor.GlobalObjectId.GetGlobalObjectIdSlow(target);
-                result.GlobalObjectId = global.ToString();
+                var serialized = global.ToString();
+                if (global.identifierType != 0
+                    && global.assetGUID.ToString() != "00000000000000000000000000000000"
+                    && UnityEditor.GlobalObjectId.TryParse(serialized, out _))
+                    result.GlobalObjectId = serialized;
             }
             catch { }
 

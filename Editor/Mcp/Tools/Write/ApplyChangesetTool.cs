@@ -12,9 +12,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
             get
             {
                 var kinds = string.Join(", ", ChangesetExecutor.KnownKinds.OrderBy(k => k));
-                return "Applies write operations atomically as ONE Undo group. Each op: { kind, args, label? }. " +
+                return "Applies write operations as ONE Undo group with deferred ScriptableObject saves. Each op: { kind, args, label? }. " +
                        "preview=true validates kind, label refs, and instanceIds without mutating state. " +
-                       "On failure mid-batch, reverts scene mutations AND deletes any newly-created assets. " +
+                       "On failure, attempts Undo and tracked asset rollback; inspect receipt.rollbackComplete and rollbackErrors. External handler side effects are outside this rollback scope. " +
                        $"Known kinds ({ChangesetExecutor.KnownKinds.Count}): {kinds}.";
             }
         }
@@ -98,6 +98,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write
                 ["failedAtIndex"] = report.FailedAtIndex,
                 ["opsApplied"] = report.OpsApplied,
                 ["results"] = resultsArr,
+                ["receipt"] = new JObject
+                {
+                    ["outcome"] = preview ? "preview" : report.Outcome,
+                    ["rollbackScope"] = "undoAndTrackedAssets",
+                    ["rollbackComplete"] = report.RollbackComplete.HasValue ? new JValue(report.RollbackComplete.Value) : JValue.CreateNull(),
+                    ["rollbackErrors"] = new JArray(report.RollbackErrors),
+                },
             };
 
             if (report.Failed)

@@ -1,6 +1,10 @@
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Maicon.SceneAnalyzer.Editor.Optional.ShaderGraph;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEditor;
@@ -70,7 +74,7 @@ namespace Maicon.SceneAnalyzer.Editor.ShaderGraph.Tests
         }
 
         [Test]
-        public void Write_RejectsMarkerOnlySourceBeforeMutationAndRollsBackWhenUnityImportFails()
+        public void Write_RejectsMalformedSourceBeforeMutation()
         {
             CopyTemplate();
             var before = File.ReadAllBytes(GraphPath);
@@ -84,7 +88,6 @@ namespace Maicon.SceneAnalyzer.Editor.ShaderGraph.Tests
             Assert.That((int)read.Json["objectRecordCount"], Is.GreaterThan(1));
             var hash = (string)read.Json["sha256"];
 
-            LogAssert.ignoreFailingMessages = true;
             var rejected = new WriteShaderGraphSourceTool().Execute(new JObject
             {
                 ["assetPath"] = GraphPath,
@@ -92,7 +95,6 @@ namespace Maicon.SceneAnalyzer.Editor.ShaderGraph.Tests
                 ["overwrite"] = true,
                 ["expectedSha256"] = hash,
             });
-            LogAssert.ignoreFailingMessages = false;
             Assert.That(rejected.IsError, Is.True);
             Assert.That((string)rejected.Json["code"], Is.EqualTo("INVALID_SHADER_GRAPH_SOURCE"));
             CollectionAssert.AreEqual(before, File.ReadAllBytes(GraphPath));
@@ -107,32 +109,101 @@ namespace Maicon.SceneAnalyzer.Editor.ShaderGraph.Tests
             Assert.That(missingObjectId.IsError, Is.True);
             Assert.That((string)missingObjectId.Json["code"], Is.EqualTo("INVALID_SHADER_GRAPH_SOURCE"));
             CollectionAssert.AreEqual(before, File.ReadAllBytes(GraphPath));
+        }
 
+        [Test]
+        public void Write_ValidSourceRoundTripSucceedsWithoutImportErrors()
+        {
+            CopyTemplate();
+            var before = File.ReadAllBytes(GraphPath);
+            var read = ReadCurrent();
+            var hash = (string)read["sha256"];
             var validSource = File.ReadAllText(GraphPath);
-            LogAssert.ignoreFailingMessages = true;
+            var written = new WriteShaderGraphSourceTool().Execute(new JObject
+            {
+                ["assetPath"] = GraphPath, ["source"] = validSource,
+                ["overwrite"] = true, ["expectedSha256"] = hash,
+            });
+            Assert.That(written.IsError, Is.False, written.Text);
+            Assert.That((int)written.Json["importErrorCount"], Is.Zero);
+            Assert.That((int)written.Json["shaderErrorCount"], Is.Zero);
+            Assert.That((string)written.Json["afterSha256"], Is.EqualTo(hash));
+            CollectionAssert.AreEqual(before, File.ReadAllBytes(GraphPath));
+        }
+
+        [Test]
+        public void Write_SemanticallyInvalidGraphRollsBackAfterRealUnityImportError()
+        {
+            CopyTemplate();
+            var before = File.ReadAllBytes(GraphPath);
+            var read = ReadCurrent();
+            var hash = (string)read["sha256"];
+            var invalidSource = WithInvalidConnectedSwizzle(File.ReadAllText(GraphPath));
+            // Shader Graph 17.3 SwizzleNode.ValidateNode reports this error;
+            // ShaderSubGraphImporter forwards errors from reachable nodes via
+            // AssetImportContext.LogImportError. Do not suppress unrelated logs.
+            LogAssert.Expect(UnityEngine.LogType.Error, new Regex("Sub Graph at .* has .*error.*Invalid mask", RegexOptions.Singleline));
             var failedImport = new WriteShaderGraphSourceTool().Execute(new JObject
             {
                 ["assetPath"] = GraphPath,
-                ["source"] = validSource,
+                ["source"] = invalidSource,
                 ["overwrite"] = true,
                 ["expectedSha256"] = hash,
             });
-            LogAssert.ignoreFailingMessages = false;
-            Assert.That(failedImport.IsError, Is.True);
+            Assert.That(failedImport.IsError, Is.True, failedImport.Text);
             Assert.That((string)failedImport.Json["code"], Is.EqualTo("WRITE_SHADER_GRAPH_FAILED"));
+            Assert.That((bool)failedImport.Json["data"]["failedInspection"]["sourceValid"], Is.True,
+                "The failure must come from Unity's semantic import, not the MCP JSON preflight.");
             Assert.That((int)failedImport.Json["data"]["failedInspection"]["importErrorCount"], Is.GreaterThan(0));
+            StringAssert.Contains("Invalid mask", failedImport.Json["data"]["failedInspection"]["importMessages"].ToString());
             Assert.That((bool)failedImport.Json["data"]["rollback"]["verified"], Is.True);
             Assert.That((string)failedImport.Json["data"]["rollback"]["restoredSha256"], Is.EqualTo(hash));
             CollectionAssert.AreEqual(before, File.ReadAllBytes(GraphPath));
+            Assert.That((int)ReadCurrent()["importErrorCount"], Is.Zero, "Rollback must restore a healthy imported graph.");
+        }
+
+        private static JObject ReadCurrent()
+        {
+            var read = new ReadShaderGraphSourceTool().Execute(new JObject { ["assetPath"] = GraphPath, ["maxCharacters"] = 500000 });
+            Assert.That(read.IsError, Is.False, read.Text);
+            Assert.That((bool)read.Json["sourceValid"], Is.True);
+            return (JObject)read.Json;
+        }
+
+        private static string WithInvalidConnectedSwizzle(string source)
+        {
+            var records = new List<JObject>();
+            using (var text = new StringReader(source))
+            using (var reader = new JsonTextReader(text) { SupportMultipleContent = true })
+                while (reader.Read()) records.Add(JObject.Load(reader));
+            var graph = records[0];
+            var outputId = (string)graph["m_OutputNode"]["m_Id"];
+            var edge = ((JArray)graph["m_Edges"]).OfType<JObject>()
+                .FirstOrDefault(value => (string)value["m_InputSlot"]?["m_Node"]?["m_Id"] == outputId);
+            Assert.That(edge, Is.Not.Null, "The official template must contain a connected output slot.");
+            var nodeId = Guid.NewGuid().ToString("N");
+            ((JArray)graph["m_Nodes"]).Add(new JObject { ["m_Id"] = nodeId });
+            edge["m_OutputSlot"] = new JObject { ["m_Node"] = new JObject { ["m_Id"] = nodeId }, ["m_SlotId"] = 1 };
+            records.Add(new JObject
+            {
+                ["m_SGVersion"] = 1, ["m_Type"] = "UnityEditor.ShaderGraph.SwizzleNode", ["m_ObjectId"] = nodeId,
+                ["m_Group"] = new JObject { ["m_Id"] = "" }, ["m_Name"] = "Deliberately invalid mask",
+                ["m_Slots"] = new JArray(), ["_maskInput"] = "!",
+            });
+            // GraphData.OnAfterMultiDeserialize rebuilds Swizzle's input/output
+            // slots before resolving edges. A connected invalid mask gives an
+            // explicit semantic error without relying on missing scripts or URP.
+            return string.Join("\n\n", records.Select(record => record.ToString(Formatting.Indented)));
         }
 
         private static void CopyTemplate()
         {
             Assert.That(File.Exists(TemplatePath), Is.True, TemplatePath);
             File.Copy(TemplatePath, GraphPath, true);
-            LogAssert.ignoreFailingMessages = true;
             AssetDatabase.ImportAsset(GraphPath, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
-            LogAssert.ignoreFailingMessages = false;
+            var imported = ReadCurrent();
+            Assert.That((int)imported["importErrorCount"], Is.Zero, "The valid template must import cleanly before testing writes.");
+            Assert.That(imported["importedAsset"].Type, Is.Not.EqualTo(JTokenType.Null));
         }
     }
 }

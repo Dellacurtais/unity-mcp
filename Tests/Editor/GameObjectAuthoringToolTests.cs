@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write;
@@ -39,9 +40,9 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         [Test]
-        public void Contracts_ExposeTwentyTwoRegisteredToolsWithStructuredOutputsAndHonestRisk()
+        public void Contracts_ExposeCoreAndInstalledUguiToolsWithStructuredOutputsAndHonestRisk()
         {
-            IMcpTool[] tools =
+            var tools = new List<IMcpTool>
             {
                 new CreatePrimitiveTool(), new CreateEmptyTool(), new CreateCameraTool(),
                 new InstantiatePrefabTool(), new SetTransformTool(), new SetCameraPropsTool(),
@@ -49,11 +50,22 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 new SetEnabledTool(), new SetActiveTool(), new RenameObjectTool(),
                 new SetTagTool(), new SetLayerTool(), new ParentObjectTool(),
                 new DeleteObjectTool(), new DuplicateObjectTool(), new LookAtTool(),
-                new SelectObjectTool(), CreateUguiTool("Maicon.SceneAnalyzer.Editor.UGUI.SetRectTransformTool"),
+                new SelectObjectTool(),
                 new SetStaticEditorFlagsTool(), new ApplyChangesetTool(),
             };
-
-            Assert.That(tools.Select(tool => tool.Name).Distinct(StringComparer.Ordinal).Count(), Is.EqualTo(22));
+            var uguiInstalled = UnityEditor.PackageManager.PackageInfo.FindForPackageName("com.unity.ugui") != null;
+            if (uguiInstalled)
+            {
+                // An installed module must still load, register and satisfy its
+                // contracts. Do not turn a broken optional assembly into a skip.
+                tools.Add(CreateUguiTool("Maicon.SceneAnalyzer.Editor.UGUI.SetRectTransformTool"));
+            }
+            else
+            {
+                Assert.That(Bootstrap.ToolRegistry.TryGet("set_rect_transform", out _), Is.False,
+                    "The uGUI tool must not be advertised without its package.");
+            }
+            Assert.That(tools.Select(tool => tool.Name).Distinct(StringComparer.Ordinal).Count(), Is.EqualTo(uguiInstalled ? 22 : 21));
             foreach (var tool in tools)
             {
                 Assert.That(Bootstrap.ToolRegistry.TryGet(tool.Name, out _), Is.True, tool.Name);

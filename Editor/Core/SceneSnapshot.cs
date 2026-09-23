@@ -114,17 +114,19 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         private void Capture(GameObject go, int parentId, Scene scene, bool isPrefabStage, bool includeRenderers)
         {
             var staticFlags = GameObjectUtility.GetStaticEditorFlags(go);
+            var capturedTarget = ToolTargetRef.Capture(go);
             var info = new GameObjectInfo
             {
                 InstanceID = go.GetInstanceID(),
                 Name = go.name,
                 ParentId = parentId,
                 SceneName = scene.name,
-                ScenePath = scene.path,
-                SceneGuid = string.IsNullOrEmpty(scene.path) ? null : AssetDatabase.AssetPathToGUID(scene.path),
+                ScenePath = capturedTarget.ScenePath,
+                SceneGuid = capturedTarget.SceneGuid,
                 SceneHandle = scene.handle,
                 HierarchyPath = ToolTargetRef.BuildHierarchyPath(go.transform),
-                GlobalObjectId = ToolTargetRef.Capture(go)?.GlobalObjectId,
+                GlobalObjectId = capturedTarget.GlobalObjectId,
+                CaptureDomainId = capturedTarget.CaptureDomainId,
                 IsPrefabStage = isPrefabStage,
                 LocalPosition = go.transform.localPosition,
                 LocalRotation = go.transform.localRotation,
@@ -177,6 +179,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                 {
                     InstanceID = c.GetInstanceID(),
                     GlobalObjectId = componentTarget?.GlobalObjectId,
+                    CaptureDomainId = componentTarget?.CaptureDomainId,
                     ComponentOrdinal = componentTarget?.ComponentOrdinal ?? -1,
                     TypeName = c.GetType().FullName,
                     Enabled = c is Behaviour b ? b.enabled : true,
@@ -244,6 +247,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         public int SceneHandle;
         public string HierarchyPath;
         public string GlobalObjectId;
+        public string CaptureDomainId;
         public bool IsPrefabStage;
         public Vector3 LocalPosition;
         public Quaternion LocalRotation;
@@ -259,12 +263,20 @@ namespace Maicon.SceneAnalyzer.Editor.Core
         public PrefabInstanceStatus PrefabStatus;
         public List<ComponentInfo> Components;
         public List<int> ChildIds;
+
+        public ToolTargetRef ToTargetRef() => new ToolTargetRef
+        {
+            Kind = "gameObject", InstanceId = InstanceID, GlobalObjectId = GlobalObjectId,
+            CaptureDomainId = CaptureDomainId, SceneGuid = SceneGuid, ScenePath = ScenePath,
+            SceneHandle = SceneHandle, HierarchyPath = HierarchyPath, IsPrefabStage = IsPrefabStage,
+        };
     }
 
     public sealed class ComponentInfo
     {
         public int InstanceID;
         public string GlobalObjectId;
+        public string CaptureDomainId;
         public int ComponentOrdinal;
         public string TypeName;
         public bool Enabled;

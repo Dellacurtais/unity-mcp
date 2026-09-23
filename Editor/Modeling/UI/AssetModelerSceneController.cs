@@ -209,10 +209,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             if (!_collapsed)
             {
                 EditorGUILayout.BeginHorizontal();
-                WorkspaceButton("Objetos", AssetModelerWorkspace.Objects);
-                WorkspaceButton("Topologia", AssetModelerWorkspace.Topology);
-                WorkspaceButton("Deformar", AssetModelerWorkspace.Deform);
-                WorkspaceButton("Vestir", AssetModelerWorkspace.SurfaceFit);
+                WorkspaceButton("Limpar", AssetModelerWorkspace.Cleanup);
+                WorkspaceButton("Tamanho", AssetModelerWorkspace.Size);
+                WorkspaceButton("Salvar", AssetModelerWorkspace.Save);
                 EditorGUILayout.EndHorizontal();
 
                 if (_window.SceneFacePickingActive)
@@ -221,15 +220,15 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                     EditorGUILayout.LabelField("Selecione um objeto na Hierarchy.", EditorStyles.miniLabel);
 
                 EditorGUILayout.BeginHorizontal();
-                if (_window.SceneDocument == null)
+                if (_window.SceneSupportsPreview && _window.SceneDocument == null)
                 {
                     using (new EditorGUI.DisabledScope(_window.SceneTarget == null))
                         if (GUILayout.Button("Criar cópia editável", GUILayout.Height(24f))) _window.SceneCreateEditableCopy();
                 }
                 else if (_window.SceneSupportsPreview)
                 {
-                    if (GUILayout.Button(_window.SceneHasPreview ? "Atualizar" : "Preview", GUILayout.Height(24f))) _window.ScenePreviewCurrent();
-                    using (new EditorGUI.DisabledScope(!_window.SceneHasPreview))
+                    if (GUILayout.Button(_window.SceneHasPreview ? "Atualizar" : "Prévia", GUILayout.Height(24f))) _window.ScenePreviewCurrent();
+                    using (new EditorGUI.DisabledScope(!_window.SceneCanApplyPreview))
                     {
                         if (GUILayout.Button("Aplicar", GUILayout.Height(24f))) _window.SceneApplyCurrent();
                         if (GUILayout.Button("×", GUILayout.Width(26f), GUILayout.Height(24f))) _window.SceneCancelPreview();

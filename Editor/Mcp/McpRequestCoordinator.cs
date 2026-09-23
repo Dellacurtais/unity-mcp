@@ -8,7 +8,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
     public sealed class McpRequestCoordinator : IDisposable
     {
         private readonly SemaphoreSlim _concurrency;
-        private readonly SemaphoreSlim _mutation = new SemaphoreSlim(1, 1);
+        private SemaphoreSlim Mutation => Jobs.EditorMutationGate.Semaphore;
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _requests = new ConcurrentDictionary<string, CancellationTokenSource>(StringComparer.Ordinal);
         private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
         private readonly object _lifecycleLock = new object();
@@ -23,7 +23,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 
         public int InFlightCount => _requests.Count;
 
-        public async Task<Lease> BeginAsync(string requestId, bool isWrite, CancellationToken serverToken, TimeSpan timeout)
+        public async Task<Lease> BeginAsync(string requestId, bool isWrite, CancellationToken serverToken, TimeSpan timeout, bool priority = false)
         {
             lock (_lifecycleLock)
             {
@@ -38,25 +38,32 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             bool requestRegistered = false;
             try
             {
-                await _concurrency.WaitAsync(linked.Token).ConfigureAwait(false);
-                concurrencyHeld = true;
+                // Register before admission so cancellation also reaches requests
+                // queued behind occupied concurrency slots.
                 if (!string.IsNullOrEmpty(requestId))
                 {
                     if (!_requests.TryAdd(requestId, linked))
                         throw new InvalidOperationException($"Duplicate MCP request id '{requestId}'.");
                     requestRegistered = true;
                 }
+                // Cancellation/control must remain available when every normal slot is
+                // waiting on a mutation resource owned by the job being cancelled.
+                if (!priority)
+                {
+                    await _concurrency.WaitAsync(linked.Token).ConfigureAwait(false);
+                    concurrencyHeld = true;
+                }
                 if (isWrite)
                 {
-                    await _mutation.WaitAsync(linked.Token).ConfigureAwait(false);
+                    await Mutation.WaitAsync(linked.Token).ConfigureAwait(false);
                     mutationHeld = true;
                 }
-                return new Lease(this, requestId, linked, mutationHeld);
+                return new Lease(this, requestId, linked, mutationHeld, concurrencyHeld);
             }
             catch
             {
                 if (requestRegistered) _requests.TryRemove(requestId, out _);
-                if (mutationHeld) _mutation.Release();
+                if (mutationHeld) Mutation.Release();
                 if (concurrencyHeld) _concurrency.Release();
                 linked.Dispose();
                 ReleaseOperation();
@@ -76,11 +83,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             foreach (var pair in _requests) { try { pair.Value.Cancel(); } catch { } }
         }
 
-        private void End(string requestId, CancellationTokenSource cts, bool mutationHeld)
+        private void End(string requestId, CancellationTokenSource cts, bool mutationHeld, bool concurrencyHeld)
         {
             if (!string.IsNullOrEmpty(requestId)) _requests.TryRemove(requestId, out _);
-            if (mutationHeld) _mutation.Release();
-            _concurrency.Release();
+            if (mutationHeld) Mutation.Release();
+            if (concurrencyHeld) _concurrency.Release();
             cts.Dispose();
             ReleaseOperation();
         }
@@ -101,7 +108,6 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0) return;
             _shutdown.Dispose();
             _concurrency.Dispose();
-            _mutation.Dispose();
         }
 
         public void Dispose()
@@ -123,13 +129,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             private readonly string _requestId;
             private readonly CancellationTokenSource _cts;
             private readonly bool _mutationHeld;
-            internal Lease(McpRequestCoordinator owner, string requestId, CancellationTokenSource cts, bool mutationHeld)
-            { _owner = owner; _requestId = requestId; _cts = cts; _mutationHeld = mutationHeld; }
+            private readonly bool _concurrencyHeld;
+            internal Lease(McpRequestCoordinator owner, string requestId, CancellationTokenSource cts, bool mutationHeld, bool concurrencyHeld)
+            { _owner = owner; _requestId = requestId; _cts = cts; _mutationHeld = mutationHeld; _concurrencyHeld = concurrencyHeld; }
             public CancellationToken CancellationToken => _cts.Token;
             public void Dispose()
             {
                 var owner = Interlocked.Exchange(ref _owner, null);
-                owner?.End(_requestId, _cts, _mutationHeld);
+                owner?.End(_requestId, _cts, _mutationHeld, _concurrencyHeld);
             }
         }
     }

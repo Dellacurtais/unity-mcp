@@ -220,7 +220,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     var after = SerializedValueCodec.Read(property, CompleteReadOptions());
                     serialized.ApplyModifiedProperties();
                     EditorUtility.SetDirty(asset);
-                    AssetDatabase.SaveAssetIfDirty(asset);
+                    var saved = ChangesetExecutor.SaveAssetIfDirty(asset);
                     var result = new OpResult
                     {
                         Ok = true,
@@ -232,7 +232,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                             ["propertyPath"] = propertyPath,
                             ["before"] = before,
                             ["after"] = after,
-                            ["savedAssets"] = true,
+                            ["savedAssets"] = saved,
                         },
                     };
                     mutation.Complete();
@@ -367,7 +367,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     var after = SerializedValueCodec.Read(property, CompleteReadOptions());
                     serialized.ApplyModifiedProperties();
                     EditorUtility.SetDirty(serialized.targetObject);
-                    if (!string.IsNullOrEmpty(assetPath)) AssetDatabase.SaveAssetIfDirty(serialized.targetObject);
+                    var saved = !string.IsNullOrEmpty(assetPath) && ChangesetExecutor.SaveAssetIfDirty(serialized.targetObject);
                     var result = new OpResult
                     {
                         Ok = true,
@@ -382,7 +382,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                             ["before"] = before,
                             ["after"] = after,
                             ["arraySize"] = property.arraySize,
-                            ["savedAssets"] = !string.IsNullOrEmpty(assetPath),
+                            ["savedAssets"] = saved,
                         },
                     };
                     mutation.Complete();

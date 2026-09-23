@@ -7,8 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add cleanup diagnosis and explicit fragment removal, optional loose line/point cleanup, and typed MCP preview/apply tools with revision and hash checks.
+- Add model-size normalization on independent model copies, with current-size and target-dimension modes and preflight checks for static meshes, rig dependencies, animation and colliders.
+- Isolate broker clients with optional MCP sessions, project pinning, unique execution IDs, session-scoped cancellation and bounded pending work.
+- Page and filter the broker tool catalog, bound hierarchy reads with snapshot cursors, and expose compact health including main-thread and job-journal status.
+- Store large ledger responses as verified compressed artifacts; retain bounded completed-read history while preserving mutation and idempotency receipts.
+- Persist all Editor job kinds in an atomic project journal and add Unity 6000.3.5f2 CI fixtures for minimal and representative package sets.
+
+### Changed
+
+- Organize Asset Modeler around cleaning, sizing and saving copies. Move advanced modeling behind a separate section and remove redundant object translation, rotation, pivot, alignment and distribution controls from the window.
+- Keep generated mesh/model assets on disk when undoing creation of their scene copy, so saved prefabs retain valid asset references.
+
 ### Fixed
 
+- Preserve raw mesh vertex layouts, channel dimensions, skinning data and submesh base vertices during editable snapshots; default cleanup removes exact degeneracies without a size-dependent tolerance.
+- Clone complete skeleton dependencies for editable skins, require explicit selection for ambiguous multi-mesh roots, and keep mesh colliders bound to their editable mesh.
+- Preserve already serialized target references during MCP response enrichment so nested model roots can be reused directly by subsequent tools.
+- Coalesce concurrent calls with the same idempotency key; keep uncertain writes and reconnecting jobs inconclusive until execution evidence exists.
+- Cover lock acquisition, bridge send and response with one deadline; block dispatch to a stale bridge or stalled Editor main thread.
+- Revalidate capabilities and targets after waiting for exclusive mutation access, retain exact component identities, and preserve known results across late cancellation.
+- Share mutation access across request processors, refresh and long-running jobs; let cancellation controls bypass saturated ordinary request slots.
+- Defer ScriptableObject saves until changeset commit and report rollback scope honestly, including file compensation failures.
 - Declare Unity's built-in Animation and Image Conversion modules as package dependencies so `Avatar`, `AnimationClip`, and runtime PNG capture compile in minimal Unity projects.
 
 ## [0.18.6] - 2026-08-16

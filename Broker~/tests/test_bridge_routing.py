@@ -53,7 +53,8 @@ async def test_dispatch_correlates_result_and_rejects_stale_generation(tmp_path,
     task = asyncio.create_task(router.dispatch(
         "request", {"jsonrpc": "2.0", "id": 1, "method": "ping"}, timeout=1,
     ))
-    await asyncio.sleep(0)
+    while not socket.sent:
+        await asyncio.sleep(0)
     command = socket.sent[-1]
     await router.handle(connection, envelope(
         "result", {"jsonRpc": {"jsonrpc": "2.0", "id": 1, "result": {}}},
@@ -127,7 +128,8 @@ async def test_execution_started_suppresses_unnecessary_focus_activation(tmp_pat
             "params": {"name": "run_tests", "arguments": {}},
         }, timeout=1,
     ))
-    await asyncio.sleep(0)
+    while not socket.sent:
+        await asyncio.sleep(0)
     command = socket.sent[-1]
     await router.handle(connection, envelope(
         "execution_started", {"requestId": "request"}, identity=identity,
@@ -152,7 +154,8 @@ async def test_waiting_refresh_job_completes_on_new_generation(tmp_path, identit
         job["job_id"],
         "waiting_for_reconnect",
         progress=0.75,
-        result={"messages": [{"severity": "Warning", "message": "unused variable"}]},
+        result={"event": "compilation_finished", "generationId": "generation-a",
+                "messages": [{"severity": "Warning", "message": "unused variable"}]},
     )
 
     new_identity = BridgeIdentity(**{**identity.__dict__, "generation_id": "generation-b"})

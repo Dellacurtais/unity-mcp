@@ -17,6 +17,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
         private bool _compilationStarted;
         private bool _compilationFailed;
         private bool _includeWarnings;
+        private bool _refreshStarted;
+        private readonly AssetRefreshIdleTracker _refreshIdle = new AssetRefreshIdleTracker();
+        private int _mutationHeld;
         private readonly JArray _compilerMessages = new JArray();
 
         public BrokerLifecycleMonitor(BrokerBridgeClient bridge, McpToolRegistry registry)
@@ -27,6 +30,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             CompilationPipeline.compilationStarted += OnCompilationStarted;
             CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompilationFinished;
             CompilationPipeline.compilationFinished += OnCompilationFinished;
+            EditorApplication.update += CompleteRefreshWithoutCompilation;
         }
 
         public Task BeforeReloadAsync(CancellationToken cancellationToken)
@@ -45,6 +49,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             CompilationPipeline.compilationStarted -= OnCompilationStarted;
             CompilationPipeline.assemblyCompilationFinished -= OnAssemblyCompilationFinished;
             CompilationPipeline.compilationFinished -= OnCompilationFinished;
+            EditorApplication.update -= CompleteRefreshWithoutCompilation;
+            ReleaseMutation();
+        }
+
+        private void ReleaseMutation()
+        {
+            if (Interlocked.Exchange(ref _mutationHeld, 0) != 0) Jobs.EditorMutationGate.Semaphore.Release();
         }
 
         private async Task OnControlRequested(string control, JObject payload)
@@ -53,11 +64,23 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             if (string.IsNullOrEmpty(requestedJobId)) return;
             if (control == "cancel_job")
             {
-                await MainThreadDispatcher.RunAsync(() =>
+                var cancelled = await MainThreadDispatcher.RunAsync(() =>
                 {
-                    if (string.Equals(_activeJobId, requestedJobId, StringComparison.Ordinal))
+                    if (string.Equals(_activeJobId, requestedJobId, StringComparison.Ordinal) && !_refreshStarted)
+                    {
                         _activeJobId = null;
+                        ReleaseMutation();
+                        return true;
+                    }
+                    return false;
                 });
+                await SafeSendAsync(cancelled ? "refresh_cancelled" : "refresh_cancel_rejected",
+                    _compilationStarted ? "compiling" : "ready", new JObject
+                    {
+                        ["jobId"] = requestedJobId,
+                        ["cancelled"] = cancelled,
+                        ["error"] = cancelled ? null : "Refresh is already executing or this job is no longer active; Unity cannot safely interrupt AssetDatabase.Refresh or compilation.",
+                    });
                 return;
             }
             if (control != "refresh_compile") return;
@@ -90,7 +113,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             var accepted = await MainThreadDispatcher.RunAsync(() =>
             {
                 if (!string.IsNullOrEmpty(_activeJobId)) return false;
+                if (!Jobs.EditorMutationGate.Semaphore.Wait(0)) return false;
+                _mutationHeld = 1;
                 _activeJobId = requestedJobId;
+                _refreshStarted = false;
+                _refreshIdle.Reset();
                 _compilationStarted = false;
                 _compilationFailed = false;
                 _includeWarnings = (bool?)payload["includeWarnings"] ?? true;
@@ -102,7 +129,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 await SafeSendAsync("compile_failed", "ready", new JObject
                 {
                     ["jobId"] = requestedJobId,
-                    ["error"] = "Another refresh/compile job is already active.",
+                    ["error"] = "RESOURCE_BUSY: another Editor mutation or job is active; refresh was not started.",
                 });
                 return;
             }
@@ -115,8 +142,17 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             {
                 await MainThreadDispatcher.RunAsync(() =>
                 {
+                    if (!string.Equals(_activeJobId, requestedJobId, StringComparison.Ordinal)) return;
+                    // Capabilities and mode may have changed while refresh_accepted was sent.
+                    if (!_registry.TryGet("refresh_assets", out var refreshTool)
+                        || !ToolAuthorization.TryAuthorize(refreshTool, _registry.GetDescriptor("refresh_assets"),
+                            out var code, out var message))
+                        throw new InvalidOperationException("Refresh authorization changed before execution.");
+                    _refreshStarted = true;
                     AssetDatabase.Refresh();
-                    EditorApplication.delayCall += CompleteRefreshWithoutCompilation;
+                    // Refresh may schedule script compilation for a later update.
+                    // The first delayCall is not evidence of an idle AssetDatabase.
+                    _refreshIdle.Reset();
                 });
             }
             catch (Exception exception)
@@ -125,6 +161,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 {
                     var current = _activeJobId;
                     _activeJobId = null;
+                    ReleaseMutation();
                     return current;
                 });
                 await SafeSendAsync("compile_failed", "ready", new JObject
@@ -173,6 +210,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             if (_compilationFailed)
             {
                 _activeJobId = null;
+                ReleaseMutation();
                 _ = SafeSendAsync("compile_failed", "compile_failed", new JObject
                 {
                     ["jobId"] = jobId,
@@ -190,9 +228,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         private void CompleteRefreshWithoutCompilation()
         {
-            if (string.IsNullOrEmpty(_activeJobId) || _compilationStarted) return;
+            if (string.IsNullOrEmpty(_activeJobId) || !_refreshStarted || _compilationStarted) return;
+            if (!_refreshIdle.Observe(EditorApplication.timeSinceStartup,
+                EditorApplication.isCompiling, EditorApplication.isUpdating,
+                AssetDatabase.GlobalArtifactDependencyVersion)) return;
             var jobId = _activeJobId;
             _activeJobId = null;
+            ReleaseMutation();
             _ = SafeSendAsync("refresh_completed", "ready", new JObject
             {
                 ["jobId"] = jobId,

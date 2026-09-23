@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Text;
+using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read;
 using Maicon.SceneAnalyzer.Editor.SceneTools;
@@ -114,6 +117,142 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var alreadyActive = tool.Execute(new JObject { ["sceneHandle"] = (int)active.handle });
             Assert.That(alreadyActive.IsError, Is.False, alreadyActive.Text);
             Assert.That((int)alreadyActive.Json?["scene"]?["handle"], Is.EqualTo((int)active.handle));
+        }
+
+        [Test]
+        public void ReadHierarchy_DefaultPageIsBoundedAndCursorCoversEveryNodeOnce()
+        {
+            for (var i = 0; i < 301; i++) new GameObject("PagedRoot_" + i);
+            Bootstrap.Snapshot.MarkStale();
+            var tool = new ReadHierarchyTool();
+            var arguments = new JObject();
+            var seen = new HashSet<int>();
+            string version = null;
+            var pages = 0;
+            do
+            {
+                var result = tool.Execute(arguments);
+                Assert.That(result.IsError, Is.False, result.Text);
+                var payload = (JObject)result.Json;
+                Assert.That(ToolSchemaValidator.ValidateArguments(payload, tool.OutputSchema, out var error), Is.True, error);
+                Assert.That((int)payload["returned"], Is.InRange(1, 250));
+                Assert.That(Encoding.UTF8.GetByteCount(payload.ToString(Newtonsoft.Json.Formatting.None)), Is.LessThanOrEqualTo(262144));
+                Assert.That((int)payload["count"], Is.EqualTo(301));
+                if (version != null) Assert.That((string)payload["snapshotVersion"], Is.EqualTo(version));
+                version = (string)payload["snapshotVersion"];
+                foreach (var node in (JArray)payload["nodes"])
+                    Assert.That(seen.Add((int)node["instanceId"]), Is.True, "pagination repeated an object");
+                arguments["cursor"] = payload["nextCursor"];
+                pages++;
+                Assert.That(pages, Is.LessThan(10));
+                if (!(bool)payload["hasMore"]) break;
+            } while (true);
+            Assert.That(pages, Is.GreaterThan(1));
+            Assert.That(seen.Count, Is.EqualTo(301));
+        }
+
+        [Test]
+        public void ReadHierarchy_CapturedTargetRejectsReplacementWithReusedDurableId()
+        {
+            var original = new GameObject("Captured");
+            Assert.That(SaveFixtureScene(SceneManager.GetActiveScene(), Root + "/Active.unity"), Is.True);
+            Bootstrap.Snapshot.MarkStale();
+            var result = new ReadHierarchyTool().Execute(new JObject { ["fields"] = new JArray() });
+            Assert.That(result.IsError, Is.False, result.Text);
+            var target = ToolTargetRef.FromJson(result.Json["nodes"][0]["target"]);
+            Assert.That(target.CaptureDomainId, Is.Not.Null.And.Not.Empty);
+            Assert.That(ToolTargetResolver.Resolve(target, out var originalError), Is.SameAs(original), originalError);
+            var tree = new ReadSceneTool().Execute(new JObject());
+            var treeTarget = ToolTargetRef.FromJson(tree.Json["roots"][0]["target"]);
+            Assert.That(treeTarget.CaptureDomainId, Is.EqualTo(target.CaptureDomainId));
+
+            UnityEngine.Object.DestroyImmediate(original);
+            new GameObject("Captured");
+            Assert.That(SaveFixtureScene(SceneManager.GetActiveScene(), Root + "/Active.unity"), Is.True);
+            Assert.That(ToolTargetResolver.Resolve(target, out var error), Is.Null);
+            StringAssert.StartsWith("TARGET_IDENTITY_STALE", error);
+            Assert.That(ToolTargetResolver.Resolve(treeTarget, out _), Is.Null);
+        }
+
+        [Test]
+        public void ReadHierarchy_ScopeDepthAndFieldsAreExplicit()
+        {
+            var root = new GameObject("ScopedRoot");
+            var child = new GameObject("Child");
+            child.transform.SetParent(root.transform);
+            new GameObject("Grandchild").transform.SetParent(child.transform);
+            new GameObject("OutsideRoot");
+            Bootstrap.Snapshot.MarkStale();
+            var result = new ReadHierarchyTool().Execute(new JObject
+            {
+                ["root"] = Maicon.SceneAnalyzer.Editor.Core.ToolTargetRef.Capture(root).ToJson(),
+                ["scene"] = SceneManager.GetActiveScene().path,
+                ["depth"] = 1,
+                ["fields"] = new JArray(),
+            });
+            Assert.That(result.IsError, Is.False, result.Text);
+            Assert.That((int)result.Json["count"], Is.EqualTo(4));
+            Assert.That((int)result.Json["scopeCount"], Is.EqualTo(3));
+            Assert.That((int)result.Json["matched"], Is.EqualTo(2));
+            Assert.That((bool)result.Json["depthLimited"], Is.True);
+            Assert.That((bool)result.Json["hasMore"], Is.False);
+            Assert.That((bool)result.Json["truncated"], Is.True);
+            var first = (JObject)result.Json["nodes"][0];
+            Assert.That(first.Properties().Select(property => property.Name), Is.EquivalentTo(new[] { "instanceId", "name", "parentId", "target" }));
+            Assert.That((int)first["target"]["instanceId"], Is.EqualTo(root.GetInstanceID()));
+        }
+
+        [Test]
+        public void ReadHierarchy_RejectsCursorAfterMutationOrFilterChange()
+        {
+            new GameObject("One");
+            new GameObject("Two");
+            Bootstrap.Snapshot.MarkStale();
+            var tool = new ReadHierarchyTool();
+            var first = tool.Execute(new JObject { ["limit"] = 1 });
+            Assert.That(first.IsError, Is.False, first.Text);
+            var cursor = (string)first.Json["nextCursor"];
+            var changedQuery = tool.Execute(new JObject { ["cursor"] = cursor, ["fields"] = new JArray() });
+            Assert.That(changedQuery.IsError, Is.True);
+            Assert.That((string)changedQuery.Json["code"], Is.EqualTo("CURSOR_QUERY_MISMATCH"));
+            Bootstrap.Snapshot.MarkStale();
+            var stale = tool.Execute(new JObject { ["cursor"] = cursor });
+            Assert.That(stale.IsError, Is.True);
+            Assert.That((string)stale.Json["code"], Is.EqualTo("SNAPSHOT_STALE"));
+        }
+
+        [Test]
+        public void ReadHierarchy_Utf8BudgetLimitsResultsWithoutLosingNextObject()
+        {
+            for (var i = 0; i < 12; i++) new GameObject(new string('\u6F22', 40) + i);
+            Bootstrap.Snapshot.MarkStale();
+            var tool = new ReadHierarchyTool();
+            var args = new JObject { ["maxBytes"] = 4096, ["fields"] = new JArray() };
+            var seen = new HashSet<int>();
+            for (var page = 0; page < 20; page++)
+            {
+                var result = tool.Execute(args);
+                Assert.That(result.IsError, Is.False, result.Text);
+                Assert.That(Encoding.UTF8.GetByteCount(result.Json.ToString(Newtonsoft.Json.Formatting.None)), Is.LessThanOrEqualTo(4096));
+                foreach (var node in (JArray)result.Json["nodes"]) Assert.That(seen.Add((int)node["instanceId"]), Is.True);
+                if (!(bool)result.Json["hasMore"]) break;
+                args["cursor"] = result.Json["nextCursor"];
+            }
+            Assert.That(seen.Count, Is.EqualTo(12));
+        }
+
+        [Test]
+        public void ReadHierarchy_OversizedNodeAndMalformedCursorFailExplicitly()
+        {
+            new GameObject(new string('x', 1500));
+            Bootstrap.Snapshot.MarkStale();
+            var tool = new ReadHierarchyTool();
+            var oversized = tool.Execute(new JObject { ["maxBytes"] = 1024 });
+            Assert.That(oversized.IsError, Is.True);
+            Assert.That((string)oversized.Json["code"], Is.EqualTo("BYTE_BUDGET_TOO_SMALL"));
+            var invalid = tool.Execute(new JObject { ["cursor"] = "not-base64" });
+            Assert.That(invalid.IsError, Is.True);
+            Assert.That((string)invalid.Json["code"], Is.EqualTo("CURSOR_INVALID"));
         }
 
         [Test]

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+
 import httpx
 import pytest
 
@@ -46,6 +49,18 @@ async def test_mcp_http_auth_and_initialize(app) -> None:
         )
         assert response.status_code == 200
         assert response.json()["result"]["serverInfo"]["name"] == "unity-mcp-broker"
+        assert response.json()["result"]["capabilities"]["tools"]["listChanged"] is False
+        session_id = response.headers["Mcp-Session-Id"]
+        session_headers = {"Authorization": "Bearer secret", "Mcp-Session-Id": session_id}
+        ping = await client.post("/mcp/", headers=session_headers, json={"jsonrpc": "2.0", "id": 3, "method": "ping"})
+        assert ping.status_code == 200
+        assert ping.headers["Mcp-Session-Id"] == session_id
+        deleted = await client.delete("/mcp/", headers=session_headers)
+        assert deleted.status_code == 204
+        expired = await client.post("/mcp/", headers=session_headers, json={"jsonrpc": "2.0", "id": 4, "method": "ping"})
+        assert expired.status_code == 404
+        legacy = await client.post("/mcp/", headers={"Authorization": "Bearer secret"}, json={"jsonrpc": "2.0", "id": 5, "method": "ping"})
+        assert legacy.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -76,3 +91,41 @@ async def test_mcp_http_rejects_remote_origin_media_protocol_and_oversize(app) -
             content=b"{" + (b" " * 300) + b"}",
         )
         assert oversized.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_shutdown_joins_history_maintenance_before_closing_sqlite(tmp_path, monkeypatch) -> None:
+    instance = create_app(BrokerConfig(token="secret", database_path=tmp_path / "maintenance.sqlite3",
+                                       history_maintenance_seconds=0.01))
+    store = instance.state.store
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    observed = {}
+
+    def maintenance(**_):
+        started.set()
+        release.wait(timeout=2)
+        observed["schema"] = store.schema_version()
+        finished.set()
+
+    original_close = store.close
+
+    def close():
+        observed["closed_after_worker"] = finished.is_set()
+        original_close()
+
+    monkeypatch.setattr(store, "prune_history", maintenance)
+    monkeypatch.setattr(store, "close", close)
+    context = instance.router.lifespan_context(instance)
+    await context.__aenter__()
+    assert not started.is_set(), "startup must not purge history before its maintenance interval"
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        shutdown = asyncio.create_task(context.__aexit__(None, None, None))
+        await asyncio.sleep(0.02)
+        assert not shutdown.done()
+        release.set()
+        await asyncio.wait_for(shutdown, timeout=1)
+        assert observed["closed_after_worker"] is True
+        assert observed["schema"] >= 2
+    finally:
+        release.set()

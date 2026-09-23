@@ -30,9 +30,43 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools
                 ["scenePath"] = String(),
                 ["loadedScenes"] = Array(Object()),
                 ["count"] = Integer(0),
-                ["nodes"] = Array(Object()),
+                ["scopeCount"] = Integer(0),
+                ["matched"] = Integer(0),
+                ["offset"] = Integer(0),
+                ["returned"] = Integer(0),
+                ["hasMore"] = Boolean(),
+                ["truncated"] = Boolean(),
+                ["depthLimited"] = Boolean(),
+                ["snapshotVersion"] = String(),
+                ["nextCursor"] = new JObject { ["type"] = new JArray("string", "null") },
+                ["nodes"] = Array(HierarchyNode),
             },
-            "sceneName", "scenePath", "loadedScenes", "count", "nodes");
+            "sceneName", "scenePath", "loadedScenes", "count", "scopeCount", "matched", "offset",
+            "returned", "hasMore", "truncated", "depthLimited", "snapshotVersion", "nextCursor", "nodes");
+
+        private static JObject HierarchyNode => Object(new JObject
+        {
+            ["instanceId"] = Integer(),
+            ["name"] = String(),
+            ["parentId"] = Integer(),
+            ["target"] = SchemaHelpers.TargetRefSchema,
+            ["sceneName"] = String(),
+            ["scenePath"] = String(),
+            ["sceneGuid"] = new JObject { ["type"] = new JArray("string", "null") },
+            ["sceneHandle"] = Integer(),
+            ["hierarchyPath"] = String(),
+            ["globalObjectId"] = new JObject { ["type"] = new JArray("string", "null") },
+            ["isPrefabStage"] = Boolean(),
+            ["tag"] = String(),
+            ["layer"] = Integer(),
+            ["isActive"] = Boolean(),
+            ["isStatic"] = Boolean(),
+            ["staticFlags"] = Integer(),
+            ["prefabStatus"] = String(),
+            ["prefabPath"] = new JObject { ["type"] = new JArray("string", "null") },
+            ["childIds"] = Array(Integer()),
+            ["componentTypes"] = Array(String()),
+        }, "instanceId", "name", "parentId", "target");
 
         public static JObject ReadScene => Object(
             new JObject

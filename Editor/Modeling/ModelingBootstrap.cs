@@ -34,6 +34,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling
                     new RecombineSmartBodySplitTool(),
                     new BeginMeshEditSessionTool(),
                     new GetMeshEditContextTool(),
+                    new AnalyzeMeshCleanupTool(),
+                    new PreviewMeshCleanupTool(),
+                    new ApplyMeshCleanupTool(),
+                    new PreviewModelScaleTool(),
+                    new ApplyModelScaleTool(),
                     new PreviewMeshOperationTool(),
                     new ApplyMeshOperationTool(),
                     new CommitMeshEditSessionTool(),
@@ -77,7 +82,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling
                     if (!Bootstrap.ToolRegistry.TryGet(candidates[i].Name, out _)) missing.Add(candidates[i]);
                 if (missing.Count == 0) return;
                 Bootstrap.ToolRegistry.RegisterRange(missing);
-                Bootstrap.RecordEntry($"[asset-modeler] registered {missing.Count} of 47 modeling and rigging tools");
+                Bootstrap.RecordEntry($"[asset-modeler] registered {missing.Count} of {candidates.Length} modeling and rigging tools");
             }
             catch (System.Exception exception)
             {

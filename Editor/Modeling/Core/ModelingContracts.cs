@@ -175,6 +175,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Core
         public int RemovedVertexCount { get; set; }
         public int CreatedFaceCount { get; set; }
         public int RemovedFaceCount { get; set; }
+        public int RemovedLineCount { get; set; }
+        public int RemovedPointCount { get; set; }
+        public int RemovedComponentCount { get; set; }
     }
 
     public interface IMeshOperation

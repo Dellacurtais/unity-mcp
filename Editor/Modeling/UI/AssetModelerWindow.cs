@@ -18,9 +18,12 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
 {
     public sealed class AssetModelerWindow : EditorWindow
     {
-        private GameObject _target;
-        private MeshEditDocument _document;
-        private Renderer _workingRenderer;
+        [SerializeField] private GameObject _target;
+        [SerializeField] private GameObject _editableRoot;
+        [SerializeField] private Renderer _selectedRenderer;
+        [SerializeField] private MeshEditDocument _document;
+        [SerializeField] private Renderer _workingRenderer;
+        private readonly Dictionary<Renderer, MeshEditDocument> _rendererDocuments = new Dictionary<Renderer, MeshEditDocument>();
         [SerializeField] private AssetModelerNavigationState _navigation = new AssetModelerNavigationState();
         [SerializeField] private AssetModelerObjectTool _objectTool;
         [SerializeField] private AssetModelerTopologyTool _topologyTool;
@@ -28,21 +31,32 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         [SerializeField] private bool _showContextDetails;
         [SerializeField] private bool _showAdvancedSelection;
         [SerializeField] private bool _showAdvancedIds;
+        [SerializeField] private bool _showAdvancedTools;
+        private GUIStyle _pageTitleStyle;
+        private GUIStyle PageTitleStyle => _pageTitleStyle ?? (_pageTitleStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 15 });
         private Vector2 _scroll;
         private string _status;
         private MessageType _statusType = MessageType.Info;
         private MeshOperationPreview _preview;
 
-        private Vector3 _translation;
-        private Vector3 _rotation;
-        private Vector3 _scale = Vector3.one;
-        private bool _transformSelectedOnly;
         private int _axis;
         private bool _mirrorCopy = true;
         private float _mirrorPlane;
         private bool _mirrorWeldSeam;
         private float _weldTolerance = 0.00001f;
-        private float _cleanupEpsilon = 1e-12f;
+        private float _cleanupEpsilon;
+        private bool _cleanupRemoveUnused = true;
+        private bool _cleanupRemoveLines;
+        private bool _cleanupRemovePoints;
+        private readonly HashSet<int> _cleanupComponents = new HashSet<int>();
+        private int _cleanupPage;
+        private MeshCleanupAnalysis _cleanupAnalysis;
+        private MeshCleanupAnalysis _cleanupAfter;
+        private string _cleanupAnalysisHash;
+        private ModelScaleMode _sizeMode = ModelScaleMode.TargetDimension;
+        private ModelScaleAxis _sizeAxis = ModelScaleAxis.Y;
+        private float _targetDimension = 1.8f;
+        private ModelScalePreview _sizePreview;
         private string _faceSelection = string.Empty;
         private float _extrudeDistance = 0.05f;
         private float _bevelInset = 0.2f;
@@ -74,13 +88,13 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         private int _fitRefinementPasses = 2;
 
         private SceneArraySettings _array = new SceneArraySettings();
-        private int _alignAxis;
         private string _outputFolder = AssetModelerAssetPaths.DefaultRoot;
         private string _fbxPath = "Assets/AssetModeler/Exports/model.fbx";
         private bool _compactMergeMaterials = true;
         private string _mergeName = "MergedMesh";
         private bool _mergeRemoveSources;
         private string _lastExportPath;
+        [SerializeField] private string _savedPrefabPath;
 
         [MenuItem("Window/Asset Modeler (Unity MCP)", false, 1200)]
         public static void OpenWindow()
@@ -130,28 +144,36 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         {
             ModelingOperationCatalog.RegisterAll();
             _navigation = _navigation ?? new AssetModelerNavigationState();
+            _objectTool = AssetModelerWorkspaceCatalog.VisibleObjectTool(_objectTool);
             Selection.selectionChanged += OnSelectionChanged;
+            Undo.undoRedoPerformed += OnUndoRedo;
             if (_target == null) SetTarget(Selection.activeGameObject);
+            if (_selectedRenderer != null && _document != null && RendererMesh(_selectedRenderer) == _document.WorkingMesh)
+                _rendererDocuments[_selectedRenderer] = _document;
             AssetModelerSceneController.Attach(this);
         }
 
         private void OnDisable()
         {
             Selection.selectionChanged -= OnSelectionChanged;
+            Undo.undoRedoPerformed -= OnUndoRedo;
             AssetModelerSceneController.Detach(this);
             ClearPreview();
         }
 
         private void OnSelectionChanged()
         {
-            if (Selection.activeObject is MeshEditDocument document)
-            {
-                _document = document;
-                _status = "Documento de edição selecionado.";
-                Repaint();
-                return;
-            }
-            if (Selection.activeGameObject != null) SetTarget(Selection.activeGameObject);
+            // Selection is also used for picking faces and inspecting the rig. Changing
+            // it must never silently replace the model whose preview was approved.
+            Repaint();
+        }
+
+        private void OnUndoRedo()
+        {
+            ClearPreview();
+            _cleanupAnalysis = null;
+            _cleanupComponents.Clear();
+            Repaint();
         }
 
         private void OnGUI()
@@ -170,6 +192,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                     case AssetModelerWorkspace.Topology: DrawTopology(); break;
                     case AssetModelerWorkspace.Deform: DrawDeform(); break;
                     case AssetModelerWorkspace.SurfaceFit: DrawSurfaceFit(); break;
+                    case AssetModelerWorkspace.Cleanup: DrawCleanup(); break;
+                    case AssetModelerWorkspace.Size: DrawSize(); break;
+                    case AssetModelerWorkspace.Save: DrawSave(); break;
                 }
             }
             EditorGUILayout.EndScrollView();
@@ -199,19 +224,34 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             var icon = _target != null ? EditorGUIUtility.IconContent("GameObject Icon") : EditorGUIUtility.IconContent("console.warnicon");
             GUILayout.Label(icon, GUILayout.Width(22f), GUILayout.Height(20f));
             EditorGUI.BeginChangeCheck();
-            var target = (GameObject)EditorGUILayout.ObjectField(_target, typeof(GameObject), true);
+            var target = (GameObject)EditorGUILayout.ObjectField("Raiz do modelo", _target, typeof(GameObject), true);
             if (EditorGUI.EndChangeCheck()) SetTarget(target);
             if (_target != null && GUILayout.Button("Focar", GUILayout.Width(52f))) FrameTarget();
-            _showContextDetails = GUILayout.Toggle(_showContextDetails, _showContextDetails ? "▲" : "▼", EditorStyles.miniButton, GUILayout.Width(24f));
             EditorGUILayout.EndHorizontal();
-            string state = _document == null
-                ? "Sem sessão editável"
-                : $"{_document.WorkingMesh?.name ?? "Mesh"}  •  revisão {_document.Revision}";
-            EditorGUILayout.LabelField(state, EditorStyles.miniLabel);
+            using (new EditorGUI.DisabledScope(Selection.activeGameObject == null || Selection.activeGameObject == _target))
+                if (GUILayout.Button("Usar seleção como raiz")) SetTarget(Selection.activeGameObject);
+            DrawRendererPicker();
+            EditorGUILayout.LabelField(_editableRoot == _target && _target != null ? "Trabalhando em uma cópia" : "Modelo de origem", EditorStyles.miniLabel);
+            _showContextDetails = EditorGUILayout.Foldout(_showContextDetails, "Avançado: documento e revisão", true);
             if (_showContextDetails)
             {
-                _document = (MeshEditDocument)EditorGUILayout.ObjectField("Documento", _document, typeof(MeshEditDocument), false);
-                _outputFolder = EditorGUILayout.TextField("Pasta de saída", _outputFolder);
+                var document = (MeshEditDocument)EditorGUILayout.ObjectField("Documento", _document, typeof(MeshEditDocument), false);
+                if (document != _document)
+                {
+                    ClearPreview();
+                    if (document == null || RendererMesh(_selectedRenderer) == document.WorkingMesh)
+                    {
+                        _document = document;
+                        _workingRenderer = document != null ? _selectedRenderer : null;
+                        if (_selectedRenderer != null) _rendererDocuments[_selectedRenderer] = document;
+                    }
+                    else Failure(new InvalidOperationException("O documento deve pertencer à malha escolhida."));
+                }
+                if (_document != null)
+                {
+                    EditorGUILayout.LabelField("Sessão", _document.SessionId);
+                    EditorGUILayout.LabelField("Revisão", _document.Revision.ToString());
+                }
             }
             EditorGUILayout.EndVertical();
         }
@@ -219,14 +259,19 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         private void DrawHome()
         {
             EditorGUILayout.Space(8f);
-            EditorGUILayout.LabelField("O que você quer fazer?", new GUIStyle(EditorStyles.boldLabel) { fontSize = 15 });
+            EditorGUILayout.LabelField("Preparar seu modelo", PageTitleStyle);
             EditorGUILayout.LabelField(AssetModelerWorkspaceCatalog.Description(AssetModelerWorkspace.Home), EditorStyles.wordWrappedMiniLabel);
             EditorGUILayout.Space(6f);
-            DrawWorkspaceCard(AssetModelerWorkspace.Session, "d_Prefab Icon");
-            DrawWorkspaceCard(AssetModelerWorkspace.Objects, "MoveTool");
+            DrawWorkspaceCard(AssetModelerWorkspace.Cleanup, "d_PreMatCube");
+            DrawWorkspaceCard(AssetModelerWorkspace.Size, "ScaleTool");
+            DrawWorkspaceCard(AssetModelerWorkspace.Save, "d_Prefab Icon");
+            _showAdvancedTools = EditorGUILayout.Foldout(_showAdvancedTools, "Modelagem avançada", true);
+            if (!_showAdvancedTools) return;
+            DrawWorkspaceCard(AssetModelerWorkspace.Objects, "EditCollider");
             DrawWorkspaceCard(AssetModelerWorkspace.Topology, "ProBuilderMesh");
             DrawWorkspaceCard(AssetModelerWorkspace.Deform, "ClothInspector.PaintValue");
             DrawWorkspaceCard(AssetModelerWorkspace.SurfaceFit, "AvatarMask Icon");
+            DrawWorkspaceCard(AssetModelerWorkspace.Session, "d_UnityEditor.InspectorWindow");
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
             EditorGUILayout.LabelField("Smart Body Split", EditorStyles.boldLabel);
             EditorGUILayout.LabelField("Separar personagens preservando rig, pesos e materiais.", EditorStyles.wordWrappedMiniLabel);
@@ -250,15 +295,221 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         private void DrawWorkspaceHeader()
         {
             EditorGUILayout.Space(5f);
-            EditorGUILayout.LabelField(AssetModelerWorkspaceCatalog.Label(_navigation.Workspace), new GUIStyle(EditorStyles.boldLabel) { fontSize = 14 });
+            EditorGUILayout.LabelField(AssetModelerWorkspaceCatalog.Label(_navigation.Workspace), PageTitleStyle);
             EditorGUILayout.LabelField(AssetModelerWorkspaceCatalog.Description(_navigation.Workspace), EditorStyles.wordWrappedMiniLabel);
             EditorGUILayout.Space(5f);
+        }
+
+        private void DrawRendererPicker()
+        {
+            if (_target == null) return;
+            var renderers = _target.GetComponentsInChildren<Renderer>(true).Where(r => RendererMesh(r) != null).ToArray();
+            var labels = new[] { "Escolha a malha para limpar / modelar" }
+                .Concat(renderers.Select(r => AnimationUtility.CalculateTransformPath(r.transform, _target.transform) + "  (" + RendererMesh(r).name + ")")).ToArray();
+            int current = Array.IndexOf(renderers, _selectedRenderer) + 1;
+            int chosen = EditorGUILayout.Popup("Malha para edição", current, labels);
+            if (chosen != current) SetRenderer(chosen == 0 ? null : renderers[chosen - 1]);
+            if (renderers.Length > 1)
+                EditorGUILayout.LabelField($"{renderers.Length} malhas. O tamanho usa a raiz inteira; a limpeza usa a malha escolhida.", EditorStyles.wordWrappedMiniLabel);
+        }
+
+        private void DrawCreateCopy()
+        {
+            EditorGUILayout.HelpBox("Escolha a malha e crie uma cópia para editar. O modelo importado permanece protegido.", MessageType.Info);
+            using (new EditorGUI.DisabledScope(_selectedRenderer == null))
+                if (GUILayout.Button(CanSaveCopy ? "Preparar esta malha para edição" : "Criar cópia editável", GUILayout.Height(30f))) CreateEditableCopy();
+        }
+
+        private void DrawCleanup()
+        {
+            if (_document == null) { DrawCreateCopy(); return; }
+            EditorGUI.BeginChangeCheck();
+            _cleanupRemoveUnused = EditorGUILayout.ToggleLeft("Remover vértices sem uso", _cleanupRemoveUnused);
+            _cleanupRemoveLines = EditorGUILayout.ToggleLeft("Remover linhas soltas", _cleanupRemoveLines);
+            _cleanupRemovePoints = EditorGUILayout.ToggleLeft("Remover pontos soltos", _cleanupRemovePoints);
+            _cleanupEpsilon = EditorGUILayout.FloatField(new GUIContent("Área mínima das faces", "Área em unidades locais². Zero remove apenas faces sem área."), _cleanupEpsilon);
+            if (EditorGUI.EndChangeCheck()) { ClearPreview(); _cleanupAnalysis = null; _cleanupComponents.Clear(); }
+            if (_cleanupEpsilon > 0f)
+                EditorGUILayout.HelpBox("Um limite maior que zero também pode remover superfícies finas válidas. Use zero para a limpeza conservadora.", MessageType.Warning);
+            if (GUILayout.Button("Analisar geometria")) AnalyzeCleanup();
+            if (_cleanupAnalysis != null)
+            {
+                EditorGUILayout.LabelField($"Faces: {_cleanupAnalysis.FaceCount}  •  Vértices: {_cleanupAnalysis.VertexCount}");
+                EditorGUILayout.LabelField($"Faces sem área / abaixo do limite: {_cleanupAnalysis.DegenerateFaceCount}");
+                EditorGUILayout.LabelField($"Vértices sem uso: {_cleanupAnalysis.UnreferencedVertexCount}  •  Linhas soltas: {_cleanupAnalysis.LooseLineCount}  •  Pontos soltos: {_cleanupAnalysis.LoosePointCount}", EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.Space(4f);
+                EditorGUILayout.LabelField("Fragmentos: marque somente os que deseja remover", EditorStyles.boldLabel);
+                EditorGUILayout.HelpBox("Partes desconectadas podem ser intencionais, inclusive costuras de UV. Nenhum fragmento é removido automaticamente.", MessageType.Info);
+                const int pageSize = 20;
+                int pages = Math.Max(1, (_cleanupAnalysis.Components.Count + pageSize - 1) / pageSize);
+                _cleanupPage = Mathf.Clamp(_cleanupPage, 0, pages - 1);
+                if (pages > 1)
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    using (new EditorGUI.DisabledScope(_cleanupPage == 0)) if (GUILayout.Button("Anterior")) _cleanupPage--;
+                    EditorGUILayout.LabelField($"Página {_cleanupPage + 1} de {pages}");
+                    using (new EditorGUI.DisabledScope(_cleanupPage == pages - 1)) if (GUILayout.Button("Próxima")) _cleanupPage++;
+                    EditorGUILayout.EndHorizontal();
+                }
+                foreach (var component in _cleanupAnalysis.Components.Skip(_cleanupPage * pageSize).Take(pageSize))
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    bool selected = _cleanupComponents.Contains(component.Id);
+                    bool remove = EditorGUILayout.ToggleLeft($"Parte {component.Id + 1}: {component.FaceCount} faces, {component.VertexCount} vértices", selected);
+                    if (remove != selected)
+                    {
+                        if (remove) _cleanupComponents.Add(component.Id); else _cleanupComponents.Remove(component.Id);
+                        ClearPreview();
+                    }
+                    if (GUILayout.Button("Focar", GUILayout.Width(48f))) FrameComponent(component);
+                    EditorGUILayout.EndHorizontal();
+                }
+            }
+            DrawOperationButtons(CreateCleanupOperation, "Limpeza");
+            if (_cleanupAfter != null)
+                EditorGUILayout.HelpBox($"Prévia: {_cleanupAnalysis?.FaceCount} → {_cleanupAfter.FaceCount} faces; {_cleanupAnalysis?.VertexCount} → {_cleanupAfter.VertexCount} vértices. Remoções: {_preview.Result.RemovedLineCount} linha(s), {_preview.Result.RemovedPointCount} ponto(s), {_preview.Result.RemovedComponentCount} fragmento(s).", MessageType.Info);
+        }
+
+        private void AnalyzeCleanup()
+        {
+            try
+            {
+                RequireDocument();
+                ClearPreview();
+                _cleanupComponents.Clear();
+                _cleanupAnalysis = MeshCleanupAnalysis.Analyze(_document.WorkingMesh, _cleanupEpsilon);
+                _cleanupAnalysisHash = MeshFingerprint.Compute(_document.WorkingMesh);
+            }
+            catch (Exception exception) { _cleanupAnalysis = null; Failure(exception); }
+        }
+
+        private IMeshOperation CreateCleanupOperation()
+        {
+            RequireDocument();
+            string currentHash = MeshFingerprint.Compute(_document.WorkingMesh);
+            if (_cleanupComponents.Count > 0 && _cleanupAnalysisHash != currentHash)
+                throw new InvalidOperationException("A malha mudou. Analise novamente e revise os fragmentos antes de continuar.");
+            if (_cleanupAnalysis == null || _cleanupAnalysisHash != currentHash)
+            {
+                _cleanupAnalysis = MeshCleanupAnalysis.Analyze(_document.WorkingMesh, _cleanupEpsilon);
+                _cleanupAnalysisHash = currentHash;
+            }
+            return new CleanupMeshOperation(_cleanupEpsilon, _cleanupRemoveUnused, _cleanupRemoveLines, _cleanupRemovePoints, _cleanupComponents.OrderBy(id => id).ToArray());
+        }
+
+        private void FrameComponent(MeshCleanupComponent component)
+        {
+            if (_workingRenderer == null) return;
+            var matrix = _workingRenderer.localToWorldMatrix;
+            var bounds = component.Bounds;
+            var world = new Bounds(matrix.MultiplyPoint3x4(bounds.center), Vector3.zero);
+            for (int x = -1; x <= 1; x += 2)
+                for (int y = -1; y <= 1; y += 2)
+                    for (int z = -1; z <= 1; z += 2)
+                        world.Encapsulate(matrix.MultiplyPoint3x4(bounds.center + Vector3.Scale(bounds.extents, new Vector3(x, y, z))));
+            SceneView.lastActiveSceneView?.Frame(world, false);
+        }
+
+        private ModelScaleSettings SizeSettings() => new ModelScaleSettings
+        {
+            Mode = _sizeMode, Axis = _sizeAxis, TargetDimension = _targetDimension,
+            OutputFolder = _outputFolder + "/Sized",
+        };
+
+        private void DrawSize()
+        {
+            EditorGUILayout.HelpBox("A raiz escolhida e todos os seus filhos serão copiados. As dimensões seguem os eixos da raiz e não incluem a escala do pai.", MessageType.Info);
+            EditorGUI.BeginChangeCheck();
+            _sizeMode = (ModelScaleMode)GUILayout.Toolbar((int)_sizeMode, new[] { "Manter tamanho atual", "Definir dimensão" });
+            if (_sizeMode == ModelScaleMode.TargetDimension)
+            {
+                _sizeAxis = (ModelScaleAxis)GUILayout.Toolbar((int)_sizeAxis, new[] { "Largura (X)", "Altura (Y)", "Profundidade (Z)" });
+                _targetDimension = EditorGUILayout.FloatField(new GUIContent("Dimensão desejada", "Medida em unidades Unity, nos eixos da raiz. Por exemplo: altura 1,80 para um personagem de 1,80 m na convenção de 1 unidade = 1 metro."), _targetDimension);
+            }
+            _outputFolder = EditorGUILayout.TextField("Pasta de saída", _outputFolder);
+            if (EditorGUI.EndChangeCheck()) _sizePreview = null;
+            using (new EditorGUI.DisabledScope(_target == null))
+                if (GUILayout.Button("Gerar prévia do tamanho", GUILayout.Height(30f))) PreviewSize();
+            if (_sizePreview == null) return;
+            EditorGUILayout.LabelField("Dimensões antes", FormatDimensions(_sizePreview.BoundsBefore.size));
+            EditorGUILayout.LabelField("Dimensões depois", FormatDimensions(_sizePreview.BoundsAfter.size));
+            EditorGUILayout.LabelField("Escala da raiz depois", "1, 1, 1");
+            EditorGUILayout.LabelField("Malhas incluídas", _sizePreview.RendererCount.ToString());
+            foreach (var warning in _sizePreview.Warnings) EditorGUILayout.HelpBox(SizeWarning(warning), MessageType.Warning);
+            if (GUILayout.Button("Aplicar tamanho e criar cópia", GUILayout.Height(30f))) ApplySize();
+        }
+
+        private static string FormatDimensions(Vector3 value) => $"X {value.x:0.###}   Y {value.y:0.###}   Z {value.z:0.###}";
+
+        private static string SizeWarning(string warning)
+        {
+            if (warning.StartsWith("Dimensions", StringComparison.Ordinal)) return "As dimensões usam a geometria na pose base, nos eixos do modelo. A animação pode ultrapassar esses limites.";
+            if (warning.StartsWith("Parent scale", StringComparison.Ordinal)) return "A escala do pai é preservada. Escala local (1, 1, 1) na raiz não significa escala global (1, 1, 1).";
+            if (warning.StartsWith("Undo", StringComparison.Ordinal)) return "Desfazer remove a cópia da cena. Os arquivos gerados e o prefab permanecem salvos para preservar referências.";
+            if (warning.StartsWith("Custom scripts", StringComparison.Ordinal)) return "Scripts e configurações são copiados. Distâncias de gameplay e outros campos personalizados não são redimensionados.";
+            return warning;
+        }
+
+        internal void PreviewSize()
+        {
+            try { ClearPreview(); _sizePreview = ModelScaleService.Preview(_target, SizeSettings()); _status = "Prévia pronta. Revise as dimensões antes de criar a cópia."; _statusType = MessageType.Info; }
+            catch (Exception exception) { _sizePreview = null; Failure(exception); }
+        }
+
+        private void ApplySize()
+        {
+            Run(() =>
+            {
+                if (_sizePreview == null) throw new InvalidOperationException("Gere a prévia do tamanho primeiro.");
+                var result = ModelScaleService.Apply(_target, SizeSettings(), _sizePreview.SourceHash, _sizePreview.PreviewHash);
+                SetTarget(result.Root);
+                _editableRoot = result.Root;
+                _savedPrefabPath = result.CreatedAssetPaths.FirstOrDefault(path => path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase));
+                _lastExportPath = _savedPrefabPath;
+                Selection.activeGameObject = result.Root;
+                return result;
+            }, "Cópia criada com o tamanho aprovado, escala (1, 1, 1) e prefab salvo. Acesse Salvar cópia para localizar o arquivo.");
+        }
+
+        internal bool CanSaveCopy => _editableRoot != null && _editableRoot == _target && !EditorUtility.IsPersistent(_editableRoot);
+
+        private void DrawSave()
+        {
+            _outputFolder = EditorGUILayout.TextField("Pasta de saída", _outputFolder);
+            if (!CanSaveCopy)
+            {
+                EditorGUILayout.HelpBox("Crie uma cópia em Limpar geometria ou Ajustar tamanho antes de salvar.", MessageType.Info);
+                return;
+            }
+            EditorGUILayout.LabelField("Hierarquia a salvar", _editableRoot.name);
+            EditorGUILayout.HelpBox("O prefab inclui os filhos, materiais e referências do rig. Prévia ainda não aplicada não entra no arquivo salvo.", MessageType.Info);
+            if (!string.IsNullOrEmpty(_savedPrefabPath) && GUILayout.Button("Selecionar prefab salvo"))
+                EditorGUIUtility.PingObject(AssetDatabase.LoadAssetAtPath<GameObject>(_savedPrefabPath));
+            if (GUILayout.Button(string.IsNullOrEmpty(_savedPrefabPath) ? "Salvar cópia como prefab" : "Salvar alterações no prefab da cópia", GUILayout.Height(32f)))
+                Run(() =>
+                {
+                    foreach (var document in _rendererDocuments.Values.Where(value => value != null).Distinct())
+                    {
+                        var report = ModelingCommandService.Commit(document);
+                        if (!report.IsValid) throw new InvalidOperationException("A cópia contém uma malha inválida: " + string.Join(" | ", Issues(report)));
+                    }
+                    var path = string.IsNullOrEmpty(_savedPrefabPath)
+                        ? AssetModelerAssetPaths.UniqueAssetPath(_outputFolder + "/Prefabs", _editableRoot.name, ".prefab") : _savedPrefabPath;
+                    var prefab = PrefabUtility.SaveAsPrefabAsset(_editableRoot, path, out bool success);
+                    if (!success || prefab == null) throw new InvalidOperationException("Não foi possível salvar o prefab.");
+                    AssetDatabase.SaveAssets();
+                    _lastExportPath = path;
+                    _savedPrefabPath = path;
+                    EditorGUIUtility.PingObject(prefab);
+                    return prefab;
+                }, "Cópia salva como prefab.");
+            if (!string.IsNullOrEmpty(_lastExportPath)) EditorGUILayout.SelectableLabel(_lastExportPath, EditorStyles.wordWrappedMiniLabel, GUILayout.Height(36f));
         }
 
         private void DrawSession()
         {
             EditorGUILayout.LabelField("Documento editável", EditorStyles.boldLabel);
-            using (new EditorGUI.DisabledScope(_target == null))
+            using (new EditorGUI.DisabledScope(_selectedRenderer == null))
                 if (GUILayout.Button("Criar cópia editável", GUILayout.Height(28f))) CreateEditableCopy();
             if (_document == null) return;
             EditorGUILayout.LabelField("Sessão", _document.SessionId);
@@ -292,11 +543,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         private void DrawObjects()
         {
             EditorGUI.BeginChangeCheck();
-            var objectTool = (AssetModelerObjectTool)GUILayout.SelectionGrid(
-                (int)_objectTool,
+            var objectTool = AssetModelerWorkspaceCatalog.ObjectTools[GUILayout.SelectionGrid(
+                Array.IndexOf(AssetModelerWorkspaceCatalog.ObjectTools, AssetModelerWorkspaceCatalog.VisibleObjectTool(_objectTool)),
                 AssetModelerWorkspaceCatalog.ObjectToolLabels,
-                3,
-                GUILayout.MinHeight(48f));
+                2,
+                GUILayout.MinHeight(48f))];
             if (EditorGUI.EndChangeCheck())
             {
                 _objectTool = objectTool;
@@ -306,27 +557,6 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             EditorGUILayout.Space(6f);
             switch (_objectTool)
             {
-                case AssetModelerObjectTool.Transform:
-                    EditorGUILayout.LabelField("Transformação precisa", EditorStyles.boldLabel);
-                    EditorGUILayout.HelpBox("Use os gizmos no Scene View para ajustes visuais ou informe valores exatos abaixo para alterar a própria mesh.", MessageType.Info);
-                    _translation = EditorGUILayout.Vector3Field("Mover", _translation);
-                    _rotation = EditorGUILayout.Vector3Field("Rotacionar", _rotation);
-                    _scale = EditorGUILayout.Vector3Field("Escala", _scale);
-                    EditorGUILayout.BeginHorizontal();
-                    if (GUILayout.Button("Resetar")) { _translation = Vector3.zero; _rotation = Vector3.zero; _scale = Vector3.one; }
-                    if (GUILayout.Button("+90° X")) _rotation += new Vector3(90f, 0f, 0f);
-                    if (GUILayout.Button("+90° Y")) _rotation += new Vector3(0f, 90f, 0f);
-                    if (GUILayout.Button("+90° Z")) _rotation += new Vector3(0f, 0f, 90f);
-                    if (GUILayout.Button("Escala uniforme")) _scale = new Vector3(_scale.x, _scale.x, _scale.x);
-                    EditorGUILayout.EndHorizontal();
-                    _transformSelectedOnly = EditorGUILayout.ToggleLeft("Apenas vértices selecionados", _transformSelectedOnly);
-                    if (_transformSelectedOnly)
-                        _vertexSelection = EditorGUILayout.TextField(new GUIContent("Vértices afetados", "Ex.: 0,1,4-8. Vazio aplica em todos."), _vertexSelection);
-                    using (new EditorGUI.DisabledScope(_target == null))
-                        if (GUILayout.Button("Centralizar pivot"))
-                            Run(() => { SceneObjectOperations.CenterPivot(_target); return null; }, "Pivot centralizado nos bounds da mesh.");
-                    DrawOperationButtons(CreateCurrentMeshOperation, "Transformação");
-                    break;
                 case AssetModelerObjectTool.Mirror:
                     EditorGUILayout.LabelField("Espelhar mesh", EditorStyles.boldLabel);
                     _axis = GUILayout.Toolbar(_axis, new[] { "X", "Y", "Z" });
@@ -402,27 +632,6 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             using (new EditorGUI.DisabledScope(_target == null))
                 if (GUILayout.Button("Criar Array", GUILayout.Height(32f)))
                     Run(() => SceneObjectOperations.CreateArray(_target, _array), "Array criado.");
-            DrawAlignDistributeSection();
-        }
-
-        private void DrawAlignDistributeSection()
-        {
-            EditorGUILayout.Space(8f);
-            EditorGUILayout.LabelField("Alinhar / Distribuir seleção", EditorStyles.boldLabel);
-            _alignAxis = GUILayout.Toolbar(_alignAxis, new[] { "X", "Y", "Z" });
-            var selected = Selection.transforms;
-            EditorGUILayout.LabelField($"Selecionados: {selected.Length}", EditorStyles.miniLabel);
-            using (new EditorGUI.DisabledScope(selected.Length < 2))
-            {
-                EditorGUILayout.BeginHorizontal();
-                if (GUILayout.Button("Mínimo")) Run(() => { SceneObjectOperations.Align(selected, _alignAxis, false, true); return null; }, "Objetos alinhados no mínimo.");
-                if (GUILayout.Button("Centro")) Run(() => { SceneObjectOperations.Align(selected, _alignAxis, false, false); return null; }, "Objetos alinhados no centro.");
-                if (GUILayout.Button("Máximo")) Run(() => { SceneObjectOperations.Align(selected, _alignAxis, true, false); return null; }, "Objetos alinhados no máximo.");
-                EditorGUILayout.EndHorizontal();
-            }
-            using (new EditorGUI.DisabledScope(selected.Length < 3))
-                if (GUILayout.Button("Distribuir uniformemente", GUILayout.Height(24f)))
-                    Run(() => { SceneObjectOperations.Distribute(selected, _alignAxis); return null; }, "Objetos distribuídos uniformemente.");
         }
 
         private void DrawTopology()
@@ -446,10 +655,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             switch (_topologyTool)
             {
                 case AssetModelerTopologyTool.Cleanup:
-                    EditorGUILayout.LabelField("Limpeza segura", EditorStyles.boldLabel);
-                    EditorGUILayout.HelpBox("Remove faces degeneradas e dados inválidos sem soldar costuras intencionais.", MessageType.Info);
-                    _cleanupEpsilon = EditorGUILayout.FloatField("Área mínima", _cleanupEpsilon);
-                    break;
+                    DrawCleanup();
+                    return;
                 case AssetModelerTopologyTool.Weld:
                     EditorGUILayout.LabelField("Soldar vértices", EditorStyles.boldLabel);
                     EditorGUILayout.HelpBox("Une vértices próximos preservando costuras de UV e materiais quando possível.", MessageType.Info);
@@ -726,10 +933,6 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             switch (_navigation.Workspace)
             {
                 case AssetModelerWorkspace.Objects:
-                    if (_objectTool == AssetModelerObjectTool.Transform)
-                        return new TransformVerticesOperation(
-                            Matrix4x4.TRS(_translation, Quaternion.Euler(_rotation), _scale),
-                            _transformSelectedOnly ? ParseIndices(_vertexSelection) : null);
                     if (_objectTool == AssetModelerObjectTool.Mirror)
                     {
                         if (_mirrorCopy && _mirrorWeldSeam)
@@ -740,7 +943,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                 case AssetModelerWorkspace.Topology:
                     switch (_topologyTool)
                     {
-                        case AssetModelerTopologyTool.Cleanup: return new CleanupMeshOperation(_cleanupEpsilon, true);
+                        case AssetModelerTopologyTool.Cleanup: return CreateCleanupOperation();
                         case AssetModelerTopologyTool.Weld: return new WeldVerticesOperation(_weldTolerance, true);
                         case AssetModelerTopologyTool.Subdivide: return new SubdivideTrianglesOperation(CurrentFaceSelection());
                         case AssetModelerTopologyTool.ExtrudeFaces: return new ExtrudeFacesOperation(CurrentFaceSelection(), _extrudeDistance);
@@ -766,6 +969,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
                     });
                 case AssetModelerWorkspace.SurfaceFit:
                     return CreateSurfaceFitOperation();
+                case AssetModelerWorkspace.Cleanup:
+                    return CreateCleanupOperation();
             }
             throw new InvalidOperationException("A ferramenta atual executa diretamente na cena e não usa preview de mesh.");
         }
@@ -776,16 +981,16 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             EditorGUILayout.BeginHorizontal();
             using (new EditorGUI.DisabledScope(_document == null))
             {
-                string previewLabel = _preview == null ? "Gerar preview" : "Atualizar preview";
+                string previewLabel = _preview == null ? "Gerar prévia" : "Atualizar prévia";
                 var previewContent = new GUIContent(previewLabel, string.IsNullOrEmpty(label) ? null : $"Pré-visualizar {label} sem alterar a mesh.");
                 if (GUILayout.Button(previewContent, GUILayout.Height(30f)))
                 {
                     try { PreviewOperation(factory()); }
                     catch (Exception exception) { Failure(exception); }
                 }
-                using (new EditorGUI.DisabledScope(_preview == null))
+                using (new EditorGUI.DisabledScope(!SceneCanApplyPreview))
                 {
-                    var applyContent = new GUIContent("Aplicar preview", string.IsNullOrEmpty(label) ? null : $"Aplicar {label} à cópia editável.");
+                    var applyContent = new GUIContent("Aplicar prévia", string.IsNullOrEmpty(label) ? null : $"Aplicar {label} à cópia editável.");
                     if (GUILayout.Button(applyContent, GUILayout.Height(30f)))
                     {
                         try { ApplyOperation(factory()); }
@@ -856,19 +1061,23 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             RequireDocument();
             ClearPreview();
             _preview = ModelingCommandService.Preview(_document, operation, _document.Revision);
+            if (operation is CleanupMeshOperation)
+                _cleanupAfter = MeshCleanupAnalysis.Analyze(_preview.PreviewMesh, _cleanupEpsilon);
             ResolveWorkingRenderer();
             MeshOperationPreviewController.Show(_preview, _workingRenderer);
-            _status = $"Preview pronto: {operation.Descriptor.DisplayName}; hash {_preview.PreviewHash.Substring(0, 12)}.";
+            _status = "Prévia pronta. Revise o resultado antes de aplicar à cópia.";
             _statusType = MessageType.Info;
         }
 
         private void ApplyOperation(IMeshOperation operation)
         {
             RequireDocument();
-            if (_preview == null) throw new InvalidOperationException("Gere e revise o preview antes de aplicar.");
-            var result = ModelingCommandService.Apply(_document, operation, _document.Revision, _preview.PreviewHash);
+            if (!SceneCanApplyPreview) throw new InvalidOperationException("A prévia está ausente ou desatualizada. Gere e revise outra antes de aplicar.");
+            ModelingCommandService.Apply(_document, operation, _preview.Result.RevisionBefore, _preview.PreviewHash);
             ClearPreview();
-            _status = $"{operation.Descriptor.DisplayName} aplicado. Revisão {result.RevisionAfter}.";
+            _cleanupAnalysis = null;
+            _cleanupComponents.Clear();
+            _status = "Alteração aplicada à cópia editável.";
             _statusType = MessageType.Info;
         }
 
@@ -876,10 +1085,12 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         {
             Run(() =>
             {
-                var result = EditableMeshFactory.Create(_target, _outputFolder + "/Editable/" + AssetModelerAssetPaths.SafeName(_target.name));
-                _target = result.EditableObject;
-                _workingRenderer = result.EditableRenderer;
-                _document = result.Document;
+                if (_selectedRenderer == null) throw new InvalidOperationException("Escolha a malha para edição primeiro.");
+                string folder = _outputFolder + "/Editable/" + AssetModelerAssetPaths.SafeName(_target.name);
+                var result = CanSaveCopy
+                    ? EditableMeshFactory.CreateForExistingCopy(_editableRoot, _selectedRenderer, folder)
+                    : EditableMeshFactory.CreateModelCopy(_target, _selectedRenderer, folder);
+                UseEditableCopy(result);
                 Selection.activeGameObject = result.EditableObject;
                 return result;
             }, "Cópia editável criada; o asset importado continua protegido.");
@@ -1033,6 +1244,10 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         internal Renderer SceneRenderer => _workingRenderer;
         internal AssetModelerWorkspace SceneWorkspace => _navigation?.Workspace ?? AssetModelerWorkspace.Home;
         internal bool SceneHasPreview => _preview != null;
+        internal bool HasSizePreview => _sizePreview != null;
+        internal bool SceneCanApplyPreview => _preview != null && _document != null
+            && _document.Matches(_preview.Result.RevisionBefore)
+            && RendererMesh(_workingRenderer) == _document.WorkingMesh;
         internal bool SceneFacePickingActive => (_sceneFaceSelection
                 && _navigation != null
                 && _navigation.Workspace == AssetModelerWorkspace.Topology
@@ -1198,23 +1413,72 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
             SceneView.lastActiveSceneView?.FrameSelected();
         }
 
-        private void SetTarget(GameObject target)
+        internal void UseEditableCopy(EditableMeshResult result)
         {
             ClearPreview();
+            SetTarget(result.EditableRoot != null ? result.EditableRoot : result.EditableObject);
+            _editableRoot = _target;
+            _selectedRenderer = _workingRenderer = result.EditableRenderer;
+            _document = result.Document;
+            _cleanupAnalysis = null;
+            _cleanupComponents.Clear();
+            if (_workingRenderer != null) _rendererDocuments[_workingRenderer] = _document;
+        }
+
+        internal void SetTarget(GameObject target)
+        {
+            if (_target == target) return;
+            ClearPreview();
             _target = target;
+            _editableRoot = null;
+            _savedPrefabPath = null;
+            _lastExportPath = null;
+            _document = null;
+            _rendererDocuments.Clear();
+            _cleanupAnalysis = null;
+            _cleanupComponents.Clear();
             _workingRenderer = null;
-            ResolveWorkingRenderer();
+            _selectedRenderer = null;
+            if (_target != null && EditableMeshFactory.TryResolveRenderer(_target, out var renderer, out _, out _)) _selectedRenderer = renderer;
             Repaint();
+        }
+
+        internal void SetRenderer(Renderer renderer)
+        {
+            if (renderer != null && (_target == null || renderer.transform != _target.transform && !renderer.transform.IsChildOf(_target.transform)))
+                throw new InvalidOperationException("A malha escolhida deve pertencer à raiz do modelo.");
+            if (_selectedRenderer == renderer) return;
+            ClearPreview();
+            if (_selectedRenderer != null && _document != null) _rendererDocuments[_selectedRenderer] = _document;
+            _selectedRenderer = renderer;
+            _document = null;
+            _workingRenderer = null;
+            if (renderer != null && _rendererDocuments.TryGetValue(renderer, out var document)
+                && document != null && RendererMesh(renderer) == document.WorkingMesh)
+            {
+                _document = document;
+                _workingRenderer = renderer;
+            }
+            _cleanupAnalysis = null;
+            _cleanupComponents.Clear();
+        }
+
+        private static Mesh RendererMesh(Renderer renderer)
+        {
+            if (renderer is SkinnedMeshRenderer skin) return skin.sharedMesh;
+            return renderer != null ? renderer.GetComponent<MeshFilter>()?.sharedMesh : null;
         }
 
         private void ResolveWorkingRenderer()
         {
-            if (_target != null && EditableMeshFactory.TryResolveRenderer(_target, out var renderer, out _, out _))
-                _workingRenderer = renderer;
+            if (_document != null && RendererMesh(_selectedRenderer) == _document.WorkingMesh)
+                _workingRenderer = _selectedRenderer;
         }
 
         private void ClearPreview()
         {
+            _sizePreview = null;
+            _cleanupAfter = null;
             if (_preview != null)
             {
                 MeshOperationPreviewController.Detach();
@@ -1225,8 +1489,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
 
         private void RequireDocument()
         {
-            if (_document == null || _document.WorkingMesh == null)
-                throw new InvalidOperationException("Crie ou selecione um MeshEditDocument primeiro.");
+            if (_document == null || _document.WorkingMesh == null || RendererMesh(_selectedRenderer) != _document.WorkingMesh)
+                throw new InvalidOperationException("Crie uma cópia editável da malha escolhida primeiro.");
         }
 
         private void Run(Func<object> action, string success)
@@ -1237,7 +1501,19 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
 
         private void Failure(Exception exception)
         {
-            _status = exception?.Message ?? "Erro desconhecido.";
+            var message = exception?.Message ?? "Erro desconhecido.";
+            string code = message.Split(':')[0];
+            switch (code)
+            {
+                case "MODEL_ROOT_SCALE_UNSUPPORTED": message = "A raiz precisa ter escala positiva e uniforme nos três eixos antes do ajuste de tamanho."; break;
+                case "MODEL_EXTERNAL_BONE": message = "Escolha uma raiz que contenha todas as malhas e todos os ossos do modelo."; break;
+                case "MODEL_MESH_UNREADABLE": case "MESH_NOT_READABLE": message = "Ative Read/Write nas configurações de importação de todas as malhas envolvidas."; break;
+                case "MODEL_DIMENSION_INVALID": message = "Informe uma dimensão maior que zero."; break;
+                case "STALE_MODEL_SOURCE": case "STALE_MODEL_PREVIEW": message = "O modelo ou as opções mudaram. Gere e revise uma nova prévia de tamanho."; break;
+                case "MODEL_OUTPUT_INVALID": message = "Escolha uma pasta de saída dentro de Assets/."; break;
+                case "MODEL_EDIT_MODE_REQUIRED": message = "Saia do modo de jogo e aguarde o Editor ficar pronto antes de ajustar o tamanho."; break;
+            }
+            _status = message;
             _statusType = MessageType.Error;
         }
 

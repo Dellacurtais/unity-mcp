@@ -56,6 +56,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             child.transform.SetParent(root.transform, false);
             var firstCollider = child.AddComponent<BoxCollider>();
             var secondCollider = child.AddComponent<BoxCollider>();
+            Assert.That(EditorSceneManager.SaveScene(scene, Root + "/Targets.unity"), Is.True,
+                "A durable component identity requires a saved scene.");
             try
             {
                 var gameObjectRef = ToolTargetRef.Capture(child);
@@ -73,7 +75,12 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 Assert.That(ToolTargetResolver.Resolve(gameObjectRef, out var goError), Is.SameAs(child), goError);
                 Assert.That(ToolTargetResolver.Resolve(componentRef, out var componentError), Is.SameAs(secondCollider), componentError);
                 componentRef.InstanceId = firstCollider.GetInstanceID();
-                Assert.That(ToolTargetResolver.Resolve(componentRef, out var ordinalError), Is.SameAs(secondCollider), ordinalError);
+                Assert.That(ToolTargetResolver.Resolve(componentRef, out var provenanceError), Is.Null);
+                StringAssert.StartsWith("TARGET_IDENTITY_STALE", provenanceError);
+                var legacyStableRef = ToolTargetRef.FromJson(componentRef.ToJson());
+                legacyStableRef.CaptureDomainId = null;
+                Assert.That(ToolTargetResolver.Resolve(legacyStableRef, out var ordinalError), Is.SameAs(secondCollider), ordinalError);
+                componentRef.InstanceId = secondCollider.GetInstanceID();
                 var legacyRef = new ToolTargetRef { InstanceId = firstCollider.GetInstanceID() };
                 Assert.That(ToolTargetResolver.Resolve(legacyRef, out var legacyError), Is.SameAs(firstCollider), legacyError);
                 var staleStableRef = ToolTargetRef.FromJson(componentRef.ToJson());

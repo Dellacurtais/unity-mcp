@@ -129,11 +129,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools
         public static JObject TargetRefSchema => new JObject
         {
             ["type"] = "object",
-            ["description"] = "Stable Unity target reference. Prefer globalObjectId; instanceId remains a session-local fallback.",
+            ["description"] = "Unity target reference. Preserve captureDomainId and instanceId from read results to detect replacement within the current domain; globalObjectId/assetGuid support resolution after reload.",
             ["properties"] = new JObject
             {
                 ["kind"] = new JObject { ["type"] = "string" },
                 ["instanceId"] = new JObject { ["type"] = "integer" },
+                ["captureDomainId"] = new JObject { ["type"] = "string" },
                 ["globalObjectId"] = new JObject { ["type"] = "string" },
                 ["assetGuid"] = new JObject { ["type"] = "string" },
                 ["localFileId"] = new JObject { ["type"] = "integer" },

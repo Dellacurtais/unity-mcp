@@ -385,3 +385,49 @@ async def test_real_process_marks_accepted_non_idempotent_disconnect_as_outcome_
             content=b"{" + (b" " * 2048) + b"}",
         )
         assert oversized.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_real_clients_can_reuse_rpc_ids_and_cancel_only_their_own_operation(broker_process: BrokerProcess) -> None:
+    async with httpx.AsyncClient(base_url=broker_process.http_url, timeout=5) as client:
+        async with websockets.connect(
+            broker_process.websocket_url,
+            additional_headers={"Authorization": f"Bearer {TOKEN}"},
+            open_timeout=2,
+        ) as bridge:
+            await bridge.send(json.dumps(bridge_hello()))
+            await asyncio.wait_for(bridge.recv(), timeout=2)
+            headers = []
+            for _ in range(2):
+                initialized = await client.post("/mcp/", headers=broker_process.headers, json={
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"protocolVersion": "2025-03-26"},
+                })
+                headers.append({**broker_process.headers, "Mcp-Session-Id": initialized.headers["Mcp-Session-Id"]})
+            calls = [asyncio.create_task(client.post("/mcp/", headers=session_headers, json={
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "read_scene", "arguments": {}, "_meta": {"testClient": str(index)}},
+            })) for index, session_headers in enumerate(headers)]
+            commands = {}
+            for _ in range(2):
+                command = json.loads(await asyncio.wait_for(bridge.recv(), timeout=2))
+                commands[command["payload"]["jsonRpc"]["params"]["_meta"]["testClient"]] = command
+            first_id = commands["0"]["payload"]["jsonRpc"]["id"]
+            second_id = commands["1"]["payload"]["jsonRpc"]["id"]
+            assert first_id != second_id
+            cancelled = await client.post("/mcp/", headers=headers[0], json={
+                "jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 2},
+            })
+            assert cancelled.status_code == 202
+            cancellation = json.loads(await asyncio.wait_for(bridge.recv(), timeout=2))
+            assert cancellation["type"] == "cancel"
+            assert cancellation["payload"]["requestId"] == first_id
+            for index in ("1", "0"):
+                command = commands[index]
+                await bridge.send(json.dumps(bridge_message("result", "generation-a", {"jsonRpc": {
+                    "jsonrpc": "2.0", "id": command["payload"]["jsonRpc"]["id"],
+                    "result": {"content": [{"type": "text", "text": index}]},
+                }}, correlation_id=command["correlationId"])))
+            responses = await asyncio.gather(*calls)
+            assert [response.json()["id"] for response in responses] == [2, 2]
+            assert [response.json()["result"]["content"][0]["text"] for response in responses] == ["0", "1"]

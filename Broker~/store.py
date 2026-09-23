@@ -3,13 +3,16 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from responses import ResponseVault
 
 
-CURRENT_SCHEMA_VERSION = 2
+# Version 3 stores optional response-vault references in response_json. Older
+# brokers must reject this database instead of returning markers as MCP replies.
+CURRENT_SCHEMA_VERSION = 3
 
 
 def utc_now() -> str:
@@ -17,10 +20,11 @@ def utc_now() -> str:
 
 
 class BrokerStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, response_inline_bytes: int = 256 * 1024) -> None:
         path = path.expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
+        self._vault = ResponseVault(path.with_name(path.name + ".responses"), response_inline_bytes)
         self._connection = sqlite3.connect(str(path), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.RLock()
@@ -143,6 +147,8 @@ class BrokerStore:
                    ON requests(project_key, idempotency_key)
                    WHERE idempotency_key IS NOT NULL"""
             )
+            self._connection.execute("CREATE INDEX IF NOT EXISTS requests_retention ON requests(read_only, state, updated_utc)")
+            self._connection.execute("CREATE INDEX IF NOT EXISTS events_retention ON events(created_utc)")
             self._connection.execute(
                 "INSERT INTO metadata(key, value) VALUES('schema_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -169,14 +175,14 @@ class BrokerStore:
                 "UPDATE requests SET state=CASE WHEN read_only=1 OR idempotent=1 "
                 "THEN 'waiting_for_reconnect' ELSE 'outcome_unknown' END, "
                 "error=CASE WHEN read_only=1 OR idempotent=1 THEN error "
-                "ELSE COALESCE(error, 'Broker restarted after Unity accepted the request') END, "
-                "updated_utc=? WHERE state IN ('accepted_by_unity', 'running_in_unity')",
+                "ELSE COALESCE(error, 'Broker restarted after sending the request to Unity; outcome is unknown') END, "
+                "updated_utc=? WHERE state IN ('sending_to_unity', 'accepted_by_unity', 'running_in_unity')",
                 (now,),
             )
             self._connection.execute(
                 "UPDATE jobs SET state='waiting_for_reconnect', "
                 "message='Broker restarted; waiting for Unity bridge', updated_utc=? "
-                "WHERE state IN ('queued', 'dispatched', 'running')",
+                "WHERE state IN ('queued', 'dispatched', 'running', 'cancel_requested')",
                 (now,),
             )
             self._connection.commit()
@@ -184,8 +190,9 @@ class BrokerStore:
     def load_registry_snapshots(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT project_key, registry_hash, tools_json, created_utc "
-                "FROM registry_snapshots ORDER BY created_utc"
+                "SELECT project_key, registry_hash, tools_json, created_utc FROM registry_snapshots AS r "
+                "WHERE r.rowid=(SELECT latest.rowid FROM registry_snapshots AS latest "
+                "WHERE latest.project_key=r.project_key ORDER BY latest.created_utc DESC, latest.rowid DESC LIMIT 1)"
             ).fetchall()
             latest: dict[str, dict[str, Any]] = {}
             for row in rows:
@@ -289,13 +296,9 @@ class BrokerStore:
                     (project_key, idempotency_key),
                 ).fetchone()
                 if existing:
-                    record = dict(existing)
+                    record = self._request_record(existing)
                     if record["tool_name"] != tool_name or record["args_hash"] != args_hash:
                         raise ValueError("idempotency key was already used with different tool arguments")
-                    if record.get("response_json"):
-                        record["response"] = json.loads(record.pop("response_json"))
-                    else:
-                        record.pop("response_json", None)
                     return record
             self._connection.execute(
                 """
@@ -328,7 +331,7 @@ class BrokerStore:
                 """,
                 (
                     state,
-                    json.dumps(response, separators=(",", ":")) if response is not None else None,
+                    self._vault.encode(response) if response is not None else None,
                     error,
                     generation_id,
                     utc_now(),
@@ -344,12 +347,91 @@ class BrokerStore:
             ).fetchone()
             if not row:
                 return None
-            record = dict(row)
-            if record.get("response_json"):
-                record["response"] = json.loads(record.pop("response_json"))
-            else:
-                record.pop("response_json", None)
-            return record
+            return self._request_record(row)
+
+    def _request_record(self, row: sqlite3.Row) -> dict[str, Any]:
+        record = dict(row)
+        serialized = record.pop("response_json", None)
+        if serialized:
+            try:
+                record["response"] = self._vault.decode(serialized)
+            except (OSError, ValueError, EOFError) as exception:
+                # The terminal receipt survives even if its media was lost. Never replay a write.
+                record["responseUnavailable"] = str(exception)
+        return record
+
+    def prune_history(self, *, retention_days: int = 7, max_response_bytes: int = 256 * 1024 * 1024,
+                      batch_size: int = 500) -> dict[str, int]:
+        """Expire only terminal READ payloads, not request identities or mutation receipts.
+
+        Disabled with retention_days=0 and max_response_bytes=0. No VACUUM or automatic
+        deletion of the user's database. Unreferenced vault blobs get a 24-hour grace.
+        """
+        if retention_days < 0 or max_response_bytes < 0 or batch_size < 1:
+            raise ValueError("Invalid retention limits")
+        if retention_days == 0 and max_response_bytes == 0:
+            return {"expiredResponses": 0, "deletedEvents": 0, "deletedArtifacts": 0}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT request_id, updated_utc, LENGTH(response_json) AS payload_bytes, "
+                "CASE WHEN LENGTH(response_json)<1024 THEN response_json END AS metadata "
+                "FROM requests WHERE read_only=1 AND state IN ('completed','failed','cancelled') "
+                "AND response_json IS NOT NULL ORDER BY updated_utc, request_id"
+            ).fetchall()
+            sizes = []
+            for row in rows:
+                try:
+                    ref = self._vault.reference(row["metadata"])
+                except (ValueError, TypeError):
+                    ref = None
+                sizes.append(int(ref.get("storedBytes", row["payload_bytes"])) if ref else row["payload_bytes"])
+            total = sum(sizes)
+            expired = []
+            for row, size in zip(rows, sizes):
+                if len(expired) >= batch_size:
+                    break
+                if retention_days and row["updated_utc"] < cutoff or max_response_bytes and total > max_response_bytes:
+                    expired.append((row["request_id"],))
+                    total -= size
+            self._connection.executemany(
+                "UPDATE requests SET response_json=NULL, error=COALESCE(error,'RESPONSE_EXPIRED: read payload retention elapsed; receipt preserved') "
+                "WHERE request_id=?", expired)
+            deleted_events = 0
+            if retention_days:
+                deleted_events = self._connection.execute(
+                    "DELETE FROM events WHERE event_id IN (SELECT event_id FROM events WHERE created_utc<? ORDER BY event_id LIMIT ?)",
+                    (cutoff, batch_size)).rowcount
+            self._connection.commit()
+            # Never unlink a blob while a writer is between encode and commit.
+            references = set()
+            references_valid = True
+            for row in self._connection.execute("SELECT response_json FROM requests WHERE LENGTH(response_json)<1024"):
+                try:
+                    ref = self._vault.reference(row[0])
+                except (ValueError, TypeError):
+                    # Preserve potential recovery evidence when a descriptor is
+                    # corrupt; healthy read receipts can still be expired above.
+                    references_valid = False
+                    continue
+                if ref:
+                    references.add(ref.get("sha256"))
+            deleted_artifacts = 0
+            grace = (datetime.now(timezone.utc) - timedelta(days=1)).timestamp()
+            if references_valid and self._vault.root.exists():
+                for blob in self._vault.root.glob("*.json.gz"):
+                    digest = blob.name.removesuffix(".json.gz")
+                    try:
+                        blob_path = self._vault._path(digest)
+                    except ValueError:
+                        continue
+                    if digest not in references and not blob.is_symlink() and blob.stat().st_mtime < grace:
+                        blob_path.unlink(missing_ok=True)
+                        deleted_artifacts += 1
+                        if deleted_artifacts >= batch_size:
+                            break
+            return {"expiredResponses": len(expired), "deletedEvents": deleted_events,
+                    "deletedArtifacts": deleted_artifacts}
 
     def create_job(self, kind: str, project_key: str | None, message: str = "queued") -> dict[str, Any]:
         job_id = uuid4().hex

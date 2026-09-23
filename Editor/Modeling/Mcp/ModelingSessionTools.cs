@@ -82,12 +82,15 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                 ["removedVertices"] = new JObject { ["type"] = "integer" },
                 ["createdFaces"] = new JObject { ["type"] = "integer" },
                 ["removedFaces"] = new JObject { ["type"] = "integer" },
+                ["removedLines"] = new JObject { ["type"] = "integer" },
+                ["removedPoints"] = new JObject { ["type"] = "integer" },
+                ["removedComponents"] = new JObject { ["type"] = "integer" },
                 ["valid"] = new JObject { ["type"] = "boolean" },
             },
             ["required"] = new JArray
             {
                 "operationId", "previewHash", "topologyRevision", "geometryRevision",
-                "createdVertices", "removedVertices", "createdFaces", "removedFaces", "valid",
+                "createdVertices", "removedVertices", "createdFaces", "removedFaces", "removedLines", "removedPoints", "removedComponents", "valid",
             },
             ["additionalProperties"] = false,
         };
@@ -123,6 +126,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                 ["removedVertices"] = result.RemovedVertexCount,
                 ["createdFaces"] = result.CreatedFaceCount,
                 ["removedFaces"] = result.RemovedFaceCount,
+                ["removedLines"] = result.RemovedLineCount,
+                ["removedPoints"] = result.RemovedPointCount,
+                ["removedComponents"] = result.RemovedComponentCount,
                 ["valid"] = result.Validation?.IsValid ?? false,
             };
 
@@ -151,7 +157,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
     public sealed class BeginMeshEditSessionTool : IMcpTool
     {
         public string Name => "mesh_begin_edit_session";
-        public string Description => "Creates an independent editable mesh asset and MeshEditDocument without modifying the imported source.";
+        public string Description => "Creates an independent model copy, editable mesh asset and MeshEditDocument without modifying the source. Use rendererTarget when the model root contains multiple meshes.";
         public JObject InputSchema => new JObject
         {
             ["type"] = "object",
@@ -159,6 +165,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             {
                 ["target"] = SchemaHelpers.TargetRefSchema,
                 ["instanceId"] = new JObject { ["type"] = "integer" },
+                ["rendererTarget"] = SchemaHelpers.TargetRefSchema,
                 ["outputFolder"] = new JObject { ["type"] = "string", ["pattern"] = "^Assets(?:/|$)" },
             },
             ["oneOf"] = new JArray
@@ -180,8 +187,19 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
             if (target == null) return ToolResult.Error("TARGET_NOT_FOUND", error);
             try
             {
-                var result = EditableMeshFactory.Create(target, (string)arguments["outputFolder"]);
-                return ToolResult.Ok("Editable mesh session created.", ContextJson(result.Document, result.EditableObject));
+                UnityEngine.Renderer selectedRenderer = null;
+                if (arguments["rendererTarget"] != null)
+                {
+                    var rendererObject = ToolTargetResolver.ResolveGameObject(new JObject { ["target"] = arguments["rendererTarget"].DeepClone() }, out var rendererError);
+                    if (rendererObject == null) return ToolResult.Error("RENDERER_NOT_FOUND", rendererError);
+                    selectedRenderer = rendererObject.GetComponent<UnityEngine.SkinnedMeshRenderer>();
+                    if (selectedRenderer == null) selectedRenderer = rendererObject.GetComponent<UnityEngine.MeshRenderer>();
+                    if (selectedRenderer == null) return ToolResult.Error("RENDERER_NOT_FOUND", "rendererTarget must directly identify the mesh renderer's GameObject.");
+                }
+                var result = EditableMeshFactory.CreateModelCopy(target, selectedRenderer, (string)arguments["outputFolder"]);
+                var json = ContextJson(result.Document, result.EditableObject);
+                json["editableRoot"] = ToolTargetRef.Capture(result.EditableRoot).ToJson();
+                return ToolResult.Ok("Editable mesh session created.", json);
             }
             catch (Exception exception) { return ModelingSessionToolUtility.Exception(exception); }
         }
@@ -202,6 +220,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Mcp
                 ["sourceDrifted"] = new JObject { ["type"] = "boolean" },
                 ["modifierCount"] = new JObject { ["type"] = "integer" },
                 ["editableObject"] = SchemaHelpers.TargetRefSchema,
+                ["editableRoot"] = SchemaHelpers.TargetRefSchema,
             },
             ["required"] = new JArray
             {
