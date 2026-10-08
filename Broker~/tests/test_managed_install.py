@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
+import logging.config
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -353,3 +356,31 @@ def test_managed_logging_uses_only_rotating_file_handler(monkeypatch: pytest.Mon
     assert handler["filename"] == str(log_path)
     for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         assert config["loggers"][logger_name]["handlers"] == ["managed_file"]
+        assert config["loggers"][logger_name]["propagate"] is False
+
+
+def test_managed_log_lines_are_written_once_with_utc_timestamps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "logs" / "broker.log"
+    monkeypatch.setenv("UNITY_MCP_BROKER_LOG", str(log_path))
+    loggers = {name: logging.getLogger(name) for name in ("uvicorn", "uvicorn.error", "uvicorn.access")}
+    saved = {name: (logger.handlers[:], logger.propagate, logger.level) for name, logger in loggers.items()}
+    try:
+        logging.config.dictConfig(main.logging_config())
+        logging.getLogger("uvicorn.error").getChild("sessions").info("MCP session opened id=1234")
+        logging.getLogger("uvicorn.access").info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:5000", "POST", "/mcp/", "1.1", 200)
+        for handler in loggers["uvicorn"].handlers:
+            handler.flush()
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    finally:
+        for name, (handlers, propagate, level) in saved.items():
+            for handler in loggers[name].handlers:
+                if handler not in handlers:
+                    handler.close()
+            loggers[name].handlers, loggers[name].propagate = handlers, propagate
+            loggers[name].setLevel(level)
+    assert len(lines) == 2
+    timestamp = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+00:00 INFO: +"
+    assert re.fullmatch(timestamp + "MCP session opened id=1234", lines[0])
+    assert re.fullmatch(timestamp + r'127\.0\.0\.1:5000 - "POST /mcp/ HTTP/1\.1" 200', lines[1])

@@ -30,6 +30,8 @@ class BrokerStore:
         self._lock = threading.RLock()
         try:
             with self._lock:
+                # Takes effect only on a new database; older ones are converted by compact_storage().
+                self._connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
                 self._connection.execute("PRAGMA busy_timeout=5000")
                 self._connection.execute("PRAGMA journal_mode=WAL")
                 self._connection.execute("PRAGMA synchronous=NORMAL")
@@ -42,6 +44,38 @@ class BrokerStore:
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+    def compact_storage(self) -> dict[str, int]:
+        """Return free database pages to the filesystem.
+
+        A database created before incremental auto-vacuum is rebuilt once with VACUUM, which
+        copies only live rows. Afterwards free pages are released without a rebuild.
+        """
+        with self._lock:
+            before = self._database_bytes()
+            rebuilt = self._connection.execute("PRAGMA auto_vacuum").fetchone()[0] != 2
+            if rebuilt:
+                self._connection.commit()
+                self._connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
+                self._connection.execute("VACUUM")
+            else:
+                self._release_free_pages(None)
+            self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            return {"bytesBefore": before, "bytesAfter": self._database_bytes(), "rebuilt": int(rebuilt)}
+
+    def _database_bytes(self) -> int:
+        page_size = self._connection.execute("PRAGMA page_size").fetchone()[0]
+        return int(self._connection.execute("PRAGMA page_count").fetchone()[0]) * int(page_size)
+
+    def _release_free_pages(self, limit: int | None) -> int:
+        if self._connection.execute("PRAGMA auto_vacuum").fetchone()[0] != 2:
+            return 0
+        before = self._connection.execute("PRAGMA freelist_count").fetchone()[0]
+        if not before:
+            return 0
+        statement = "PRAGMA incremental_vacuum" if limit is None else f"PRAGMA incremental_vacuum({int(limit)})"
+        self._connection.execute(statement).fetchall()
+        return int(before - self._connection.execute("PRAGMA freelist_count").fetchone()[0])
 
     def schema_version(self) -> int:
         with self._lock:
@@ -361,16 +395,17 @@ class BrokerStore:
         return record
 
     def prune_history(self, *, retention_days: int = 7, max_response_bytes: int = 256 * 1024 * 1024,
-                      batch_size: int = 500) -> dict[str, int]:
+                      batch_size: int = 500, reclaim_pages: int = 2048) -> dict[str, int]:
         """Expire only terminal READ payloads, not request identities or mutation receipts.
 
-        Disabled with retention_days=0 and max_response_bytes=0. No VACUUM or automatic
-        deletion of the user's database. Unreferenced vault blobs get a 24-hour grace.
+        Disabled with retention_days=0 and max_response_bytes=0. Never deletes the user's
+        database; up to reclaim_pages free pages are returned to the filesystem per pass, so
+        the store lock is held only briefly. Unreferenced vault blobs get a 24-hour grace.
         """
-        if retention_days < 0 or max_response_bytes < 0 or batch_size < 1:
+        if retention_days < 0 or max_response_bytes < 0 or batch_size < 1 or reclaim_pages < 0:
             raise ValueError("Invalid retention limits")
         if retention_days == 0 and max_response_bytes == 0:
-            return {"expiredResponses": 0, "deletedEvents": 0, "deletedArtifacts": 0}
+            return {"expiredResponses": 0, "deletedEvents": 0, "deletedArtifacts": 0, "reclaimedPages": 0}
         cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
         with self._lock:
             rows = self._connection.execute(
@@ -430,8 +465,9 @@ class BrokerStore:
                         deleted_artifacts += 1
                         if deleted_artifacts >= batch_size:
                             break
+            reclaimed_pages = self._release_free_pages(reclaim_pages) if reclaim_pages else 0
             return {"expiredResponses": len(expired), "deletedEvents": deleted_events,
-                    "deletedArtifacts": deleted_artifacts}
+                    "deletedArtifacts": deleted_artifacts, "reclaimedPages": reclaimed_pages}
 
     def create_job(self, kind: str, project_key: str | None, message: str = "queued") -> dict[str, Any]:
         job_id = uuid4().hex

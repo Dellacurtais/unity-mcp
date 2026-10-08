@@ -13,6 +13,7 @@ from typing import Protocol
 from uuid import uuid4
 
 import uvicorn
+import uvicorn.logging
 
 from app import create_app
 from config import BrokerConfig
@@ -172,6 +173,13 @@ async def stop_when_parent_exits(
         monitor.close()
 
 
+class ManagedLogFormatter(uvicorn.logging.DefaultFormatter):
+    """Prefixes every managed log line with a UTC timestamp."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        return datetime.fromtimestamp(record.created, timezone.utc).isoformat(timespec="milliseconds")
+
+
 def logging_config() -> dict[str, object]:
     config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
     log_path = os.getenv("UNITY_MCP_BROKER_LOG", "").strip()
@@ -180,16 +188,24 @@ def logging_config() -> dict[str, object]:
 
     path = Path(log_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
+    config["formatters"]["managed"] = {
+        "()": ManagedLogFormatter,
+        "fmt": "%(asctime)s %(levelprefix)s %(message)s",
+        "use_colors": False,
+    }
     config["handlers"]["managed_file"] = {
         "class": "logging.handlers.RotatingFileHandler",
-        "formatter": "default",
+        "formatter": "managed",
         "filename": str(path),
         "maxBytes": 5 * 1024 * 1024,
         "backupCount": 3,
         "encoding": "utf-8",
     }
     for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        config["loggers"].setdefault(logger_name, {})["handlers"] = ["managed_file"]
+        logger = config["loggers"].setdefault(logger_name, {})
+        logger["handlers"] = ["managed_file"]
+        # uvicorn.error propagates to uvicorn by default, which wrote its lines twice.
+        logger["propagate"] = False
     return config
 
 

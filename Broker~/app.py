@@ -4,7 +4,9 @@ import hmac
 import json
 import asyncio
 import logging
+import sqlite3
 from contextlib import asynccontextmanager
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
@@ -16,6 +18,30 @@ from protocol import BridgeIdentity, validate_envelope
 from registry import RegistryCache
 from router import BridgeRouter
 from store import BrokerStore
+
+# A child of uvicorn.error, so the managed log file receives it.
+BROKER_LOG = logging.getLogger("uvicorn.error").getChild("broker")
+
+
+def describe_client(request: Request, payload: dict[str, Any]) -> str:
+    """Name an MCP client from its initialize clientInfo and User-Agent, for session logs."""
+    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    info = params.get("clientInfo") if isinstance(params.get("clientInfo"), dict) else {}
+    name = " ".join(str(info[key]) for key in ("name", "version") if info.get(key))
+    agent = request.headers.get("user-agent", "")
+    label = f"{name} [{agent}]" if name and agent else name or agent or "unknown"
+    return "".join(character if character.isprintable() else "?" for character in label)[:200]
+
+
+def compact_storage(store: BrokerStore) -> None:
+    try:
+        result = store.compact_storage()
+    except (sqlite3.Error, OSError):
+        BROKER_LOG.exception("Broker database compaction failed; continuing with the existing file")
+        return
+    if result["rebuilt"] or result["bytesAfter"] < result["bytesBefore"]:
+        BROKER_LOG.info("Broker database compacted from %.1f MB to %.1f MB",
+                        result["bytesBefore"] / 1e6, result["bytesAfter"] / 1e6)
 
 
 def create_app(config: BrokerConfig | None = None) -> FastAPI:
@@ -40,6 +66,7 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
     async def maintain_history() -> None:
         while True:
             await asyncio.sleep(settings.history_maintenance_seconds)
+            broker.expire_sessions()
             maintenance = asyncio.create_task(asyncio.to_thread(
                 store.prune_history,
                 retention_days=settings.history_retention_days,
@@ -52,10 +79,12 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
                 await asyncio.gather(maintenance, return_exceptions=True)
                 raise
             except Exception:
-                logging.getLogger(__name__).exception("Broker history maintenance failed")
+                BROKER_LOG.exception("Broker history maintenance failed")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        # Runs before the server accepts connections; a rebuild copies only live rows.
+        compact_storage(store)
         maintenance_task = asyncio.create_task(maintain_history())
         try:
             yield
@@ -110,6 +139,7 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
             "focusAssistEnabled": settings.focus_assist_enabled,
             "focusAssistDelaySeconds": settings.focus_assist_delay_seconds,
             "autoWaitJobs": settings.auto_wait_jobs,
+            "sessions": {"active": len(broker.sessions), "max": broker.max_sessions},
         }
 
     @app.post("/mcp/")
@@ -158,8 +188,9 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
             if (mcp_session_id is None and isinstance(payload, dict)
                     and payload.get("jsonrpc") == "2.0" and payload.get("method") == "initialize"
                     and "id" in payload):
+                origin = f"{request.client.host}:{request.client.port}" if request.client else None
                 try:
-                    mcp_session_id = broker.create_session()
+                    mcp_session_id = broker.create_session(describe_client(request, payload), origin)
                 except ValueError as exception:
                     raise HTTPException(status_code=503, detail=str(exception))
             status, result = await broker.process(payload, mcp_protocol_version, mcp_session_id)

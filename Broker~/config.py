@@ -34,6 +34,8 @@ class BrokerConfig:
     history_retention_days: int = 7
     history_max_response_bytes: int = 256 * 1024 * 1024
     history_maintenance_seconds: float = 300.0
+    max_sessions: int = 1024
+    session_idle_seconds: float = 2 * 60 * 60
 
     def __post_init__(self) -> None:
         if self.host not in {"127.0.0.1", "localhost", "::1"}:
@@ -50,6 +52,10 @@ class BrokerConfig:
             raise ValueError("Broker response/retention limits are invalid")
         if not math.isfinite(self.history_maintenance_seconds) or self.history_maintenance_seconds <= 0:
             raise ValueError("Broker history maintenance interval must be positive")
+        if self.max_sessions < 1:
+            raise ValueError("The broker session limit must be positive")
+        if not math.isfinite(self.session_idle_seconds) or self.session_idle_seconds <= 0:
+            raise ValueError("The broker session idle timeout must be positive")
 
     @classmethod
     def from_env(cls) -> "BrokerConfig":
@@ -71,4 +77,6 @@ class BrokerConfig:
             history_retention_days=int(os.getenv("UNITY_MCP_BROKER_HISTORY_DAYS", "7")),
             history_max_response_bytes=int(os.getenv("UNITY_MCP_BROKER_HISTORY_BYTES", str(256 * 1024 * 1024))),
             history_maintenance_seconds=float(os.getenv("UNITY_MCP_BROKER_HISTORY_INTERVAL", "300")),
+            max_sessions=int(os.getenv("UNITY_MCP_BROKER_MAX_SESSIONS", "1024")),
+            session_idle_seconds=float(os.getenv("UNITY_MCP_BROKER_SESSION_IDLE_SECONDS", str(2 * 60 * 60))),
         )

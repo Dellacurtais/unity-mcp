@@ -8,7 +8,11 @@ Implementation following [the 2026-09-23 audit](agent-environment-audit-2026-09-
 
 Each active request gets a unique execution ID. Two clients can both use JSON-RPC ID `2` without sharing results or cancelling one another's operation. `notifications/cancelled` resolves through the client's session and the project captured when the request started. Clients using the legacy no-session mode do not receive this isolation.
 
-The broker admits at most 1,024 sessions (24-hour idle TTL), 128 active operations and 32 pending calls per client. Saturation returns `BROKER_BUSY` before creating a new request receipt. Close unused sessions with `DELETE /mcp/`.
+The broker admits at most 1,024 sessions, 128 active operations and 32 pending calls per client. Saturation of operations returns `BROKER_BUSY` before creating a new request receipt. Close unused sessions with `DELETE /mcp/`.
+
+Most clients exit without `DELETE`. A session idle for two hours expires, and when the session limit is reached a new `initialize` evicts the least recently used session that has no pending call. Only when every session has pending work does `initialize` return 503. A client whose session expired or was evicted receives 404 and must initialize again, as the MCP transport requires. The broker log records every opened, closed, expired and evicted session with the client's `clientInfo` and User-Agent; `broker_get_status.sessions` counts the open sessions per client, and `/health.sessions` reports the totals.
+
+Before 2026-10-08 sessions lived 24 hours and the limit was never relieved: leaked sessions (about 60 per hour, only ~5% closed with `DELETE`) filled it within a day, and every new client got 503 for ten hours.
 
 Concurrent calls sharing the same project and idempotency key join one operation. A write whose send may have reached Unity remains `OUTCOME_UNKNOWN` after a lost ACK or response. Do not automatically replay an inconclusive mutation; inspect `broker_get_request`, its job and the affected objects first.
 
@@ -36,14 +40,20 @@ Profiles are discovery filters, not permissions. Broker controls remain discover
 
 Responses exceeding 256 KiB are stored in a sibling `<database>.responses` directory as SHA-256-addressed gzip JSON; the SQLite ledger retains a small reference. Replay verifies the artifact and transparently returns the original MCP response. Missing or corrupt artifacts preserve the terminal receipt and report unavailable evidence; they never trigger replay of a mutation.
 
-Automatic maintenance removes only completed read-response payloads by age or byte budget. Request rows, idempotency keys, mutation responses, pending work and inconclusive outcomes remain. Expired read payloads report `RESPONSE_EXPIRED`. Mutation history may therefore grow beyond the read budget. Old database free pages are not reclaimed by this policy; no `VACUUM` or purge of the user's existing ledger was performed.
+Automatic maintenance removes only completed read-response payloads by age or byte budget. Request rows, idempotency keys, mutation responses, pending work and inconclusive outcomes remain. Expired read payloads report `RESPONSE_EXPIRED`. Mutation history may therefore grow beyond the read budget.
+
+The ledger uses SQLite incremental auto-vacuum. Each maintenance pass returns up to 2,048 free pages (8 MiB) to the filesystem, and startup releases all of them before the broker accepts connections. A ledger created before this policy is rebuilt once at startup with `VACUUM`, which copies only live rows: on 2026-10-08 a 2 GB ledger with 83% free pages became 287 MB in about two seconds. No row is deleted by compaction.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `UNITY_MCP_BROKER_RESPONSE_INLINE_BYTES` | 262144 | Inline-response threshold |
 | `UNITY_MCP_BROKER_HISTORY_DAYS` | 7 | Completed-read payload age limit; 0 disables age expiry |
 | `UNITY_MCP_BROKER_HISTORY_BYTES` | 268435456 | Retained completed-read payload budget; 0 disables byte-budget expiry |
-| `UNITY_MCP_BROKER_HISTORY_INTERVAL` | 300 | Maintenance interval in seconds |
+| `UNITY_MCP_BROKER_HISTORY_INTERVAL` | 300 | Maintenance interval in seconds; also expires idle sessions |
+| `UNITY_MCP_BROKER_MAX_SESSIONS` | 1024 | Open MCP sessions before `initialize` evicts the least recently used idle one |
+| `UNITY_MCP_BROKER_SESSION_IDLE_SECONDS` | 7200 | Idle time after which a session expires |
+
+Broker log lines start with a UTC timestamp and are written once.
 
 Set both history limits to zero to disable pruning. Schema version 3 identifies the new response encoding and blocks older brokers from interpreting artifact references as responses. Back up the database and its artifact directory together before upgrading; rollback requires restoring compatible data as well as the broker source.
 

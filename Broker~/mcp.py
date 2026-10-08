@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import time
+from collections import Counter
 from typing import Any
 from uuid import uuid4
 
@@ -19,6 +21,7 @@ TERMINAL_REQUEST_STATES = {"completed", "cancelled", "failed", "outcome_unknown"
 UNITY_ACCEPTED_STATES = {"accepted_by_unity", "running_in_unity"}
 UNCERTAIN_REQUEST_STATES = UNITY_ACCEPTED_STATES | {"sending_to_unity"}
 TERMINAL_JOB_STATES = {"completed", "failed", "cancelled"}
+SESSION_LOG = logging.getLogger("uvicorn.error").getChild("sessions")
 
 
 def ok_response(request_id: Any, result: Any) -> dict[str, Any]:
@@ -50,8 +53,6 @@ def tool_error(request_id: Any, code: str, message: str, data: Any = None) -> di
 
 
 class McpBroker:
-    MAX_SESSIONS = 1024
-    SESSION_TTL_SECONDS = 24 * 60 * 60
     MAX_INFLIGHT_REQUESTS = 128
     MAX_REQUESTS_PER_CLIENT = 32
 
@@ -60,41 +61,88 @@ class McpBroker:
         self.store = store
         self.registry = registry
         self.router = router
+        self.max_sessions = config.max_sessions
+        self.session_idle_seconds = config.session_idle_seconds
         self.sessions: dict[str, str | None] = {}
+        # Ordered from least to most recently used; every access moves a session to the end.
         self._session_access: dict[str, float] = {}
+        self._session_clients: dict[str, str] = {}
         self._inflight: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._operation_jobs: dict[str, str] = {}
         self._client_requests: dict[tuple[str, str], tuple[str, str]] = {}
         self._notifications: set[asyncio.Task[Any]] = set()
 
-    def create_session(self) -> str:
+    def create_session(self, client: str | None = None, origin: str | None = None) -> str:
+        """Open a session, reclaiming idle ones first.
+
+        Clients often disappear without DELETE. Idle sessions expire, and at capacity the
+        least recently used session without pending work is evicted; its owner gets 404
+        and must initialize again, as the MCP transport requires.
+        """
         now = time.monotonic()
-        active_sessions = {key[0] for key in self._client_requests}
-        for session_id, last_access in list(self._session_access.items()):
-            if now - last_access > self.SESSION_TTL_SECONDS and session_id not in active_sessions:
-                self.drop_session(session_id)
-        if len(self.sessions) >= self.MAX_SESSIONS:
-            raise ValueError("MCP session capacity reached; close an unused session before initializing")
+        busy = self._busy_sessions()
+        self._expire_sessions(now, busy)
+        while len(self.sessions) >= self.max_sessions:
+            victim = next((session for session in self._session_access if session not in busy), None)
+            if victim is None:
+                SESSION_LOG.warning("MCP session rejected client=%r sessions=%d/%d (all have pending work)",
+                                    client or "unknown", len(self.sessions), self.max_sessions)
+                raise ValueError("MCP session capacity reached; every session has pending work")
+            self._forget_session(victim, "evicted", now)
         session_id = uuid4().hex
         self.sessions[session_id] = self.router.active_project_key
         self._session_access[session_id] = now
+        self._session_clients[session_id] = client or "unknown"
+        SESSION_LOG.info("MCP session opened id=%s client=%r from=%s sessions=%d/%d",
+                         session_id[:8], client or "unknown", origin or "-", len(self.sessions), self.max_sessions)
         return session_id
 
     def has_session(self, session_id: str) -> bool:
         last_access = self._session_access.get(session_id)
         if last_access is None:
             return False
-        if time.monotonic() - last_access > self.SESSION_TTL_SECONDS and not any(
-            key[0] == session_id for key in self._client_requests
-        ):
-            self.drop_session(session_id)
+        now = time.monotonic()
+        if now - last_access > self.session_idle_seconds and session_id not in self._busy_sessions():
+            self._forget_session(session_id, "expired", now)
             return False
-        self._session_access[session_id] = time.monotonic()
+        del self._session_access[session_id]
+        self._session_access[session_id] = now
         return True
 
     def drop_session(self, session_id: str) -> None:
+        if session_id in self._session_access:
+            self._forget_session(session_id, "closed", time.monotonic())
+
+    def expire_sessions(self) -> int:
+        return self._expire_sessions(time.monotonic(), self._busy_sessions())
+
+    def session_stats(self) -> dict[str, Any]:
+        return {
+            "active": len(self.sessions),
+            "max": self.max_sessions,
+            "idleSeconds": self.session_idle_seconds,
+            "byClient": dict(Counter(self._session_clients.values()).most_common(10)),
+        }
+
+    def _busy_sessions(self) -> set[str]:
+        return {key[0] for key in self._client_requests}
+
+    def _expire_sessions(self, now: float, busy: set[str]) -> int:
+        expired = 0
+        for session_id, last_access in list(self._session_access.items()):
+            if now - last_access <= self.session_idle_seconds:
+                break
+            if session_id not in busy:
+                self._forget_session(session_id, "expired", now)
+                expired += 1
+        return expired
+
+    def _forget_session(self, session_id: str, reason: str, now: float) -> None:
+        last_access = self._session_access.pop(session_id, now)
         self.sessions.pop(session_id, None)
-        self._session_access.pop(session_id, None)
+        client = self._session_clients.pop(session_id, "unknown")
+        SESSION_LOG.info("MCP session %s id=%s client=%r idle=%ds sessions=%d/%d",
+                         reason, session_id[:8], client, now - last_access, len(self.sessions), self.max_sessions)
 
     def _project_key(self, session_id: str | None, meta: dict[str, Any] | None = None) -> str | None:
         explicit = (meta or {}).get("projectKey")
@@ -538,6 +586,7 @@ class McpBroker:
                 "focusAssistEnabled": self.config.focus_assist_enabled,
                 "focusAssistDelaySeconds": self.config.focus_assist_delay_seconds,
                 "autoWaitJobs": self.config.auto_wait_jobs,
+                "sessions": self.session_stats(),
             })
         if name == "broker_list_projects":
             return self._broker_result(request_id, {"projects": self.store.list_projects(), "activeProjectKey": project_key})
@@ -548,7 +597,8 @@ class McpBroker:
                     connection = await self.router.activate(selected)
                 else:
                     connection = self.router.connection_for(selected)
-                    self.sessions[session_id] = selected
+                    if session_id in self.sessions:
+                        self.sessions[session_id] = selected
             except BridgeUnavailable as exception:
                 return tool_error(request_id, "PROJECT_OFFLINE", str(exception))
             return self._broker_result(request_id, {"activeProjectKey": connection.identity.project_key})
