@@ -8,7 +8,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
     public sealed class McpRequestCoordinator : IDisposable
     {
         private readonly SemaphoreSlim _concurrency;
-        private SemaphoreSlim Mutation => Jobs.EditorMutationGate.Semaphore;
+        // The Editor-wide gate by default; tests inject their own so a run_tests job that
+        // owns the real gate does not starve them. Never disposed here: it outlives us.
+        private readonly SemaphoreSlim _mutation;
+        private SemaphoreSlim Mutation => _mutation;
+        internal bool UsesEditorMutationGate => ReferenceEquals(_mutation, Jobs.EditorMutationGate.Semaphore);
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _requests = new ConcurrentDictionary<string, CancellationTokenSource>(StringComparer.Ordinal);
         private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
         private readonly object _lifecycleLock = new object();
@@ -17,8 +21,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         private int _resourcesDisposed;
 
         public McpRequestCoordinator(int maxConcurrency)
+            : this(maxConcurrency, Jobs.EditorMutationGate.Semaphore) { }
+
+        internal McpRequestCoordinator(int maxConcurrency, SemaphoreSlim mutationGate)
         {
             _concurrency = new SemaphoreSlim(Math.Max(1, maxConcurrency), Math.Max(1, maxConcurrency));
+            _mutation = mutationGate ?? throw new ArgumentNullException(nameof(mutationGate));
         }
 
         public int InFlightCount => _requests.Count;
@@ -43,20 +51,22 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 if (!string.IsNullOrEmpty(requestId))
                 {
                     if (!_requests.TryAdd(requestId, linked))
-                        throw new InvalidOperationException($"Duplicate MCP request id '{requestId}'.");
+                        throw new DuplicateRequestException(requestId);
                     requestRegistered = true;
                 }
-                // Cancellation/control must remain available when every normal slot is
-                // waiting on a mutation resource owned by the job being cancelled.
-                if (!priority)
-                {
-                    await _concurrency.WaitAsync(linked.Token).ConfigureAwait(false);
-                    concurrencyHeld = true;
-                }
+                // The mutation gate is taken BEFORE a concurrency slot. Writes queued behind
+                // a long job (tests, builds) used to hold every slot while they waited, so
+                // reads, health checks and job polls could no longer run at all.
                 if (isWrite)
                 {
                     await Mutation.WaitAsync(linked.Token).ConfigureAwait(false);
                     mutationHeld = true;
+                }
+                // Cancellation/control must remain available when every normal slot is busy.
+                if (!priority)
+                {
+                    await _concurrency.WaitAsync(linked.Token).ConfigureAwait(false);
+                    concurrencyHeld = true;
                 }
                 return new Lease(this, requestId, linked, mutationHeld, concurrencyHeld);
             }
@@ -121,6 +131,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             }
             try { _shutdown.Cancel(); } catch { }
             if (disposeResources) DisposeResources();
+        }
+
+        public sealed class DuplicateRequestException : InvalidOperationException
+        {
+            public DuplicateRequestException(string requestId)
+                : base($"Duplicate MCP request id '{requestId}': the previous request with this id is still running.") { }
         }
 
         public sealed class Lease : IDisposable

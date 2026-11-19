@@ -318,8 +318,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
 
         private static Mesh CurrentRendererMesh(Renderer renderer)
         {
-            if (renderer is SkinnedMeshRenderer skinned) return skinned.sharedMesh;
-            return renderer != null ? renderer.GetComponent<MeshFilter>()?.sharedMesh : null;
+            return RendererMeshUtility.GetSharedMesh(renderer);
         }
 
         private static GameObject CreateSceneParts(

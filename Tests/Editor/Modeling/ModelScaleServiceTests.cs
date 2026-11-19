@@ -351,6 +351,24 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
                 Assert.That(clips.GetArrayElementAtIndex(i).objectReferenceValue, Is.Not.Null, "Every legacy state must retain a saved clip after reimport");
         }
 
+        [TestCase(false, "MODEL_MESH_UNREADABLE")]
+        [TestCase(true, "MODEL_RENDERER_UNSUPPORTED")]
+        public void IncompleteMeshAndEffectRenderers_RejectBeforeCreatingAssets(bool effect, string errorCode)
+        {
+            var root = StaticModel();
+            var child = new GameObject(effect ? "BeamHalo" : "MissingMeshFilter");
+            child.transform.SetParent(root.transform, false);
+            Renderer renderer = effect ? (Renderer)child.AddComponent<LineRenderer>() : child.AddComponent<MeshRenderer>();
+            renderer.sharedMaterials = Array.Empty<Material>();
+            var settings = Settings();
+            settings.OutputFolder = Folder + "/RejectedNormalization";
+            int before = AssetDatabase.FindAssets("", new[] { Folder }).Length;
+            Assert.That(Assert.Throws<InvalidOperationException>(() => ModelScaleService.Preview(root, settings)).Message,
+                Does.StartWith(errorCode));
+            Assert.That(AssetDatabase.IsValidFolder(settings.OutputFolder), Is.False);
+            Assert.That(AssetDatabase.FindAssets("", new[] { Folder }).Length, Is.EqualTo(before));
+        }
+
         [Test]
         public void ExternalLodAndTransientMaterial_RejectBeforeCreatingAssets()
         {

@@ -63,7 +63,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 Risk = tool.IsWrite ? McpRiskLevel.Medium : McpRiskLevel.Low,
                 ConfirmationPolicy = McpConfirmationPolicy.None,
                 EditorMode = tool.IsWrite ? McpEditorMode.EditModeOnly : McpEditorMode.Any,
-                IsIdempotent = !tool.IsWrite || IsSetLike(name),
+                // Refreshing or recompiling twice is harmless, so the broker may resend these
+                // after the Domain Reload they trigger instead of reporting OUTCOME_UNKNOWN.
+                IsIdempotent = !tool.IsWrite || IsSetLike(name)
+                    || name == "refresh_assets" || name == "request_script_compilation",
                 ExecutionRequirements = McpExecutionRequirement.MainThread,
                 HeadlessSafe = true,
             };
@@ -133,6 +136,15 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 d.ConfirmationPolicy = McpConfirmationPolicy.Required;
             }
 
+            if (name == "editor_quit")
+            {
+                // The tool refuses Play Mode itself, with a clear reason, and its dry run
+                // must work in any mode. Never resent after the Editor drops (it quit).
+                d.EditorMode = McpEditorMode.Any;
+                d.Risk = McpRiskLevel.High;
+                d.IsIdempotent = false;
+            }
+
             return d;
         }
 
@@ -192,8 +204,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             name == "request_script_compilation" ||
             name == "confirm_add_package" || name == "confirm_remove_package";
 
+        // execute_menu_item returns a job when called with deferred=true (builds, bakes).
         private static bool StartsLongRunningJob(string name) =>
-            name == "run_tests" || name == "start_build" ||
+            name == "run_tests" || name == "start_build" || name == "execute_menu_item" ||
             name == "reimport_assets" || name == "confirm_add_package" ||
             name == "confirm_remove_package" || name == "start_addressables_build";
 

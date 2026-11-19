@@ -346,7 +346,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         {
             var registry = new McpToolRegistry();
             foreach (var tool in tools) registry.Register(tool);
-            return new McpRequestProcessor(registry, 4, 10);
+            // A run_tests job started over MCP owns the Editor-wide gate for the whole run.
+            return new McpRequestProcessor(registry, 4, 10, new SemaphoreSlim(1, 1));
         }
 
         private static Task<McpProcessOutcome> Call(McpRequestProcessor processor, string name, int id,

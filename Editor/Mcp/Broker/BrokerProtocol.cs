@@ -13,6 +13,18 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         public static readonly string GenerationId = Guid.NewGuid().ToString("N");
 
+        // Captured on the main thread at load (Bootstrap); read later from worker threads.
+        internal static string EditorPath = string.Empty;
+        internal static string UnityVersion = string.Empty;
+        internal static bool BatchMode;
+
+        internal static void CaptureEditorIdentity()
+        {
+            EditorPath = UnityEditor.EditorApplication.applicationPath ?? string.Empty;
+            UnityVersion = UnityEngine.Application.unityVersion ?? string.Empty;
+            BatchMode = UnityEngine.Application.isBatchMode;
+        }
+
         public static JObject Envelope(
             string type,
             JObject payload,
@@ -63,6 +75,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 ["packageVersion"] = SceneAnalyzerVersion.Current,
                 ["registryCount"] = registryCount,
                 ["registryHash"] = registryHash ?? string.Empty,
+                // Lets broker_open_editor reopen the project with this same Editor.
+                ["editorPath"] = EditorPath,
+                ["unityVersion"] = UnityVersion,
+                ["batchMode"] = BatchMode,
             };
         }
     }

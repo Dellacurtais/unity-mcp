@@ -28,6 +28,9 @@ class BrokerStore:
         self._connection = sqlite3.connect(str(path), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        # Health checks must answer even while maintenance holds the store lock.
+        self._active_project_cache: tuple[bool, str | None] = (False, None)
+        self._read_connection: sqlite3.Connection | None = None
         try:
             with self._lock:
                 # Takes effect only on a new database; older ones are converted by compact_storage().
@@ -43,6 +46,9 @@ class BrokerStore:
 
     def close(self) -> None:
         with self._lock:
+            if self._read_connection is not None:
+                self._read_connection.close()
+                self._read_connection = None
             self._connection.close()
 
     def compact_storage(self) -> dict[str, int]:
@@ -246,13 +252,83 @@ class BrokerStore:
                     (project_key,),
                 )
             self._connection.commit()
+            self._active_project_cache = (True, project_key)
 
     def get_active_project(self) -> str | None:
+        loaded, cached = self._active_project_cache
+        if loaded:
+            return cached
         with self._lock:
             row = self._connection.execute(
                 "SELECT value FROM metadata WHERE key='active_project'"
             ).fetchone()
-            return str(row["value"]) if row else None
+            value = str(row["value"]) if row else None
+            self._active_project_cache = (True, value)
+            return value
+
+    def set_meta(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._connection.execute(
+                "INSERT INTO metadata(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, json.dumps(value, separators=(",", ":"))),
+            )
+            self._connection.commit()
+
+    def get_meta(self, key: str) -> Any:
+        with self._lock:
+            row = self._connection.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["value"])
+        except (TypeError, ValueError):
+            return None
+
+    def list_requests(
+        self,
+        *,
+        project_key: str | None = None,
+        state: str | None = None,
+        tool_name: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        clauses, parameters = [], []
+        for column, value in (("project_key", project_key), ("state", state), ("tool_name", tool_name)):
+            if value:
+                clauses.append(f"{column}=?")
+                parameters.append(value)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT request_id, project_key, generation_id, tool_name, read_only, idempotent, state, "
+                "error, created_utc, updated_utc, response_json IS NOT NULL AS has_response "
+                f"FROM requests{where} ORDER BY created_utc DESC LIMIT ?",
+                (*parameters, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_recent_jobs(
+        self,
+        *,
+        project_key: str | None = None,
+        state: str | None = None,
+        kind: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        clauses, parameters = [], []
+        for column, value in (("project_key", project_key), ("state", state), ("kind", kind)):
+            if value:
+                clauses.append(f"{column}=?")
+                parameters.append(value)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT job_id, kind, project_key, state, progress, message, error, created_utc, updated_utc "
+                f"FROM jobs{where} ORDER BY created_utc DESC LIMIT ?",
+                (*parameters, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def upsert_project(self, identity: Any, state: str, connected: bool) -> None:
         with self._lock:
@@ -394,80 +470,119 @@ class BrokerStore:
                 record["responseUnavailable"] = str(exception)
         return record
 
+    def _reader(self) -> sqlite3.Connection:
+        """A second connection for maintenance scans.
+
+        In WAL mode a reader never blocks the writer, so long scans run without the
+        store lock and the event loop keeps answering while maintenance works.
+        """
+        if self._read_connection is None:
+            connection = sqlite3.connect(str(self._path), check_same_thread=False)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout=5000")
+            self._read_connection = connection
+        return self._read_connection
+
     def prune_history(self, *, retention_days: int = 7, max_response_bytes: int = 256 * 1024 * 1024,
-                      batch_size: int = 500, reclaim_pages: int = 2048) -> dict[str, int]:
-        """Expire only terminal READ payloads, not request identities or mutation receipts.
+                      batch_size: int = 500, reclaim_pages: int = 2048,
+                      write_retention_days: int = 0, registry_snapshots_per_project: int = 0) -> dict[str, int]:
+        """Expire terminal READ payloads; mutation receipts keep their identity.
 
         Disabled with retention_days=0 and max_response_bytes=0. Never deletes the user's
-        database; up to reclaim_pages free pages are returned to the filesystem per pass, so
-        the store lock is held only briefly. Unreferenced vault blobs get a 24-hour grace.
+        database; up to reclaim_pages free pages are returned to the filesystem per pass.
+        Scans run on a separate read connection and the store lock is held only for the
+        short batched updates, so a large history cannot stall the broker. Mutation
+        payloads (not their receipts) expire only when write_retention_days > 0, and
+        older registry snapshots are dropped when registry_snapshots_per_project > 0.
+        Unreferenced vault blobs get a 24-hour grace.
         """
-        if retention_days < 0 or max_response_bytes < 0 or batch_size < 1 or reclaim_pages < 0:
+        if (retention_days < 0 or max_response_bytes < 0 or batch_size < 1 or reclaim_pages < 0
+                or write_retention_days < 0 or registry_snapshots_per_project < 0):
             raise ValueError("Invalid retention limits")
-        if retention_days == 0 and max_response_bytes == 0:
-            return {"expiredResponses": 0, "deletedEvents": 0, "deletedArtifacts": 0, "reclaimedPages": 0}
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        if (retention_days == 0 and max_response_bytes == 0 and write_retention_days == 0
+                and registry_snapshots_per_project == 0):
+            return {"expiredResponses": 0, "deletedEvents": 0, "deletedArtifacts": 0, "reclaimedPages": 0,
+                    "deletedSnapshots": 0}
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(days=retention_days)).isoformat()
+        write_cutoff = (now - timedelta(days=write_retention_days)).isoformat() if write_retention_days else ""
+        reader = self._reader()
+        rows = reader.execute(
+            "SELECT request_id, updated_utc, read_only, LENGTH(response_json) AS payload_bytes, "
+            "CASE WHEN LENGTH(response_json)<1024 THEN response_json END AS metadata "
+            "FROM requests WHERE state IN ('completed','failed','cancelled') AND response_json IS NOT NULL "
+            "AND (read_only=1 OR (?<>'' AND updated_utc<?)) ORDER BY updated_utc, request_id",
+            (write_cutoff, write_cutoff),
+        ).fetchall()
+        reader.commit()
+        sizes = []
+        for row in rows:
+            try:
+                ref = self._vault.reference(row["metadata"])
+            except (ValueError, TypeError):
+                ref = None
+            sizes.append(int(ref.get("storedBytes", row["payload_bytes"])) if ref else row["payload_bytes"])
+        total = sum(size for row, size in zip(rows, sizes) if row["read_only"])
+        expired = []
+        for row, size in zip(rows, sizes):
+            if len(expired) >= batch_size:
+                break
+            if not row["read_only"]:
+                expired.append((row["request_id"],))
+                continue
+            if retention_days and row["updated_utc"] < cutoff or max_response_bytes and total > max_response_bytes:
+                expired.append((row["request_id"],))
+                total -= size
+        deleted_events = 0
+        deleted_snapshots = 0
         with self._lock:
-            rows = self._connection.execute(
-                "SELECT request_id, updated_utc, LENGTH(response_json) AS payload_bytes, "
-                "CASE WHEN LENGTH(response_json)<1024 THEN response_json END AS metadata "
-                "FROM requests WHERE read_only=1 AND state IN ('completed','failed','cancelled') "
-                "AND response_json IS NOT NULL ORDER BY updated_utc, request_id"
-            ).fetchall()
-            sizes = []
-            for row in rows:
-                try:
-                    ref = self._vault.reference(row["metadata"])
-                except (ValueError, TypeError):
-                    ref = None
-                sizes.append(int(ref.get("storedBytes", row["payload_bytes"])) if ref else row["payload_bytes"])
-            total = sum(sizes)
-            expired = []
-            for row, size in zip(rows, sizes):
-                if len(expired) >= batch_size:
-                    break
-                if retention_days and row["updated_utc"] < cutoff or max_response_bytes and total > max_response_bytes:
-                    expired.append((row["request_id"],))
-                    total -= size
             self._connection.executemany(
-                "UPDATE requests SET response_json=NULL, error=COALESCE(error,'RESPONSE_EXPIRED: read payload retention elapsed; receipt preserved') "
+                "UPDATE requests SET response_json=NULL, error=COALESCE(error,'RESPONSE_EXPIRED: payload retention elapsed; receipt preserved') "
                 "WHERE request_id=?", expired)
-            deleted_events = 0
             if retention_days:
                 deleted_events = self._connection.execute(
                     "DELETE FROM events WHERE event_id IN (SELECT event_id FROM events WHERE created_utc<? ORDER BY event_id LIMIT ?)",
                     (cutoff, batch_size)).rowcount
+            if registry_snapshots_per_project:
+                deleted_snapshots = self._connection.execute(
+                    "DELETE FROM registry_snapshots WHERE rowid IN (SELECT rowid FROM ("
+                    "SELECT rowid, ROW_NUMBER() OVER (PARTITION BY project_key ORDER BY created_utc DESC, rowid DESC) AS n "
+                    "FROM registry_snapshots) WHERE n>?)",
+                    (registry_snapshots_per_project,)).rowcount
             self._connection.commit()
-            # Never unlink a blob while a writer is between encode and commit.
-            references = set()
-            references_valid = True
-            for row in self._connection.execute("SELECT response_json FROM requests WHERE LENGTH(response_json)<1024"):
+        # Never unlink a blob a writer may be committing: new blobs have a 24-hour grace.
+        references = set()
+        references_valid = True
+        for row in reader.execute("SELECT response_json FROM requests WHERE LENGTH(response_json)<1024"):
+            try:
+                ref = self._vault.reference(row[0])
+            except (ValueError, TypeError):
+                # Preserve potential recovery evidence when a descriptor is
+                # corrupt; healthy read receipts can still be expired above.
+                references_valid = False
+                continue
+            if ref:
+                references.add(ref.get("sha256"))
+        reader.commit()
+        deleted_artifacts = 0
+        grace = (now - timedelta(days=1)).timestamp()
+        if references_valid and self._vault.root.exists():
+            for blob in self._vault.root.glob("*.json.gz"):
+                digest = blob.name.removesuffix(".json.gz")
                 try:
-                    ref = self._vault.reference(row[0])
-                except (ValueError, TypeError):
-                    # Preserve potential recovery evidence when a descriptor is
-                    # corrupt; healthy read receipts can still be expired above.
-                    references_valid = False
+                    blob_path = self._vault._path(digest)
+                except ValueError:
                     continue
-                if ref:
-                    references.add(ref.get("sha256"))
-            deleted_artifacts = 0
-            grace = (datetime.now(timezone.utc) - timedelta(days=1)).timestamp()
-            if references_valid and self._vault.root.exists():
-                for blob in self._vault.root.glob("*.json.gz"):
-                    digest = blob.name.removesuffix(".json.gz")
-                    try:
-                        blob_path = self._vault._path(digest)
-                    except ValueError:
-                        continue
-                    if digest not in references and not blob.is_symlink() and blob.stat().st_mtime < grace:
-                        blob_path.unlink(missing_ok=True)
-                        deleted_artifacts += 1
-                        if deleted_artifacts >= batch_size:
-                            break
+                if digest not in references and not blob.is_symlink() and blob.stat().st_mtime < grace:
+                    blob_path.unlink(missing_ok=True)
+                    deleted_artifacts += 1
+                    if deleted_artifacts >= batch_size:
+                        break
+        with self._lock:
             reclaimed_pages = self._release_free_pages(reclaim_pages) if reclaim_pages else 0
-            return {"expiredResponses": len(expired), "deletedEvents": deleted_events,
-                    "deletedArtifacts": deleted_artifacts, "reclaimedPages": reclaimed_pages}
+        return {"expiredResponses": len(expired), "deletedEvents": deleted_events,
+                "deletedArtifacts": deleted_artifacts, "reclaimedPages": reclaimed_pages,
+                "deletedSnapshots": deleted_snapshots}
 
     def create_job(self, kind: str, project_key: str | None, message: str = "queued") -> dict[str, Any]:
         job_id = uuid4().hex

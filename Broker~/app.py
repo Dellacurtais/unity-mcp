@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-import hmac
 import json
 import asyncio
 import logging
+import os
+import re
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 
+from auth import TokenSource
 from broker_version import BROKER_VERSION
 from config import BrokerConfig
 from mcp import McpBroker
@@ -21,6 +24,14 @@ from store import BrokerStore
 
 # A child of uvicorn.error, so the managed log file receives it.
 BROKER_LOG = logging.getLogger("uvicorn.error").getChild("broker")
+
+# Revisions whose header the broker accepts. The broker answers initialize with the
+# newest revision it actually implements; newer clients then downgrade instead of
+# getting HTTP 400 on their first POST.
+ACCEPTED_PROTOCOL_HEADERS = {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"}
+SESSION_ID_PATTERN = re.compile(r"^[!-~]{8,128}$")
+STARTED_MONOTONIC = time.monotonic()
+HELLO_TIMEOUT_SECONDS = 30.0
 
 
 def describe_client(request: Request, payload: dict[str, Any]) -> str:
@@ -48,6 +59,7 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
     settings = config or BrokerConfig.from_env()
     store = BrokerStore(settings.database_path, response_inline_bytes=settings.response_inline_bytes)
     store.reconcile_startup()
+    schema_version = store.schema_version()
     registry = RegistryCache()
     for snapshot in store.load_registry_snapshots():
         registry.update(
@@ -71,6 +83,8 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
                 store.prune_history,
                 retention_days=settings.history_retention_days,
                 max_response_bytes=settings.history_max_response_bytes,
+                write_retention_days=settings.write_history_retention_days,
+                registry_snapshots_per_project=settings.registry_snapshots_per_project,
             ))
             try:
                 await asyncio.shield(maintenance)
@@ -101,12 +115,11 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
     app.state.router = router
     app.state.broker = broker
 
+    tokens = TokenSource(settings.token, env_name=settings.token_env_name) if settings.token_env_name         else TokenSource(settings.token, reader=lambda _: None)
+    app.state.tokens = tokens
+
     def authorized(value: str | None) -> bool:
-        if not settings.token:
-            return False
-        if not value or not value.lower().startswith("bearer "):
-            return False
-        return hmac.compare_digest(value[7:].strip(), settings.token)
+        return tokens.accepts_header(value)
 
     def allowed_origin(value: str | None) -> bool:
         if not value:
@@ -121,14 +134,23 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, object]:
+        # Answers from memory only: health must work while maintenance holds the store.
         active = router.active_project_key
         connection = router.connections.get(active or "")
         liveness = router.connection_status(active)
         registry_snapshot = registry.get(active)
+        watchdog = getattr(app.state, "watchdog", None)
         return {
             "service": "unity-mcp-broker",
             "version": BROKER_VERSION,
-            "schemaVersion": store.schema_version(),
+            "pid": os.getpid(),
+            "uptimeSeconds": round(time.monotonic() - STARTED_MONOTONIC, 1),
+            "persistent": settings.persistent,
+            "supervisorPid": int(os.getenv("UNITY_MCP_BROKER_PARENT_PID", "0") or 0) if settings.persistent else None,
+            "loopLagMaxSeconds": round(watchdog.max_recent_lag(), 3) if watchdog else None,
+            "loopStalls": watchdog.stalls if watchdog else None,
+            "schemaVersion": schema_version,
+            "syncWaitSeconds": settings.sync_wait_seconds,
             "activeProjectKey": active,
             "activeProjectName": connection.identity.project_name if connection else None,
             "activeProjectPath": connection.identity.project_path if connection else None,
@@ -154,16 +176,24 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
         if not authorized(authorization):
             raise HTTPException(status_code=401, detail="Bearer token is required")
         if mcp_session_id is not None and not broker.has_session(mcp_session_id):
-            raise HTTPException(status_code=404, detail="MCP session expired; initialize a new session")
+            # A broker restart forgets sessions. Some clients (Claude Code) never
+            # re-initialize after a 404 and stay broken until restarted, so an
+            # authenticated caller keeps its session id instead.
+            if (not settings.adopt_unknown_sessions or not SESSION_ID_PATTERN.match(mcp_session_id)
+                    or not broker.can_adopt(mcp_session_id)):
+                raise HTTPException(status_code=404, detail="MCP session expired; initialize a new session")
+            origin = f"{request.client.host}:{request.client.port}" if request.client else None
+            try:
+                broker.adopt_session(mcp_session_id, request.headers.get("user-agent", ""), origin)
+            except ValueError as exception:
+                raise HTTPException(status_code=503, detail=str(exception))
         content_type = request.headers.get("content-type", "")
         if not content_type.lower().startswith("application/json"):
             raise HTTPException(status_code=415, detail="Content-Type must be application/json")
         accept = request.headers.get("accept", "")
         if accept and "application/json" not in accept and "*/*" not in accept:
             raise HTTPException(status_code=406, detail="Accept must include application/json or */*")
-        if mcp_protocol_version and mcp_protocol_version not in {
-            "2024-11-05", "2025-03-26", "2025-06-18",
-        }:
+        if mcp_protocol_version and mcp_protocol_version not in ACCEPTED_PROTOCOL_HEADERS:
             raise HTTPException(status_code=400, detail="Unsupported MCP-Protocol-Version")
         content_length = request.headers.get("content-length")
         try:
@@ -230,7 +260,13 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
         await websocket.accept()
         connection = None
         try:
-            hello = await websocket.receive_json()
+            try:
+                # Asset Import Workers of older packages open the bridge and never say hello;
+                # without a limit each one held a socket and a task here forever.
+                hello = await asyncio.wait_for(websocket.receive_json(), timeout=HELLO_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                await websocket.close(code=4408, reason="bridge hello timed out")
+                return
             validate_envelope(hello)
             if hello["type"] != "hello":
                 raise ValueError("first bridge message must be hello")
@@ -239,8 +275,10 @@ def create_app(config: BrokerConfig | None = None) -> FastAPI:
             tools = payload.get("tools")
             if not isinstance(tools, list):
                 raise ValueError("bridge hello tools must be an array")
+            launch = {key: payload.get(key) for key in ("editorPath", "unityVersion", "batchMode")
+                      if isinstance(payload.get(key), (str, bool))}
             connection = await router.register(
-                websocket, identity, tools, str(payload.get("state", "ready"))
+                websocket, identity, tools, str(payload.get("state", "ready")), launch
             )
             await websocket.send_json({
                 "version": 1,

@@ -55,8 +55,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         private void ReleaseMutation()
         {
-            if (Interlocked.Exchange(ref _mutationHeld, 0) != 0) Jobs.EditorMutationGate.Semaphore.Release();
+            if (Interlocked.Exchange(ref _mutationHeld, 0) != 0)
+            {
+                Jobs.EditorMutationGate.ClearJobOwner(_gateOwnerId);
+                Jobs.EditorMutationGate.Semaphore.Release();
+            }
         }
+
+        private string _gateOwnerId;
+        private double _compilationFinishedAt = -1d;
+        private const double ReloadGraceSeconds = 30d;
 
         private async Task OnControlRequested(string control, JObject payload)
         {
@@ -115,6 +123,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 if (!string.IsNullOrEmpty(_activeJobId)) return false;
                 if (!Jobs.EditorMutationGate.Semaphore.Wait(0)) return false;
                 _mutationHeld = 1;
+                _gateOwnerId = requestedJobId;
+                Jobs.EditorMutationGate.SetJobOwner(requestedJobId, "refresh_compile");
+                _compilationFinishedAt = -1d;
                 _activeJobId = requestedJobId;
                 _refreshStarted = false;
                 _refreshIdle.Reset();
@@ -219,6 +230,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 });
                 return;
             }
+            _compilationFinishedAt = EditorApplication.timeSinceStartup;
             _ = SafeSendAsync("compilation_finished", "reloading", new JObject
             {
                 ["jobId"] = jobId,
@@ -228,6 +240,25 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         private void CompleteRefreshWithoutCompilation()
         {
+            if (!string.IsNullOrEmpty(_activeJobId) && _compilationStarted && _compilationFinishedAt >= 0d
+                && !EditorApplication.isCompiling && !EditorApplication.isUpdating
+                && EditorApplication.timeSinceStartup - _compilationFinishedAt > ReloadGraceSeconds)
+            {
+                // A successful compile normally reloads the domain, which ends this job.
+                // When no reload follows (nothing changed, reload deferred), finish it here
+                // instead of holding the Editor-wide write gate until some later reload.
+                var finishedJobId = _activeJobId;
+                _activeJobId = null;
+                _compilationFinishedAt = -1d;
+                ReleaseMutation();
+                _ = SafeSendAsync("refresh_completed", "ready", new JObject
+                {
+                    ["jobId"] = finishedJobId,
+                    ["compiled"] = true,
+                    ["reloaded"] = false,
+                });
+                return;
+            }
             if (string.IsNullOrEmpty(_activeJobId) || !_refreshStarted || _compilationStarted) return;
             if (!_refreshIdle.Observe(EditorApplication.timeSinceStartup,
                 EditorApplication.isCompiling, EditorApplication.isUpdating,

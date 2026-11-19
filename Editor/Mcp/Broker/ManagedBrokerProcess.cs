@@ -97,6 +97,13 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             {
                 var running = TryGetOwnedProcess(state, out var process, out var error);
                 process?.Dispose();
+                if (!running && TryGetSupervisor(out var supervisor, out _))
+                {
+                    // The supervisor is alive while it restarts its broker.
+                    supervisor.Dispose();
+                    running = true;
+                    error = null;
+                }
                 return new ProcessProbe
                 {
                     Running = running,
@@ -227,11 +234,179 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             }
         }
 
-        public static void Start() => WithProcessLock(StartCore);
-
-        private static void StartCore()
+        /// EditorPrefs may only be read on the main thread; everything the launch needs is
+        /// captured here first so the rest can run on a background thread.
+        internal sealed class LaunchSettings
         {
-            if (Inspect().IsInstallInProgress)
+            public string Host;
+            public int Port;
+            public string Token;
+            public int ToolTimeoutSeconds;
+            public int MaxRequestBodyBytes;
+            public bool FocusAssist;
+        }
+
+        internal static string SupervisorStatePath => Path.Combine(RootPath, "runtime", "supervisor.json");
+        internal static string SupervisorStopPath => Path.Combine(RootPath, "runtime", "supervisor.stop");
+        private static int _ensureActive;
+
+        internal static LaunchSettings CaptureLaunchSettings()
+        {
+            var token = BrokerTokenSync.Converge();
+            if (!TryParseManagedEndpoint(Settings.BrokerUrl, out var host, out var port, out var error))
+                throw new InvalidOperationException(error);
+            return new LaunchSettings
+            {
+                Host = host,
+                Port = port,
+                Token = token,
+                ToolTimeoutSeconds = Settings.ToolTimeoutSeconds,
+                MaxRequestBodyBytes = Settings.MaxRequestBodyBytes,
+                FocusAssist = Settings.AutoActivateRequiredWindows,
+            };
+        }
+
+        public static void Start()
+        {
+            var launch = CaptureLaunchSettings();
+            WithProcessLock(() => StartCore(launch));
+        }
+
+        /// Called when the Editor loads (main thread). Starts the persistent broker when none
+        /// answers, installing the package's broker version first when it is missing or old.
+        public static void EnsureRunningInBackground(Action<string> log)
+        {
+            if (Interlocked.CompareExchange(ref _ensureActive, 1, 0) != 0) return;
+            LaunchSettings launch;
+            try { launch = CaptureLaunchSettings(); }
+            catch (Exception exception)
+            {
+                Volatile.Write(ref _ensureActive, 0);
+                log?.Invoke("managed broker not started: " + exception.Message);
+                return;
+            }
+            var installStarted = false;
+            try
+            {
+                var manifest = ReadObject(CurrentManifestPath);
+                var current = ValidateManifest(manifest, out _)
+                    && string.Equals((string)manifest["version"], SceneAnalyzerVersion.Current, StringComparison.Ordinal);
+                if (!current && !IsInstallOperationActive(ReadObject(InstallStatusPath))
+                    && !ProbeBrokerEndpoint(launch.Host, launch.Port).Healthy)
+                {
+                    BeginInstall(false);
+                    installStarted = true;
+                    log?.Invoke("installing managed broker " + SceneAnalyzerVersion.Current);
+                }
+            }
+            catch (Exception exception)
+            {
+                log?.Invoke("managed broker install not started: " + exception.Message);
+            }
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    var deadline = DateTime.UtcNow + (installStarted ? TimeSpan.FromMinutes(15) : TimeSpan.FromSeconds(20));
+                    while (true)
+                    {
+                        if (ProbeBrokerEndpoint(launch.Host, launch.Port).Healthy) return;
+                        var manifest = ReadObject(CurrentManifestPath);
+                        if (ValidateManifest(manifest, out _)
+                            && string.Equals((string)manifest["version"], SceneAnalyzerVersion.Current, StringComparison.Ordinal)
+                            && !IsInstallOperationActive(ReadObject(InstallStatusPath)))
+                        {
+                            WithProcessLock(() => StartCore(launch));
+                            log?.Invoke("managed broker started");
+                            return;
+                        }
+                        if (DateTime.UtcNow > deadline)
+                        {
+                            log?.Invoke("managed broker not started: the installation is missing or does not match this package");
+                            return;
+                        }
+                        Thread.Sleep(2000);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    log?.Invoke("managed broker not started: " + exception.Message);
+                }
+                finally
+                {
+                    Volatile.Write(ref _ensureActive, 0);
+                }
+            });
+        }
+
+        private static void ApplyBrokerEnvironment(ProcessStartInfo startInfo, LaunchSettings launch)
+        {
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_HOST"] = launch.Host;
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_PORT"] = launch.Port.ToString(CultureInfo.InvariantCulture);
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_TOKEN"] = launch.Token;
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_DB"] = DataPath;
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_TIMEOUT"] = launch.ToolTimeoutSeconds.ToString(CultureInfo.InvariantCulture);
+            // A Domain Reload of a large project, or reopening the Editor, takes minutes.
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_RECONNECT_GRACE"] = "300";
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_MAX_REQUEST_BYTES"] = launch.MaxRequestBodyBytes.ToString(CultureInfo.InvariantCulture);
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_FOCUS_ASSIST"] = launch.FocusAssist ? "1" : "0";
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_FOCUS_DELAY"] = "2";
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_AUTO_WAIT_JOBS"] = "1";
+            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_LOG"] = BrokerLogPath;
+        }
+
+        internal static bool TryGetSupervisor(out Process process, out JObject state)
+        {
+            state = ReadObject(SupervisorStatePath);
+            process = null;
+            var status = (string)state?["state"];
+            if (state == null || status == "stopped" || status == "handover") return false;
+            return TryGetOwnedProcess(state, out process, out _);
+        }
+
+        private static void StartSupervisorCore(JObject manifest, string supervisorPath, LaunchSettings launch)
+        {
+            if (TryGetSupervisor(out var running, out _))
+            {
+                running.Dispose();
+                return;
+            }
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = (string)manifest["pythonPath"],
+                Arguments = QuoteArgument(supervisorPath) + " --detach",
+                WorkingDirectory = Path.GetDirectoryName(supervisorPath),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            ApplyBrokerEnvironment(startInfo, launch);
+            foreach (var name in new[] { "UNITY_MCP_BROKER_PARENT_PID", "UNITY_MCP_BROKER_PARENT_START_UTC",
+                         "UNITY_MCP_BROKER_INSTANCE_ID", "UNITY_MCP_BROKER_STATE" })
+                startInfo.EnvironmentVariables.Remove(name);
+            var launchedUtc = DateTimeOffset.UtcNow;
+            using (var launcher = Process.Start(startInfo)
+                       ?? throw new InvalidOperationException("Python did not start the broker supervisor."))
+                launcher.WaitForExit(15000);
+            var deadline = DateTime.UtcNow.AddSeconds(20);
+            while (DateTime.UtcNow < deadline)
+            {
+                var state = ReadObject(SupervisorStatePath);
+                if (TryParseUtc((string)state?["startedUtc"], out var started) && started >= launchedUtc.AddSeconds(-2)
+                    && TryGetOwnedProcess(state, out var supervisor, out _))
+                {
+                    supervisor.Dispose();
+                    return;
+                }
+                Thread.Sleep(250);
+            }
+            throw new TimeoutException("The broker supervisor did not report within 20 seconds; see " +
+                                       Path.Combine(RootPath, "logs", "supervisor.log"));
+        }
+
+        private static void StartCore(LaunchSettings launch)
+        {
+            if (IsInstallOperationActive(ReadObject(InstallStatusPath)))
                 throw new InvalidOperationException("Wait for the managed broker installation to finish before starting it.");
             var manifest = ReadObject(CurrentManifestPath);
             if (!ValidateManifest(manifest, out var error))
@@ -259,9 +434,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             if (!string.IsNullOrEmpty(ownershipError))
                 throw new InvalidOperationException(ownershipError);
 
-            if (string.IsNullOrEmpty(Settings.Token)) Settings.Token = Settings.GenerateToken();
-            if (!TryParseManagedEndpoint(Settings.BrokerUrl, out var host, out var port, out error))
-                throw new InvalidOperationException(error);
+            var host = launch.Host;
+            var port = launch.Port;
             var endpoint = ProbeBrokerEndpoint(host, port);
             if (endpoint.Healthy)
             {
@@ -281,6 +455,15 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             Directory.CreateDirectory(Path.GetDirectoryName(DataPath));
             Directory.CreateDirectory(Path.GetDirectoryName(ProcessStatePath));
 
+            // Installations that ship the supervisor run a persistent broker: it survives
+            // Editor restarts, restarts itself when it stops answering and cleans orphans.
+            var supervisorPath = Path.Combine(Path.GetDirectoryName((string)manifest["mainPath"]) ?? string.Empty, "supervisor.py");
+            if (File.Exists(supervisorPath))
+            {
+                StartSupervisorCore(manifest, supervisorPath, launch);
+                return;
+            }
+
             var instanceId = Guid.NewGuid().ToString("N");
             var startInfo = new ProcessStartInfo
             {
@@ -290,19 +473,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_HOST"] = host;
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_PORT"] = port.ToString();
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_TOKEN"] = Settings.Token;
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_DB"] = DataPath;
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_TIMEOUT"] = Settings.ToolTimeoutSeconds.ToString();
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_RECONNECT_GRACE"] = "45";
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_MAX_REQUEST_BYTES"] = Settings.MaxRequestBodyBytes.ToString();
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_FOCUS_ASSIST"] = Settings.AutoActivateRequiredWindows ? "1" : "0";
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_FOCUS_DELAY"] = "2";
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_AUTO_WAIT_JOBS"] = "1";
+            ApplyBrokerEnvironment(startInfo, launch);
             startInfo.EnvironmentVariables["UNITY_MCP_BROKER_INSTANCE_ID"] = instanceId;
             startInfo.EnvironmentVariables["UNITY_MCP_BROKER_STATE"] = ProcessStatePath;
-            startInfo.EnvironmentVariables["UNITY_MCP_BROKER_LOG"] = BrokerLogPath;
 
             int ownerProcessId;
             DateTime ownerProcessStartUtc;
@@ -387,6 +560,25 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         private static void StopCore()
         {
+            if (TryGetSupervisor(out var supervisor, out _))
+            {
+                using (supervisor)
+                {
+                    // Ask first: the supervisor stops its broker and exits on its own.
+                    File.WriteAllText(SupervisorStopPath, DateTimeOffset.UtcNow.ToString("O"));
+                    if (!supervisor.WaitForExit(15000))
+                    {
+                        // Its kill-on-close job object takes the broker down with it.
+                        try { supervisor.Kill(); } catch (InvalidOperationException) { }
+                        if (!supervisor.WaitForExit(5000))
+                            throw new TimeoutException("The broker supervisor did not exit; its state files were preserved.");
+                    }
+                }
+                TryDelete(SupervisorStopPath);
+                TryDelete(ProcessStatePath);
+                return;
+            }
+
             var state = ReadObject(ProcessStatePath);
             if (!TryGetOwnedProcess(state, out var process, out var ownershipError))
             {

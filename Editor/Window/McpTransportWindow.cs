@@ -171,8 +171,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         {
             try
             {
-                if (string.IsNullOrEmpty(Settings.Token))
-                    Settings.Token = Settings.GenerateToken();
+                Maicon.SceneAnalyzer.Editor.Mcp.Broker.BrokerTokenSync.Converge();
                 if (Settings.TransportMode == McpTransportMode.Broker)
                     Settings.BrokerUrl = _brokerUrlBuffer?.Trim();
                 var endpoint = BuildCurrentMcpEndpoint();
@@ -537,7 +536,9 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 ManagedBrokerProcess.Stop();
             }
 
-            Settings.Token = Settings.GenerateToken();
+            // EditorPrefs and the per-user variable change together; the broker re-reads the
+            // variable, and clients with the headersHelper follow without a restart.
+            Maicon.SceneAnalyzer.Editor.Mcp.Broker.BrokerTokenSync.Rotate();
             Bootstrap.RecordEntry("token regenerated");
             if (restartManaged)
             {

@@ -90,7 +90,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
             || name == "cancel_build_job" || name == "cancel_reimport_job" || name == "cancel_test_job";
 
         private static bool UsesMutationResource(string kind) => kind == "build" || kind == "test"
-            || kind == "asset_reimport" || kind == "addressables_build"
+            || kind == "asset_reimport" || kind == "addressables_build" || kind == "menu"
             || (kind != null && kind.StartsWith("package_", StringComparison.Ordinal));
 
         internal static void InitializeOnMainThread()
@@ -245,6 +245,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                     lock (record.Sync) record.Message = "waiting for exclusive Editor mutation access";
                     await EditorMutationGate.Semaphore.WaitAsync(record.Cancellation.Token);
                     mutationHeld = true;
+                    EditorMutationGate.SetJobOwner(record.Id, record.Kind);
                 }
                 await ExecuteAsync(record, operation);
             }
@@ -259,7 +260,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
             }
             finally
             {
-                if (mutationHeld) EditorMutationGate.Semaphore.Release();
+                if (mutationHeld)
+                {
+                    EditorMutationGate.ClearJobOwner(record.Id);
+                    EditorMutationGate.Semaphore.Release();
+                }
                 PersistTrackedJobs();
             }
         }
@@ -387,7 +392,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                     : SessionState.GetString(PersistedJobsKey, string.Empty);
                 if (string.IsNullOrEmpty(serialized)) return;
                 var now = DateTimeOffset.UtcNow;
-                foreach (var item in JArray.Parse(serialized).OfType<JObject>())
+                // Keep ISO dates as strings: JArray.Parse turns them into DateTime values whose
+                // string form follows the Editor culture (pt-BR) and then fails to parse back,
+                // which reset every restored job's dates to the reload time.
+                JArray persisted;
+                using (var text = new StringReader(serialized))
+                using (var json = new Newtonsoft.Json.JsonTextReader(text) { DateParseHandling = Newtonsoft.Json.DateParseHandling.None })
+                    persisted = JArray.Load(json);
+                foreach (var item in persisted.OfType<JObject>())
                 {
                     var id = (string)item["jobId"];
                     var kind = (string)item["kind"];
@@ -404,10 +416,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Jobs
                         Error = interrupted ? InterruptionError(kind) : (string)item["error"],
                         Result = item["result"]?.DeepClone(),
                         Input = item["input"] as JObject != null ? (JObject)item["input"].DeepClone() : new JObject(),
-                        CreatedUtc = DateTimeOffset.TryParse((string)item["createdUtc"], out var created) ? created : now,
-                        StartedUtc = DateTimeOffset.TryParse((string)item["startedUtc"], out var started) ? started : (DateTimeOffset?)null,
+                        CreatedUtc = DateTimeOffset.TryParse((string)item["createdUtc"], System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var created) ? created : now,
+                        StartedUtc = DateTimeOffset.TryParse((string)item["startedUtc"], System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var started) ? started : (DateTimeOffset?)null,
                         CompletedUtc = interrupted ? now
-                            : DateTimeOffset.TryParse((string)item["completedUtc"], out var completed) ? completed : (DateTimeOffset?)null,
+                            : DateTimeOffset.TryParse((string)item["completedUtc"], System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var completed) ? completed : (DateTimeOffset?)null,
                         CanCancel = false,
                     };
                     Jobs[id] = record;

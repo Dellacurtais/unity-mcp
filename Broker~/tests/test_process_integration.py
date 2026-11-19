@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from broker_version import BROKER_VERSION
 import pytest
 import websockets
 from websockets.exceptions import InvalidStatus
@@ -229,7 +230,7 @@ async def test_real_process_routes_websocket_command_and_recovers_sqlite_after_r
                 "params": {"protocolVersion": "2025-03-26"},
             },
         )
-        assert initialized.json()["result"]["serverInfo"]["version"] == "0.19.0"
+        assert initialized.json()["result"]["serverInfo"]["version"] == BROKER_VERSION
 
         with pytest.raises(InvalidStatus):
             async with websockets.connect(

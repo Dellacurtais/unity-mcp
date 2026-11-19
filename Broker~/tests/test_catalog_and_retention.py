@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from registry import RegistryCache
+from registry import BROKER_TOOLS, RegistryCache
 from config import BrokerConfig
 from responses import ResponseVault
 from store import BrokerStore
@@ -24,7 +24,7 @@ def test_catalog_pages_bind_to_project_filters_and_registry_and_refresh_index():
     while "nextCursor" in page:
         page = registry.list_tools("a", {"cursor": page["nextCursor"]})
         names.extend(tool["name"] for tool in page["tools"])
-    assert len(names) == len(set(names)) == 288
+    assert len(names) == len(set(names)) == 280 + len(BROKER_TOOLS)
     with pytest.raises(ValueError, match="STALE_CURSOR"):
         registry.list_tools("b", {"cursor": first["nextCursor"]})
     with pytest.raises(ValueError, match="STALE_CURSOR"):

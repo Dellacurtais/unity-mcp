@@ -309,7 +309,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Operations.SurfaceFit
                     skinned.BakeMesh(mesh);
                     temporaryMeshes.Add(mesh);
                 }
-                else mesh = renderer.GetComponent<MeshFilter>()?.sharedMesh;
+                else mesh = RendererMeshUtility.GetSharedMesh(renderer);
                 if (mesh == null || !mesh.isReadable) continue;
                 var targetToSource = sourceWorldToLocal * renderer.transform.localToWorldMatrix;
                 var bvh = new TriangleBvh(mesh, targetToSource);

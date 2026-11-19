@@ -208,6 +208,107 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
             }
         }
 
+        [UnityTest]
+        public IEnumerator RendererPicker_IgnoresEffectsAndIncompleteMeshesWithoutLayoutErrors()
+        {
+            var mesh = TestMesh();
+            var root = new GameObject("WolfWithEffects");
+            var document = ScriptableObject.CreateInstance<MeshEditDocument>();
+            var window = ScriptableObject.CreateInstance<AssetModelerWindow>();
+            try
+            {
+                var renderer = AddStaticMesh(root, "Body", mesh);
+                var skinObject = new GameObject("Skin", typeof(SkinnedMeshRenderer));
+                skinObject.transform.SetParent(root.transform, false);
+                skinObject.GetComponent<SkinnedMeshRenderer>().sharedMesh = mesh;
+                var missingFilter = new GameObject("MissingMeshFilter", typeof(MeshRenderer));
+                missingFilter.transform.SetParent(root.transform, false);
+                var emptyFilter = new GameObject("EmptyMesh", typeof(MeshRenderer), typeof(MeshFilter));
+                emptyFilter.transform.SetParent(root.transform, false);
+                foreach (var type in new[] { typeof(LineRenderer), typeof(TrailRenderer), typeof(SpriteRenderer) })
+                {
+                    var effect = new GameObject("Wolf_Beam_Halo_" + type.Name, type);
+                    effect.transform.SetParent(root.transform, false);
+                    // An unrelated filter must not turn an effect renderer into an editable mesh.
+                    if (type == typeof(TrailRenderer)) effect.AddComponent<MeshFilter>().sharedMesh = mesh;
+                    if (type == typeof(SpriteRenderer)) effect.SetActive(false);
+                }
+                var particleType = Type.GetType("UnityEngine.ParticleSystem, UnityEngine.ParticleSystemModule");
+                if (particleType != null)
+                {
+                    var particles = new GameObject("ParticleEffect", particleType);
+                    particles.transform.SetParent(root.transform, false);
+                    particles.SetActive(false);
+                }
+                document.Initialize(renderer.gameObject, mesh, mesh);
+                window.UseEditableCopy(new EditableMeshResult { EditableRoot = root, EditableObject = renderer.gameObject, EditableRenderer = renderer, Document = document });
+                window.Show();
+                foreach (var workspace in new[] { AssetModelerWorkspace.Home, AssetModelerWorkspace.Cleanup, AssetModelerWorkspace.Size, AssetModelerWorkspace.Save })
+                {
+                    window.SceneOpenWorkspace(workspace);
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.Repaint();
+                    yield return null;
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    yield return null;
+                    Assert.That(window.SceneTarget, Is.SameAs(root));
+                    Assert.That(window.SceneRenderer, Is.SameAs(renderer));
+                    Assert.That(window.SceneDocument, Is.SameAs(document));
+                    LogAssert.NoUnexpectedReceived();
+                }
+                Assert.That(missingFilter.GetComponent<MeshFilter>() == null, Is.True, "Rendering the picker must not add components.");
+            }
+            finally
+            {
+                window.Close();
+                UnityEngine.Object.DestroyImmediate(document);
+                UnityEngine.Object.DestroyImmediate(root);
+                UnityEngine.Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator RendererPicker_RemovingSelectedFilterClearsStalePreviewAndSession()
+        {
+            var mesh = TestMesh();
+            var root = new GameObject("Model");
+            var document = ScriptableObject.CreateInstance<MeshEditDocument>();
+            var window = ScriptableObject.CreateInstance<AssetModelerWindow>();
+            try
+            {
+                var renderer = AddStaticMesh(root, "Body", mesh);
+                document.Initialize(renderer.gameObject, mesh, mesh);
+                window.UseEditableCopy(new EditableMeshResult { EditableRoot = root, EditableObject = renderer.gameObject, EditableRenderer = renderer, Document = document });
+                window.SceneOpenWorkspace(AssetModelerWorkspace.Cleanup);
+                window.ScenePreviewCurrent();
+                Assert.That(window.SceneCanApplyPreview, Is.True);
+                UnityEngine.Object.DestroyImmediate(renderer.GetComponent<MeshFilter>());
+                Assert.That(window.SceneCanApplyPreview, Is.False);
+                window.Show();
+                for (int frame = 0; frame < 2; frame++)
+                {
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.Repaint();
+                    yield return null;
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    yield return null;
+                    LogAssert.NoUnexpectedReceived();
+                }
+                Assert.That(window.SceneHasPreview, Is.False);
+                Assert.That(window.SceneDocument, Is.Null);
+                Assert.That(window.SceneRenderer, Is.Null);
+                Assert.That(window.SceneTarget, Is.SameAs(root));
+                Assert.That(root.GetComponentInChildren<MeshFilter>() == null, Is.True);
+            }
+            finally
+            {
+                window.Close();
+                UnityEngine.Object.DestroyImmediate(document);
+                UnityEngine.Object.DestroyImmediate(root);
+                UnityEngine.Object.DestroyImmediate(mesh);
+            }
+        }
+
         private static Mesh TestMesh()
         {
             var mesh = new Mesh { name = "UxTriangle" };

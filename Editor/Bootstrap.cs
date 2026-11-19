@@ -114,6 +114,7 @@ namespace Maicon.SceneAnalyzer.Editor
             {
                 UnityProjectRoot = System.IO.Path.GetDirectoryName(UnityEngine.Application.dataPath);
                 SceneAnalyzerVersion.Initialize();
+                BrokerProtocol.CaptureEditorIdentity();
                 ToolJobManager.InitializeOnMainThread();
 
                 // Migration: v0.8.0 and earlier defaulted CoderProjectId to 1
@@ -269,6 +270,8 @@ namespace Maicon.SceneAnalyzer.Editor
                 ToolRegistry.Register(new DescribeStaticMethodTool());
                 ToolRegistry.Register(new ExecuteMenuItemTool());
                 ToolRegistry.Register(new InvokeStaticMethodTool());
+                // Editor lifecycle: the broker's broker_close_editor / broker_restart_editor use it.
+                ToolRegistry.Register(new EditorQuitTool());
 
                 // Project, compilation, quality
                 ToolRegistry.Register(new GetEditorContextTool());
@@ -395,12 +398,29 @@ namespace Maicon.SceneAnalyzer.Editor
                 bool wantAutoStart = Settings.TransportMode == McpTransportMode.Broker
                     ? Settings.BrokerAutoConnect
                     : Settings.AutoStartServer || Settings.ServerStickyRunning;
+                // AssetImportWorkers and batch-mode Editors (builds, -runTests) load this
+                // assembly too. They must not open MCP connections: the workers' bridges never
+                // finished their hello and stayed open in the broker, and a batch Editor would
+                // take over the project's route from the interactive one.
+                if (IsBackgroundEditorProcess())
+                {
+                    wantAutoStart = false;
+                }
+                else if (wantAutoStart)
+                {
+                    try { BrokerTokenSync.Converge(); }
+                    catch (Exception e) { Debug.LogWarning("[unity-mcp] token sync failed: " + e.Message); }
+                }
                 if (wantAutoStart && !string.IsNullOrEmpty(Settings.Token))
                 {
                     try
                     {
                         if (Settings.TransportMode == McpTransportMode.Broker)
+                        {
+                            ManagedBrokerProcess.EnsureRunningInBackground(message =>
+                                _ = MainThreadDispatcher.RunAsync(() => RecordEntry("[broker] " + message)));
                             StartBrokerBridge(false);
+                        }
                         else
                             TryStartServer(
                                 Settings.Port,
@@ -422,6 +442,19 @@ namespace Maicon.SceneAnalyzer.Editor
             {
                 Debug.LogException(e);
             }
+        }
+
+        /// True for AssetImportWorker processes and for batch-mode Editors, unless
+        /// UNITY_MCP_ALLOW_BATCH=1 asks for MCP in batch mode on purpose.
+        internal static bool IsBackgroundEditorProcess()
+        {
+            try
+            {
+                if (AssetDatabase.IsAssetImportWorkerProcess()) return true;
+            }
+            catch (Exception) { }
+            return UnityEngine.Application.isBatchMode
+                   && Environment.GetEnvironmentVariable("UNITY_MCP_ALLOW_BATCH") != "1";
         }
 
         private static void LoadModularInitializers()
@@ -478,8 +511,7 @@ namespace Maicon.SceneAnalyzer.Editor
 
         public static void StartServer()
         {
-            if (string.IsNullOrEmpty(Settings.Token))
-                Settings.Token = Settings.GenerateToken();
+            BrokerTokenSync.Converge();
             if (Settings.TransportMode == McpTransportMode.Broker)
             {
                 StartBrokerBridge(true);
@@ -513,8 +545,7 @@ namespace Maicon.SceneAnalyzer.Editor
 
         public static void RestartServer()
         {
-            if (string.IsNullOrEmpty(Settings.Token))
-                Settings.Token = Settings.GenerateToken();
+            BrokerTokenSync.Converge();
             if (Settings.TransportMode == McpTransportMode.Broker)
             {
                 StopBrokerBridge();

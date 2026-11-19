@@ -1090,8 +1090,12 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             CollectionAssert.Contains(pins, "ext_unity__create_scene");
             CollectionAssert.Contains(pins, "ext_unity__save_scene");
             CollectionAssert.Contains(pins, "ext_unity__screenshot_object");
-            StringAssert.Contains("real `ext_unity__*` round-trip", (string)manifest["prompt"]);
-            StringAssert.Contains("do not create helper menus", (string)manifest["prompt"]);
+            // The prompt was rewritten; these three phrases carry the same contract:
+            // a verified route, batched captures and an unknown-outcome rule.
+            var prompt = (string)manifest["prompt"];
+            StringAssert.Contains("verify the route with `ext_unity__get_server_health`", prompt);
+            StringAssert.Contains("Batch object views with `ext_unity__screenshot_object`", prompt);
+            StringAssert.Contains("On `OUTCOME_UNKNOWN`", prompt);
         }
 
         [Test]

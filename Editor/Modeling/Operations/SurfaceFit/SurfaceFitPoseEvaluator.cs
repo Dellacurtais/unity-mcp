@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Maicon.SceneAnalyzer.Editor.Modeling.Core;
 using UnityEditor;
 using UnityEngine;
 
@@ -96,7 +97,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Operations.SurfaceFit
                 skinned.BakeMesh(mesh);
                 temporary = true;
             }
-            else mesh = source.GetComponent<MeshFilter>()?.sharedMesh;
+            else mesh = RendererMeshUtility.GetSharedMesh(source);
             if (mesh == null) throw new InvalidOperationException("SOURCE_MESH_NOT_FOUND: source renderer has no readable mesh.");
             try
             {

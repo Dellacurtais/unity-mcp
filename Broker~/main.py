@@ -5,6 +5,7 @@ import copy
 import json
 import logging
 import os
+import sys
 import time
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ import uvicorn.logging
 
 from app import create_app
 from config import BrokerConfig
+from watchdog import LoopWatchdog
 
 
 def utc_now() -> str:
@@ -206,7 +208,41 @@ def logging_config() -> dict[str, object]:
         logger["handlers"] = ["managed_file"]
         # uvicorn.error propagates to uvicorn by default, which wrote its lines twice.
         logger["propagate"] = False
+    # Libraries without a handler fall back to logging.lastResort, which writes to
+    # stderr. A managed broker's stderr may be a pipe nobody drains; once it fills,
+    # the write blocks the event loop forever. Route them to the log file instead.
+    for logger_name in ("asyncio", "websockets", "fastapi", "starlette"):
+        logger = config["loggers"].setdefault(logger_name, {})
+        logger["handlers"] = ["managed_file"]
+        logger["level"] = "WARNING"
+        logger["propagate"] = False
+    config["root"] = {"handlers": ["managed_file"], "level": "WARNING"}
     return config
+
+
+def redirect_standard_streams() -> Path | None:
+    """Point fd 1/2 at a file next to the managed log.
+
+    Unity starts the broker without redirecting its output, so the broker inherits
+    whatever the Editor's stdout/stderr are. If that is a pipe that nobody reads, any
+    stray print, warning or traceback eventually blocks. A plain file never does.
+    """
+    log_path = os.getenv("UNITY_MCP_BROKER_LOG", "").strip()
+    if not log_path or os.getenv("UNITY_MCP_BROKER_REDIRECT_STDIO", "1").strip() == "0":
+        return None
+    path = Path(log_path).expanduser().with_name("broker.stderr.log")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > 5 * 1024 * 1024:
+            os.replace(path, path.with_name(path.name + ".1"))
+        stream = open(path, "a", encoding="utf-8", buffering=1)
+        os.dup2(stream.fileno(), 1)
+        os.dup2(stream.fileno(), 2)
+        sys.stdout = stream
+        sys.stderr = stream
+        return path
+    except OSError:
+        return None
 
 
 def update_managed_state(state: str, error: str | None = None) -> None:
@@ -260,15 +296,21 @@ class ManagedServer(uvicorn.Server):
         self,
         config: uvicorn.Config,
         parent_monitor: ProcessMonitor | None = None,
+        watchdog: LoopWatchdog | None = None,
     ) -> None:
         super().__init__(config)
         self.parent_monitor = parent_monitor
         self.parent_watch_task: asyncio.Task[None] | None = None
+        self.watchdog = watchdog
+        self.watchdog_task: asyncio.Task[None] | None = None
 
     async def startup(self, sockets=None) -> None:
         await super().startup(sockets=sockets)
         if not self.should_exit:
             update_managed_state("running")
+            if self.watchdog is not None:
+                self.watchdog_task = asyncio.create_task(self.watchdog.pulse(), name="unity-mcp-loop-pulse")
+                self.watchdog.start()
             if self.parent_monitor is not None:
                 self.parent_watch_task = asyncio.create_task(
                     stop_when_parent_exits(self, self.parent_monitor),
@@ -276,6 +318,13 @@ class ManagedServer(uvicorn.Server):
                 )
 
     async def shutdown(self, sockets=None) -> None:
+        if self.watchdog is not None:
+            self.watchdog.stop()
+        if self.watchdog_task is not None:
+            self.watchdog_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.watchdog_task
+            self.watchdog_task = None
         if self.parent_watch_task is not None:
             self.parent_watch_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -287,17 +336,34 @@ class ManagedServer(uvicorn.Server):
         await super().shutdown(sockets=sockets)
 
 
+def build_watchdog(config: BrokerConfig, parent_monitor: ProcessMonitor | None) -> LoopWatchdog | None:
+    if not config.stall_dump_seconds and not config.stall_exit_seconds:
+        return None
+    log_path = os.getenv("UNITY_MCP_BROKER_LOG", "").strip()
+    dump_path = Path(log_path).expanduser().with_name("broker.watchdog.log") if log_path else None
+    return LoopWatchdog(
+        dump_after=config.stall_dump_seconds,
+        exit_after=config.stall_exit_seconds,
+        dump_path=dump_path,
+        parent_alive=parent_monitor.is_alive if parent_monitor is not None else None,
+    )
+
+
 def run() -> None:
+    redirect_standard_streams()
     broker_config = BrokerConfig.from_env()
     parent_monitor = parent_monitor_from_environment()
+    watchdog = build_watchdog(broker_config, parent_monitor)
+    app = create_app(broker_config)
+    app.state.watchdog = watchdog
     server_config = uvicorn.Config(
-        create_app(broker_config),
+        app,
         host=broker_config.host,
         port=broker_config.port,
         ws_max_size=broker_config.max_request_bytes,
         log_config=logging_config(),
     )
-    server = ManagedServer(server_config, parent_monitor)
+    server = ManagedServer(server_config, parent_monitor, watchdog)
     try:
         server.run()
     except BaseException as exception:

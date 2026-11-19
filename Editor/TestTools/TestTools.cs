@@ -360,14 +360,27 @@ namespace Maicon.SceneAnalyzer.Editor.TestTools
     public sealed class GetTestJobTool : IMcpTool
     {
         public string Name => "get_test_job";
-        public string Description => "Returns one Unity test job state and aggregated result.";
-        public JObject InputSchema => JobSchema();
+        public string Description =>
+            "Returns one Unity test job state and aggregated result. Without jobId it returns the most recent test job, " +
+            "so a run whose start answer was lost (a timed-out run_tests) can still be followed.";
+        public JObject InputSchema => new JObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JObject { ["jobId"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 128 } },
+            ["additionalProperties"] = false,
+        };
         public JObject OutputSchema => TestToolSupport.JobOutputSchema();
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
-            var id = (string)args["jobId"];
-            if (string.IsNullOrWhiteSpace(id)) return ToolResult.Error("BAD_ARGS", "jobId is required");
+            var id = (string)args?["jobId"];
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                var latest = ToolJobManager.List("test", 1);
+                if (latest.Count == 0) return ToolResult.Error("JOB_NOT_FOUND", "no test job has run in this Editor session");
+                var record = (JObject)latest[0];
+                return ToolResult.Ok($"latest test job {record["jobId"]} {record["status"]}", record);
+            }
             if (!ToolJobManager.TryGet(id, out var job) || job.Kind != "test")
                 return ToolResult.Error("JOB_NOT_FOUND", "test job not found");
             return ToolResult.Ok($"test job {job.Status}", job.ToJson());

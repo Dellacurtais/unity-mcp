@@ -215,7 +215,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Assets
                     if (mesh != null && mesh.bindposeCount != skin.bones.Length)
                         throw Error("MODEL_BINDPOSE_MISMATCH", "Skin bone and bindpose counts must match.");
                 }
-                else if (renderer is MeshRenderer) mesh = renderer.GetComponent<MeshFilter>()?.sharedMesh;
+                else if (renderer is MeshRenderer) mesh = RendererMeshUtility.GetSharedMesh(renderer);
                 else throw Error("MODEL_RENDERER_UNSUPPORTED", "Only MeshRenderer and SkinnedMeshRenderer are supported: " + renderer.GetType().Name);
                 ValidateMesh(mesh);
             }
@@ -371,7 +371,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Assets
             var result = new Bounds();
             foreach (var renderer in root.GetComponentsInChildren<Renderer>(true))
             {
-                var mesh = renderer is SkinnedMeshRenderer skin ? skin.sharedMesh : renderer.GetComponent<MeshFilter>()?.sharedMesh;
+                var mesh = RendererMeshUtility.GetSharedMesh(renderer);
                 if (mesh == null) continue;
                 var matrix = root.transform.worldToLocalMatrix * renderer.transform.localToWorldMatrix;
                 foreach (var vertex in mesh.vertices)

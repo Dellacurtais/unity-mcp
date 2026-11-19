@@ -13,9 +13,20 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 {
     public sealed class ToolJobSafetyTests
     {
+        // EditorMutationGate is process-wide: a run_tests job started over MCP owns it for
+        // the whole run, and a live MCP write owns it while executing. Tests that exercise
+        // the real gate need it free; otherwise they are reported as Ignored, not failed.
+        private static void RequireFreeMutationGate()
+        {
+            if (!EditorMutationGate.Semaphore.Wait(TimeSpan.FromSeconds(2)))
+                Assert.Ignore("EditorMutationGate is held by another MCP job or write (run_tests over MCP?). Run these from the Test Runner window.");
+            EditorMutationGate.Semaphore.Release();
+        }
+
         [Test]
         public async Task MutatingJob_HoldsResourceUntilTerminal_ButReadsAndCancelRemainAvailable()
         {
+            RequireFreeMutationGate();
             var started = new TaskCompletionSource<bool>();
             var finish = new TaskCompletionSource<bool>();
             var job = ToolJobManager.Create("asset_reimport");
@@ -42,6 +53,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                     finish.TrySetResult(true);
                     if (write != null) (await write).Dispose();
                     await ToolJobManager.WaitAsync(job.Id, TimeSpan.FromSeconds(2), CancellationToken.None);
+                    // No-op when terminal; never leave a job parked on the shared gate.
+                    ToolJobManager.Cancel(job.Id, out _);
                 }
             }
             Assert.That(job.Status, Is.EqualTo(ToolJobStatus.Completed));
@@ -50,6 +63,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         [Test]
         public async Task QueuedJob_CanBeCancelledBeforeItsMutationResourceIsAvailable()
         {
+            RequireFreeMutationGate();
             using (var coordinator = new McpRequestCoordinator(2))
             using (await coordinator.BeginAsync("blocking-write", true, CancellationToken.None, TimeSpan.FromSeconds(5)))
             {
@@ -67,7 +81,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         public async Task LateCancellation_DoesNotEraseAnOperationResult()
         {
             var finish = new TaskCompletionSource<bool>();
-            var job = ToolJobManager.Create("asset_reimport");
+            // A kind without the mutation gate starts at once, so the cancel below is really late.
+            var job = ToolJobManager.Create("contract_late_cancel");
             ToolJobManager.Start(job, async (_, __) => { await finish.Task; return new JObject { ["applied"] = true }; });
             try { Assert.That(ToolJobManager.Cancel(job.Id, out _), Is.True); }
             finally { finish.TrySetResult(true); }
@@ -104,6 +119,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         [Test]
         public async Task RequestCoordinators_ShareMutationGate_AndDisposalDoesNotDestroyIt()
         {
+            RequireFreeMutationGate();
             using (var first = new McpRequestCoordinator(2))
             using (var second = new McpRequestCoordinator(2))
             {
@@ -119,6 +135,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         [Test]
         public async Task ReimportReceipt_IsPersistedOutsideSessionState()
         {
+            RequireFreeMutationGate();
             var job = ToolJobManager.Create("asset_reimport");
             ToolJobManager.Start(job, (_, __) => Task.FromResult<JToken>(new JObject { ["completedItems"] = 2 }));
             await ToolJobManager.WaitAsync(job.Id, TimeSpan.FromSeconds(2), CancellationToken.None);

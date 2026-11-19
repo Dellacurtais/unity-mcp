@@ -31,9 +31,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SmartSplit
                 && !renderer.transform.IsChildOf(target.transform)
                 && !target.transform.IsChildOf(renderer.transform))
                 throw new InvalidOperationException("RENDERER_OUTSIDE_TARGET: selected renderer is not inside the character root.");
-            Mesh mesh;
-            if (renderer is SkinnedMeshRenderer skinnedRenderer) mesh = skinnedRenderer.sharedMesh;
-            else mesh = renderer.GetComponent<MeshFilter>()?.sharedMesh;
+            var mesh = RendererMeshUtility.GetSharedMesh(renderer);
             if (mesh == null) throw new InvalidOperationException("RENDERER_MESH_MISSING: selected renderer has no mesh.");
             return AnalyzeRenderer(target, renderer, mesh, preset);
         }

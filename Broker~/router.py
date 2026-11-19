@@ -66,6 +66,8 @@ class BridgeRouter:
         self._lock = asyncio.Lock()
         self._connection_events: dict[str, asyncio.Event] = {}
         self._job_events: dict[str, asyncio.Event] = {}
+        # project key -> monotonic time its bridge last went away (Domain Reload, restart).
+        self.last_disconnect: dict[str, float] = {}
 
     @property
     def active_project_key(self) -> str | None:
@@ -77,6 +79,7 @@ class BridgeRouter:
         identity: BridgeIdentity,
         tools: list[dict[str, Any]],
         state: str,
+        launch: dict[str, Any] | None = None,
     ) -> BridgeConnection:
         connection = BridgeConnection(websocket, identity, state)
         async with self._lock:
@@ -91,6 +94,12 @@ class BridgeRouter:
         self.registry.update(identity.project_key, identity.registry_hash, tools)
         self.store.save_registry(identity.project_key, identity.registry_hash, tools)
         self.store.upsert_project(identity, state, True)
+        if launch:
+            # Lets broker_open_editor reopen this project with the same Editor later.
+            self.store.set_meta(f"launch:{identity.project_key}", {
+                **{key: value for key, value in launch.items() if value is not None},
+                "projectPath": identity.project_path, "projectName": identity.project_name,
+            })
         self.store.record_event(identity.project_key, identity.generation_id, "connected", {"state": state})
         await self._resume_refresh_jobs(identity.project_key)
         return connection
@@ -108,6 +117,7 @@ class BridgeRouter:
         await self._fail_pending(connection, reason)
         if not was_current:
             return
+        self.last_disconnect[connection.identity.project_key] = time.monotonic()
         self.store.mark_project_state(
             connection.identity.project_key, connection.identity.generation_id, reason, False
         )
@@ -147,6 +157,19 @@ class BridgeRouter:
         if not status["routeReady"]:
             raise BridgeUnavailable(str(status["routeError"]))
         return connection
+
+    def is_transient(self, project_key: str | None, window_seconds: float) -> bool:
+        """The bridge is away for a reason that normally ends by itself.
+
+        True while a connection exists but is reloading, compiling or blocked, or when
+        it disconnected recently (a Domain Reload or an Editor restart in progress).
+        """
+        if not project_key:
+            return False
+        if project_key in self.connections:
+            return True
+        went_away = self.last_disconnect.get(project_key)
+        return went_away is not None and time.monotonic() - went_away <= window_seconds
 
     def connection_status(self, project_key: str | None) -> dict[str, Any]:
         connection = self.connections.get(project_key or "")

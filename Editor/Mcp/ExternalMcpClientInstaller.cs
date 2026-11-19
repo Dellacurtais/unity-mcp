@@ -130,6 +130,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         {
             ValidateInstallArguments(endpoint, token);
             PersistToken(token);
+            EnsureHeadersHelperScript();
 
             var path = ClaudeConfigPath;
             var root = File.Exists(path) ? ReadJsonObject(path) : new JObject();
@@ -194,8 +195,37 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             var headers = server["headers"] as JObject ?? new JObject();
             headers["Authorization"] = "Bearer ${" + TokenEnvironmentVariable + "}";
             server["headers"] = headers;
+            // The static header uses the token from Claude's process environment at start-up;
+            // the helper prints the current one on every connection and after a 401.
+            if (!string.IsNullOrEmpty(HeadersHelperCommand)) server["headersHelper"] = HeadersHelperCommand;
             servers[serverName] = server;
             return root;
+        }
+
+        internal static string HeadersHelperScriptPath => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "UnityMcp", "Broker", "bin", "token-header.ps1");
+
+        internal static string HeadersHelperCommand =>
+            Application.platform == RuntimePlatform.WindowsEditor
+                ? "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \""
+                  + HeadersHelperScriptPath.Replace('\\', '/') + "\""
+                : null;
+
+        internal const string HeadersHelperScript =
+            "# Prints the current Unity MCP Authorization header (Claude Code headersHelper).\r\n" +
+            "$token = [Environment]::GetEnvironmentVariable('" + TokenEnvironmentVariable + "', 'User')\r\n" +
+            "if ([string]::IsNullOrWhiteSpace($token)) { $token = $env:" + TokenEnvironmentVariable + " }\r\n" +
+            "if ([string]::IsNullOrWhiteSpace($token)) { [Console]::Out.Write('{}'); exit 1 }\r\n" +
+            "[Console]::Out.Write((@{ Authorization = 'Bearer ' + $token.Trim() } | ConvertTo-Json -Compress))\r\n";
+
+        internal static void EnsureHeadersHelperScript()
+        {
+            if (Application.platform != RuntimePlatform.WindowsEditor) return;
+            var path = HeadersHelperScriptPath;
+            if (File.Exists(path) && File.ReadAllText(path) == HeadersHelperScript) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            WriteAllTextAtomic(path, HeadersHelperScript);
         }
 
         internal static bool IsChatGptConfigCurrent(string config, string endpoint)
@@ -224,7 +254,10 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                    && string.Equals(
                        (string)server["headers"]?["Authorization"],
                        "Bearer ${" + TokenEnvironmentVariable + "}",
-                       StringComparison.Ordinal);
+                       StringComparison.Ordinal)
+                   // Without the helper a rotated token needs a client restart: offer the update.
+                   && (HeadersHelperCommand == null
+                       || string.Equals((string)server["headersHelper"], HeadersHelperCommand, StringComparison.Ordinal));
         }
 
         private static void ValidateInstallArguments(string endpoint, string token)
@@ -240,7 +273,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     "One-click ChatGPT/Claude Code installation currently supports Windows Editor only.");
         }
 
-        private static void PersistToken(string token)
+        internal static void PersistToken(string token)
         {
             Environment.SetEnvironmentVariable(
                 TokenEnvironmentVariable, token, EnvironmentVariableTarget.User);

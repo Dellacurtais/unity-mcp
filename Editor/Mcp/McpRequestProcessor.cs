@@ -32,9 +32,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
         private static int _callSeq;
 
         public McpRequestProcessor(McpToolRegistry registry, int maxConcurrentRequests, int toolTimeoutSeconds)
+            : this(registry, maxConcurrentRequests, toolTimeoutSeconds, EditorMutationGate.Semaphore) { }
+
+        /// Tests pass their own gate: a run_tests job started over MCP owns the Editor-wide
+        /// gate for the whole run, and must not make the processor's own tests time out.
+        internal McpRequestProcessor(McpToolRegistry registry, int maxConcurrentRequests, int toolTimeoutSeconds, SemaphoreSlim mutationGate)
         {
             _registry = registry ?? throw new ArgumentNullException(nameof(registry));
-            _coordinator = new McpRequestCoordinator(maxConcurrentRequests);
+            _coordinator = new McpRequestCoordinator(maxConcurrentRequests, mutationGate);
             _toolTimeoutSeconds = Math.Max(1, toolTimeoutSeconds);
         }
 
@@ -135,6 +140,12 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
             catch (OperationCanceledException)
             {
                 return notification ? null : ParseObject(OkResp(id, ToolErrorBody("CANCELLED", "The MCP request was cancelled.")));
+            }
+            catch (McpRequestCoordinator.DuplicateRequestException duplicate)
+            {
+                // A retry or a job poll that arrived while the previous one still runs.
+                return notification ? null : ParseObject(OkResp(id, ToolErrorBody("REQUEST_IN_PROGRESS", duplicate.Message,
+                    new JObject { ["retrySafe"] = true })));
             }
             catch (Exception exception)
             {
@@ -369,6 +380,14 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
 
             var requestId = id != null ? RequestIdKey(id) : Guid.NewGuid().ToString("N");
             var timeout = TimeSpan.FromSeconds(_toolTimeoutSeconds);
+            if (descriptor.IsWrite && !ToolJobManager.IsControlTool(name) && _coordinator.UsesEditorMutationGate
+                && EditorMutationGate.TryGetJobOwner(out var ownerJobId, out var ownerKind))
+            {
+                // Waiting here could take as long as the whole job (a test run, a build).
+                return OkResp(id, ToolErrorBody("RESOURCE_BUSY",
+                    $"A {ownerKind} job ({ownerJobId}) holds the Editor for writes. Wait for it with wait_tool_job, then retry; nothing was changed.",
+                    new JObject { ["jobId"] = ownerJobId, ["kind"] = ownerKind, ["retrySafe"] = true }));
+            }
             using (var lease = await _coordinator.BeginAsync(requestId, descriptor.IsWrite && !ToolJobManager.IsControlTool(name),
                 cancellationToken, timeout, ToolJobManager.IsControlTool(name)))
             using (ToolExecutionContext.Push(new ToolExecutionContext

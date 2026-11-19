@@ -118,7 +118,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             using (var first = await coordinator.BeginAsync("same-id", false, CancellationToken.None, TimeSpan.FromSeconds(1)))
             {
                 Assert.That(coordinator.InFlightCount, Is.EqualTo(1));
-                Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                // DuplicateRequestException derives from InvalidOperationException.
+                Assert.CatchAsync<InvalidOperationException>(async () =>
                     await coordinator.BeginAsync("same-id", false, CancellationToken.None, TimeSpan.FromSeconds(1)));
                 Assert.That(coordinator.InFlightCount, Is.EqualTo(1));
                 Assert.That(coordinator.Cancel("same-id"), Is.True);
@@ -164,7 +165,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         [Test]
         public async Task RequestCoordinator_DisposeCancelsActiveLeaseAndRejectsNewRequests()
         {
-            var coordinator = new McpRequestCoordinator(1);
+            // Own gate: this test is about disposal, not about the Editor-wide gate.
+            var coordinator = new McpRequestCoordinator(1, new SemaphoreSlim(1, 1));
             var lease = await coordinator.BeginAsync(null, true, CancellationToken.None, TimeSpan.FromSeconds(1));
             coordinator.Dispose();
 

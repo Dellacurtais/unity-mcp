@@ -180,24 +180,26 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         {
             DrawHeader();
             DrawContext();
-            _scroll = EditorGUILayout.BeginScrollView(_scroll);
-            if (_navigation.IsHome) DrawHome();
-            else
+            using (var scroll = new EditorGUILayout.ScrollViewScope(_scroll))
             {
-                DrawWorkspaceHeader();
-                switch (_navigation.Workspace)
+                _scroll = scroll.scrollPosition;
+                if (_navigation.IsHome) DrawHome();
+                else
                 {
-                    case AssetModelerWorkspace.Session: DrawSession(); break;
-                    case AssetModelerWorkspace.Objects: DrawObjects(); break;
-                    case AssetModelerWorkspace.Topology: DrawTopology(); break;
-                    case AssetModelerWorkspace.Deform: DrawDeform(); break;
-                    case AssetModelerWorkspace.SurfaceFit: DrawSurfaceFit(); break;
-                    case AssetModelerWorkspace.Cleanup: DrawCleanup(); break;
-                    case AssetModelerWorkspace.Size: DrawSize(); break;
-                    case AssetModelerWorkspace.Save: DrawSave(); break;
+                    DrawWorkspaceHeader();
+                    switch (_navigation.Workspace)
+                    {
+                        case AssetModelerWorkspace.Session: DrawSession(); break;
+                        case AssetModelerWorkspace.Objects: DrawObjects(); break;
+                        case AssetModelerWorkspace.Topology: DrawTopology(); break;
+                        case AssetModelerWorkspace.Deform: DrawDeform(); break;
+                        case AssetModelerWorkspace.SurfaceFit: DrawSurfaceFit(); break;
+                        case AssetModelerWorkspace.Cleanup: DrawCleanup(); break;
+                        case AssetModelerWorkspace.Size: DrawSize(); break;
+                        case AssetModelerWorkspace.Save: DrawSave(); break;
+                    }
                 }
             }
-            EditorGUILayout.EndScrollView();
             if (!string.IsNullOrEmpty(_status)) EditorGUILayout.HelpBox(_status, _statusType);
         }
 
@@ -219,41 +221,43 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
 
         private void DrawContext()
         {
-            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-            EditorGUILayout.BeginHorizontal();
-            var icon = _target != null ? EditorGUIUtility.IconContent("GameObject Icon") : EditorGUIUtility.IconContent("console.warnicon");
-            GUILayout.Label(icon, GUILayout.Width(22f), GUILayout.Height(20f));
-            EditorGUI.BeginChangeCheck();
-            var target = (GameObject)EditorGUILayout.ObjectField("Raiz do modelo", _target, typeof(GameObject), true);
-            if (EditorGUI.EndChangeCheck()) SetTarget(target);
-            if (_target != null && GUILayout.Button("Focar", GUILayout.Width(52f))) FrameTarget();
-            EditorGUILayout.EndHorizontal();
-            using (new EditorGUI.DisabledScope(Selection.activeGameObject == null || Selection.activeGameObject == _target))
-                if (GUILayout.Button("Usar seleção como raiz")) SetTarget(Selection.activeGameObject);
-            DrawRendererPicker();
-            EditorGUILayout.LabelField(_editableRoot == _target && _target != null ? "Trabalhando em uma cópia" : "Modelo de origem", EditorStyles.miniLabel);
-            _showContextDetails = EditorGUILayout.Foldout(_showContextDetails, "Avançado: documento e revisão", true);
-            if (_showContextDetails)
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                var document = (MeshEditDocument)EditorGUILayout.ObjectField("Documento", _document, typeof(MeshEditDocument), false);
-                if (document != _document)
+                using (new EditorGUILayout.HorizontalScope())
                 {
-                    ClearPreview();
-                    if (document == null || RendererMesh(_selectedRenderer) == document.WorkingMesh)
-                    {
-                        _document = document;
-                        _workingRenderer = document != null ? _selectedRenderer : null;
-                        if (_selectedRenderer != null) _rendererDocuments[_selectedRenderer] = document;
-                    }
-                    else Failure(new InvalidOperationException("O documento deve pertencer à malha escolhida."));
+                    var icon = _target != null ? EditorGUIUtility.IconContent("GameObject Icon") : EditorGUIUtility.IconContent("console.warnicon");
+                    GUILayout.Label(icon, GUILayout.Width(22f), GUILayout.Height(20f));
+                    EditorGUI.BeginChangeCheck();
+                    var target = (GameObject)EditorGUILayout.ObjectField("Raiz do modelo", _target, typeof(GameObject), true);
+                    if (EditorGUI.EndChangeCheck()) SetTarget(target);
+                    if (_target != null && GUILayout.Button("Focar", GUILayout.Width(52f))) FrameTarget();
                 }
-                if (_document != null)
+                using (new EditorGUI.DisabledScope(Selection.activeGameObject == null || Selection.activeGameObject == _target))
+                    if (GUILayout.Button("Usar seleção como raiz")) SetTarget(Selection.activeGameObject);
+                DrawRendererPicker();
+                EditorGUILayout.LabelField(_editableRoot == _target && _target != null ? "Trabalhando em uma cópia" : "Modelo de origem", EditorStyles.miniLabel);
+                _showContextDetails = EditorGUILayout.Foldout(_showContextDetails, "Avançado: documento e revisão", true);
+                if (_showContextDetails)
                 {
-                    EditorGUILayout.LabelField("Sessão", _document.SessionId);
-                    EditorGUILayout.LabelField("Revisão", _document.Revision.ToString());
+                    var document = (MeshEditDocument)EditorGUILayout.ObjectField("Documento", _document, typeof(MeshEditDocument), false);
+                    if (document != _document)
+                    {
+                        ClearPreview();
+                        if (document == null || RendererMesh(_selectedRenderer) == document.WorkingMesh)
+                        {
+                            _document = document;
+                            _workingRenderer = document != null ? _selectedRenderer : null;
+                            if (_selectedRenderer != null) _rendererDocuments[_selectedRenderer] = document;
+                        }
+                        else Failure(new InvalidOperationException("O documento deve pertencer à malha escolhida."));
+                    }
+                    if (_document != null)
+                    {
+                        EditorGUILayout.LabelField("Sessão", _document.SessionId);
+                        EditorGUILayout.LabelField("Revisão", _document.Revision.ToString());
+                    }
                 }
             }
-            EditorGUILayout.EndVertical();
         }
 
         private void DrawHome()
@@ -304,6 +308,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
         {
             if (_target == null) return;
             var renderers = _target.GetComponentsInChildren<Renderer>(true).Where(r => RendererMesh(r) != null).ToArray();
+            if (_selectedRenderer != null && !renderers.Contains(_selectedRenderer)) SetRenderer(null);
             var labels = new[] { "Escolha a malha para limpar / modelar" }
                 .Concat(renderers.Select(r => AnimationUtility.CalculateTransformPath(r.transform, _target.transform) + "  (" + RendererMesh(r).name + ")")).ToArray();
             int current = Array.IndexOf(renderers, _selectedRenderer) + 1;
@@ -1465,8 +1470,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.UI
 
         private static Mesh RendererMesh(Renderer renderer)
         {
-            if (renderer is SkinnedMeshRenderer skin) return skin.sharedMesh;
-            return renderer != null ? renderer.GetComponent<MeshFilter>()?.sharedMesh : null;
+            return RendererMeshUtility.GetSharedMesh(renderer);
         }
 
         private void ResolveWorkingRenderer()

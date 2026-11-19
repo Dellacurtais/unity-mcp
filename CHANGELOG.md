@@ -9,7 +9,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ignore effect renderers and missing/destroyed MeshFilters in the Asset Modeler picker; use Unity-aware null checks in related modeling mesh lookups and close context/scroll layout scopes reliably.
 - Keep the broker accepting clients when they leave without `DELETE`: idle MCP sessions expire after two hours (`UNITY_MCP_BROKER_SESSION_IDLE_SECONDS`), and at the session limit (`UNITY_MCP_BROKER_MAX_SESSIONS`) `initialize` evicts the least recently used idle session instead of answering 503. Log every session's lifecycle with the client's identity, start broker log lines with a UTC timestamp and write them once, and compact the SQLite ledger with incremental auto-vacuum, rebuilding an older ledger once at startup.
+
+## [0.19.1] - 2026-11-19
+
+Resistência a quedas, chamadas longas e processos perdidos. Relatório completo em
+`G:\HortDrift\Documentacao\MCP\RELATORIO-MCP-0.19.1.md`.
+
+### Adicionado
+
+- Broker persistente por usuário (`supervisor.py`): sobrevive ao fechamento e à reabertura do Editor, reinicia o broker quando ele sai ou quando `/health` falha 4 vezes seguidas, e coloca tudo numa job object que fecha junto com ele. O Editor inicia o supervisor sozinho ao carregar (instalando a versão do pacote se faltar) e o botão Stop pede a parada por `runtime/supervisor.stop`.
+- Vigia do laço de eventos (`watchdog.py`): despeja as pilhas de todas as threads em `logs/broker.watchdog.log` quando o laço trava por 15 s e encerra o broker aos 90 s, para o supervisor subir outro.
+- Chamadas longas não estouram mais o tempo do cliente: depois de 45 s (`UNITY_MCP_BROKER_SYNC_WAIT`) a chamada responde `status: running` com `requestId` (e `unityJobId`, se houver) e continua rodando; `broker_wait_request` espera até 55 s por vez e devolve o resultado da própria chamada. Jobs da Unity (testes, builds) são acompanhados por até 6 h.
+- Ferramentas novas do broker: `broker_wait_request`, `broker_list_requests`, `broker_list_jobs`, `broker_cancel_request`, `broker_editor_status`, `broker_close_editor`, `broker_open_editor`, `broker_restart_editor`, `broker_press_dialog_button` e `broker_cleanup_orphans`.
+- Ferramenta `editor_quit` no Editor: sai pelo File/Exit só com as cenas limpas (ou salvando-as com `saveDirtyScenes`), fora do Play, sem build, compilação ou job; sem `confirm: true` só mostra a prévia.
+- Limpeza de órfãos (`orphans.py`): fecha ajudantes da Unity e brokers cujo Editor ou supervisor morreu, decidindo pela árvore de processos e pela hora de criação; nunca fecha um Editor nem o Unity Hub. Remove instalações antigas do broker que nada usa.
+- `execute_menu_item` com `deferred: true` roda o menu como job depois de responder (builds, bakes).
+- `get_test_job` sem `jobId` devolve o job de teste mais recente.
+- Detecção de diálogos nativos que travam o Editor (por exemplo "Script Updating Consent"), com título e botões, em `broker_editor_status` e nos erros `UNITY_OFFLINE`.
+
+### Corrigido
+
+- Autorização depois de reabrir o Editor: o Editor adota a variável de usuário `UNITY_MCP_BROKER_TOKEN` (a que os clientes usam) em vez de o token do EditorPrefs; gerar token novo atualiza os dois; o broker aceita também o valor atual da variável; a configuração do Claude Code ganha um `headersHelper` que lê o token na hora.
+- Sessão perdida depois de reiniciar o broker: um `Mcp-Session-Id` desconhecido é adotado (o Claude Code não reinicializa sozinho depois de 404); sessões fechadas por `DELETE` ou despejadas continuam em 404.
+- Recarga de domínio: chamadas de leitura e idempotentes esperam a reconexão (até 300 s) em vez de responder `UNITY_OFFLINE`; `refresh_assets` e `request_script_compilation` passam a idempotentes, então não viram mais `OUTCOME_UNKNOWN`.
+- Ponte presa com a trava de escrita ocupada: escritas pegam a trava antes da vaga de concorrência, e uma escrita enquanto um job (testes, build, reimport, refresh) segura o Editor responde `RESOURCE_BUSY` com o `jobId` na hora.
+- AssetImportWorkers e Editors em modo lote não abrem mais a ponte MCP; o broker fecha um `/bridge` sem `hello` em 30 s.
+- A espera automática de jobs usa um id novo a cada consulta ("Duplicate MCP request id"); um id duplicado responde `REQUEST_IN_PROGRESS` em vez de exceção no console.
+- O refresh/compile solta a trava quando a compilação termina sem recarga de domínio.
+- Datas do diário de jobs não se perdem mais em Editor com cultura pt-BR.
+- O broker redireciona stdout/stderr para `logs/broker.stderr.log` (um pipe cheio podia travar o processo inteiro) e manda os logs de `asyncio`/`websockets` para o arquivo.
+- Manutenção do histórico varre o banco por uma conexão de leitura, fora da trava; respostas de escrita expiram após 14 dias (o recibo fica) e só as 3 últimas cópias do registro por projeto ficam guardadas.
+- O `MCP-Protocol-Version` de clientes mais novos (2025-11-25, 2026-07-28) é aceito e o `initialize` oferece 2025-06-18.
+
+### Testes
+
+- 8 testes do pacote que falhavam quando o `run_tests` vinha pelo MCP (a trava global de escrita ficava com o job de teste): o processador e o coordenador aceitam uma trava própria nos testes, os testes da trava real viram Ignored quando ela está ocupada, e o teste do manifesto acompanha o prompt atual.
+- Python: 86 testes (10 novos em `tests/test_resilience.py`).
+
+## [0.19.1] - 2026-11-19
+
+Resistência a quedas, chamadas longas e processos perdidos. Relatório completo em
+`G:\HortDrift\Documentacao\MCP\RELATORIO-MCP-0.19.1.md`.
+
+### Adicionado
+
+- Broker persistente por usuário (`supervisor.py`): sobrevive ao fechamento e à reabertura do Editor, reinicia o broker quando ele sai ou quando `/health` falha 4 vezes seguidas, e coloca tudo numa job object que fecha junto com ele. O Editor inicia o supervisor sozinho ao carregar (instalando a versão do pacote se faltar) e o botão Stop pede a parada por `runtime/supervisor.stop`.
+- Vigia do laço de eventos (`watchdog.py`): despeja as pilhas de todas as threads em `logs/broker.watchdog.log` quando o laço trava por 15 s e encerra o broker aos 90 s, para o supervisor subir outro.
+- Chamadas longas não estouram mais o tempo do cliente: depois de 45 s (`UNITY_MCP_BROKER_SYNC_WAIT`) a chamada responde `status: running` com `requestId` (e `unityJobId`, se houver) e continua rodando; `broker_wait_request` espera até 55 s por vez e devolve o resultado da própria chamada. Jobs da Unity (testes, builds) são acompanhados por até 6 h.
+- Ferramentas novas do broker: `broker_wait_request`, `broker_list_requests`, `broker_list_jobs`, `broker_cancel_request`, `broker_editor_status`, `broker_close_editor`, `broker_open_editor`, `broker_restart_editor`, `broker_press_dialog_button` e `broker_cleanup_orphans`.
+- Ferramenta `editor_quit` no Editor: sai pelo File/Exit só com as cenas limpas (ou salvando-as com `saveDirtyScenes`), fora do Play, sem build, compilação ou job; sem `confirm: true` só mostra a prévia.
+- Limpeza de órfãos (`orphans.py`): fecha ajudantes da Unity e brokers cujo Editor ou supervisor morreu, decidindo pela árvore de processos e pela hora de criação; nunca fecha um Editor nem o Unity Hub. Remove instalações antigas do broker que nada usa.
+- `execute_menu_item` com `deferred: true` roda o menu como job depois de responder (builds, bakes).
+- `get_test_job` sem `jobId` devolve o job de teste mais recente.
+- Detecção de diálogos nativos que travam o Editor (por exemplo "Script Updating Consent"), com título e botões, em `broker_editor_status` e nos erros `UNITY_OFFLINE`.
+
+### Corrigido
+
+- Autorização depois de reabrir o Editor: o Editor adota a variável de usuário `UNITY_MCP_BROKER_TOKEN` (a que os clientes usam) em vez de o token do EditorPrefs; gerar token novo atualiza os dois; o broker aceita também o valor atual da variável; a configuração do Claude Code ganha um `headersHelper` que lê o token na hora.
+- Sessão perdida depois de reiniciar o broker: um `Mcp-Session-Id` desconhecido é adotado (o Claude Code não reinicializa sozinho depois de 404); sessões fechadas por `DELETE` ou despejadas continuam em 404.
+- Recarga de domínio: chamadas de leitura e idempotentes esperam a reconexão (até 300 s) em vez de responder `UNITY_OFFLINE`; `refresh_assets` e `request_script_compilation` passam a idempotentes, então não viram mais `OUTCOME_UNKNOWN`.
+- Ponte presa com a trava de escrita ocupada: escritas pegam a trava antes da vaga de concorrência, e uma escrita enquanto um job (testes, build, reimport, refresh) segura o Editor responde `RESOURCE_BUSY` com o `jobId` na hora.
+- AssetImportWorkers e Editors em modo lote não abrem mais a ponte MCP; o broker fecha um `/bridge` sem `hello` em 30 s.
+- A espera automática de jobs usa um id novo a cada consulta ("Duplicate MCP request id"); um id duplicado responde `REQUEST_IN_PROGRESS` em vez de exceção no console.
+- O refresh/compile solta a trava quando a compilação termina sem recarga de domínio.
+- Datas do diário de jobs não se perdem mais em Editor com cultura pt-BR.
+- O broker redireciona stdout/stderr para `logs/broker.stderr.log` (um pipe cheio podia travar o processo inteiro) e manda os logs de `asyncio`/`websockets` para o arquivo.
+- Manutenção do histórico varre o banco por uma conexão de leitura, fora da trava; respostas de escrita expiram após 14 dias (o recibo fica) e só as 3 últimas cópias do registro por projeto ficam guardadas.
+- O `MCP-Protocol-Version` de clientes mais novos (2025-11-25, 2026-07-28) é aceito e o `initialize` oferece 2025-06-18.
+
+### Testes
+
+- 8 testes do pacote que falhavam quando o `run_tests` vinha pelo MCP (a trava global de escrita ficava com o job de teste): o processador e o coordenador aceitam uma trava própria nos testes, os testes da trava real viram Ignored quando ela está ocupada, e o teste do manifesto acompanha o prompt atual.
+- Python: 86 testes (10 novos em `tests/test_resilience.py`).
 
 ## [0.19.0] - 2026-08-16
 

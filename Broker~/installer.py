@@ -18,7 +18,7 @@ else:
     import fcntl
 
 MINIMUM_PYTHON = (3, 10)
-RETAINED_INSTALLATIONS = 3
+RETAINED_INSTALLATIONS = 2
 MAX_INSTALL_LOG_BYTES = 5 * 1024 * 1024
 INSTALL_LOG_BACKUPS = 3
 EXCLUDED_DIRECTORIES = {
@@ -117,7 +117,8 @@ def rotate_log(path: Path, max_bytes: int = MAX_INSTALL_LOG_BYTES, backups: int 
 
 def protected_install_paths(root: Path) -> set[Path]:
     paths: set[Path] = set()
-    for state_path in (root / "current.json", root / "runtime" / "broker-process.json"):
+    for state_path in (root / "current.json", root / "runtime" / "broker-process.json",
+                       root / "runtime" / "supervisor.json"):
         payload = read_json(state_path)
         value = payload.get("installPath") if payload else None
         if isinstance(value, str) and value.strip():
