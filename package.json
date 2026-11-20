@@ -5,8 +5,8 @@
   "description": "Production-grade Unity 6.1-6.6 MCP server for scene and asset authoring, project/build/test workflows, runtime gameplay validation, package-gated ecosystem integrations, structured health reporting, and registry-generated tool inventory. Includes stable Unity targets, Undo-safe mutations, explicit save operations, capability gates, and optional two-step confirmation for high-risk tools.",
   "unity": "6000.1",
   "author": {
-    "name": "Maicon Gonçalez",
-    "email": "maiconspo@gmail.com"
+    "name": "Dellacurtais",
+    "url": "https://github.com/Dellacurtais"
   },
   "license": "MIT",
   "keywords": [
