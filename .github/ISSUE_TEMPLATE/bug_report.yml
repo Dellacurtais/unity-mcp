@@ -21,13 +21,11 @@ body:
       placeholder: "6000.3.5f2, URP"
     validations:
       required: true
-  - type: dropdown
-    id: transport
+  - type: input
+    id: broker
     attributes:
-      label: Transport mode
-      options: [Broker, Embedded]
-    validations:
-      required: true
+      label: Broker version
+      placeholder: "0.19.1 (GET http://127.0.0.1:8765/health)"
   - type: input
     id: client
     attributes:

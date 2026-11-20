@@ -1,5 +1,7 @@
 # External broker 0.16.0 release validation
 
+> Historical. The Embedded transport was removed after 0.19.1; the broker is the only transport, and the Embedded steps below no longer apply.
+
 This checklist covers the validation that cannot be performed by the static CI workflow because it requires an installed Unity Editor. The CI workflow itself never launches Unity.
 
 ## Release invariants

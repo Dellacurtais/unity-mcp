@@ -22,7 +22,7 @@ Atualizado em 2026-08-02. Este documento registra o corte vertical executável; 
 | 5 | half-edge orientada, boundaries/non-manifold/components, cleanup, weld, subdivide, refino adaptativo, extrude faces/arestas, inset/bevel, bridge e fill hole com transferência de canais |
 | 6 | soft selection, grab/smooth/relax/flatten/inflate, bend/twist/taper, lattice, spline, Laplacian e ARAP canceláveis |
 | 7 | BVH multi-target, clearance, projeção anticolisão, refino automático, shape preservation Laplacian e avaliação atual/multipose por `AnimationClip` |
-| 8 | 28 ferramentas MCP no mesmo command service, staging validado de assets externos, fluxo Coder Chat, exportação FBX opcional e contratos de confirmação |
+| 8 | 28 ferramentas MCP no mesmo command service, staging validado de assets externos, exportação FBX opcional e contratos de confirmação |
 
 ## Fluxo recomendado
 
@@ -52,4 +52,4 @@ O catálogo inclui sessões, seleção/regiões, preview/apply, modifier stack, 
 - ProBuilder e FBX Exporter continuam adaptadores opcionais;
 - casos estáticos semanticamente ambíguos usam heurística e devem ser revisados no preview; um sidecar remoto futuro deve permanecer opt-in.
 
-Esses itens são endurecimento de qualidade, não caminhos paralelos de mutação: UI, MCP e Coder Chat continuam usando os mesmos documentos, operações, previews e validadores.
+Esses itens são endurecimento de qualidade, não caminhos paralelos de mutação: UI e MCP continuam usando os mesmos documentos, operações, previews e validadores.

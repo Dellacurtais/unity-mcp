@@ -19,10 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Embedded transport.** The in-Editor HTTP server (`HttpMcpServer`), its cross-project listener coordination and **Bring here**, and the transport mode setting are gone. The supervised broker is the only transport; on load Unity starts it and connects the bridge when **Auto-connect** is on. Existing broker setups need no change; projects that used Embedded mode install the broker from **Window → Unity MCP Transport**.
+- **Coder Chat panel** (`Window → Coder Chat`) and the native CodeStudio integration: the automatic CodeStudio MCP registration, the managed Unity agent and their settings. Any MCP client connects through the broker endpoint instead.
+- The **Allow paid external AI** switch, which no remaining tool used.
 - AI 3D Studio and its Tripo/Meshy integration: the `Editor/AI3D` assembly and its `ai3d_*` MCP tools, the `TripoGateway~` gateway, their tests, specifications and CI workflow. Unity 3D content generation is out of scope for this package.
 
 ### Community
 
+- The repository moved to `github.com/Dellacurtais/unity-mcp`; the old `unity-coder` address redirects.
 - Community files: MIT license, contributing guide, code of conduct, security policy, issue and pull request templates, and a Portuguese README.
 
 ## [0.19.1] - 2026-11-19

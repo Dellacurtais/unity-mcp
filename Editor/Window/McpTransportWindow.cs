@@ -11,7 +11,6 @@ namespace Maicon.SceneAnalyzer.Editor.Window
     {
         private Vector2 _logScroll;
         private bool _tokenVisible;
-        private string _portBuffer;
         private string _brokerUrlBuffer;
         private string _pythonPathBuffer;
         private string _clientInstallMessage;
@@ -35,10 +34,8 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             Bootstrap.OnServerCoordinationChanged += Repaint;
             Bootstrap.OnServerLog += OnLog;
             EditorApplication.update += OnEditorUpdate;
-            _portBuffer = Settings.Port.ToString();
             _brokerUrlBuffer = Settings.BrokerUrl;
             _pythonPathBuffer = Settings.BrokerPythonPath;
-            CodeStudioMcpRegistration.RequestSync();
         }
 
         private void OnDisable()
@@ -70,32 +67,11 @@ namespace Maicon.SceneAnalyzer.Editor.Window
 
         private void DrawTransportSection()
         {
-            EditorGUILayout.LabelField("Transport", EditorStyles.boldLabel);
-            var mode = (McpTransportMode)EditorGUILayout.EnumPopup("Mode", Settings.TransportMode);
-            if (mode != Settings.TransportMode)
-            {
-                if (IsTransportRunning())
-                {
-                    EditorUtility.DisplayDialog(
-                        "Stop transport first",
-                        "Stop the current MCP transport before changing modes.",
-                        "OK");
-                }
-                else
-                {
-                    Settings.TransportMode = mode;
-                    CodeStudioMcpRegistration.RequestSync();
-                }
-            }
-
-            if (Settings.TransportMode == McpTransportMode.Broker)
-                DrawBrokerTransport();
-            else
-                DrawEmbeddedTransport();
+            EditorGUILayout.LabelField("Broker", EditorStyles.boldLabel);
+            DrawBrokerTransport();
 
             DrawToken();
             DrawExternalClientInstallers();
-            DrawCodeStudioRegistration();
         }
 
         private void DrawExternalClientInstallers()
@@ -172,8 +148,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             try
             {
                 Maicon.SceneAnalyzer.Editor.Mcp.Broker.BrokerTokenSync.Converge();
-                if (Settings.TransportMode == McpTransportMode.Broker)
-                    Settings.BrokerUrl = _brokerUrlBuffer?.Trim();
+                Settings.BrokerUrl = _brokerUrlBuffer?.Trim();
                 var endpoint = BuildCurrentMcpEndpoint();
                 installOrUpdate(endpoint, Settings.Token);
                 _clientSnapshotFingerprint = null;
@@ -192,90 +167,18 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             }
         }
 
-        private string BuildCurrentMcpEndpoint()
-            => CodeStudioMcpRegistration.BuildUnityMcpUrl(
-                Settings.TransportMode,
-                Settings.Port,
-                Settings.TransportMode == McpTransportMode.Broker
-                    ? _brokerUrlBuffer
-                    : Settings.BrokerUrl);
+        private string BuildCurrentMcpEndpoint() => BuildMcpEndpoint(_brokerUrlBuffer);
 
-        private static void DrawCodeStudioRegistration()
+        /// The MCP endpoint served by the broker whose bridge URL is given
+        /// (ws://host:port/bridge -> http://host:port/mcp/).
+        internal static string BuildMcpEndpoint(string brokerUrl)
         {
-            var codeStudio = CodeStudioMcpRegistration.Snapshot;
-            EditorGUILayout.Space(4);
-            EditorGUILayout.LabelField("CodeStudio", EditorStyles.boldLabel);
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                EditorGUILayout.LabelField("Discovery: " + codeStudio.State, EditorStyles.miniLabel);
-                if (GUILayout.Button("Detect now", GUILayout.Width(90)))
-                    CodeStudioMcpRegistration.RequestSync();
-            }
-            if (!string.IsNullOrEmpty(codeStudio.RuntimeUrl))
-                EditorGUILayout.SelectableLabel(
-                    "Runtime: " + codeStudio.RuntimeUrl,
-                    EditorStyles.miniLabel,
-                    GUILayout.Height(EditorGUIUtility.singleLineHeight));
-            if (!string.IsNullOrEmpty(codeStudio.Message))
-                EditorGUILayout.LabelField(codeStudio.Message, EditorStyles.wordWrappedMiniLabel);
-            if (!string.IsNullOrEmpty(codeStudio.Error))
-                EditorGUILayout.HelpBox(codeStudio.Error, MessageType.Warning);
-        }
-
-        private void DrawEmbeddedTransport()
-        {
-            var server = Bootstrap.Server;
-            var instanceState = Bootstrap.ServerInstanceState;
-            var running = server != null && server.IsRunning;
-            var remoteOwner = instanceState.HasRemoteOwner;
-            var transitioning = instanceState.IsTransitioning;
-
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                using (new EditorGUI.DisabledScope(running || remoteOwner || transitioning))
-                {
-                    if (GUILayout.Button("Start"))
-                    {
-                        if (int.TryParse(_portBuffer, out var port)) Settings.Port = port;
-                        TryTransportAction(Bootstrap.StartServer, "Failed to start embedded server");
-                    }
-                }
-                using (new EditorGUI.DisabledScope(!running))
-                {
-                    if (GUILayout.Button("Stop")) Bootstrap.StopServer();
-                }
-                using (new EditorGUI.DisabledScope(!instanceState.CanBringHere))
-                {
-                    if (GUILayout.Button("Bring here", GUILayout.Width(90)))
-                        ConfirmBringServerHere(instanceState);
-                }
-            }
-
-            EditorGUILayout.LabelField(EmbeddedStatus(server, instanceState), EditorStyles.miniLabel);
-            if (remoteOwner && !string.IsNullOrEmpty(instanceState.OwnerProjectPath))
-                EditorGUILayout.SelectableLabel(
-                    instanceState.OwnerProjectPath,
-                    EditorStyles.miniLabel,
-                    GUILayout.Height(EditorGUIUtility.singleLineHeight));
-            if (transitioning && !string.IsNullOrEmpty(instanceState.HandoverMessage))
-                EditorGUILayout.HelpBox(instanceState.HandoverMessage, MessageType.Info);
-
-            var coordinationError = instanceState.Error ?? Bootstrap.ServerCoordinationError;
-            if (!string.IsNullOrEmpty(coordinationError))
-                EditorGUILayout.HelpBox(
-                    "Multi-project coordination unavailable: " + coordinationError,
-                    MessageType.Warning);
-
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                GUILayout.Label("Port", GUILayout.Width(80));
-                using (new EditorGUI.DisabledScope(running || remoteOwner || transitioning))
-                    _portBuffer = EditorGUILayout.TextField(_portBuffer, GUILayout.Width(100));
-                GUILayout.FlexibleSpace();
-                Settings.AutoStartServer = GUILayout.Toggle(
-                    Settings.AutoStartServer,
-                    " Auto-start on load");
-            }
+            if (Uri.TryCreate(brokerUrl, UriKind.Absolute, out var uri)
+                && (uri.Scheme == "ws" || uri.Scheme == "wss")
+                && uri.Port > 0)
+                return new UriBuilder(uri.Scheme == "wss" ? Uri.UriSchemeHttps : Uri.UriSchemeHttp,
+                    uri.Host, uri.Port, "/mcp/").Uri.AbsoluteUri;
+            return "http://127.0.0.1:8765/mcp/";
         }
 
         private void DrawBrokerTransport()
@@ -336,10 +239,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 using (new EditorGUI.DisabledScope(running))
                     _brokerUrlBuffer = EditorGUILayout.TextField(_brokerUrlBuffer);
             }
-            var mcpEndpoint = CodeStudioMcpRegistration.BuildUnityMcpUrl(
-                McpTransportMode.Broker,
-                Settings.Port,
-                _brokerUrlBuffer);
+            var mcpEndpoint = BuildMcpEndpoint(_brokerUrlBuffer);
             using (new EditorGUILayout.HorizontalScope())
             {
                 GUILayout.Label("MCP endpoint", GUILayout.Width(80));
@@ -480,7 +380,6 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         {
             ManagedBrokerProcess.Start();
             if (Bootstrap.BrokerBridge == null) Bootstrap.StartServer();
-            CodeStudioMcpRegistration.RequestSync();
             Bootstrap.RecordEntry("managed broker process started");
         }
 
@@ -528,8 +427,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private static void RegenerateToken()
         {
             var restartTransport = IsTransportRunning();
-            var restartManaged = Settings.TransportMode == McpTransportMode.Broker
-                && ManagedBrokerProcess.Inspect().IsProcessActive;
+            var restartManaged = ManagedBrokerProcess.Inspect().IsProcessActive;
             if (restartManaged)
             {
                 if (Bootstrap.BrokerBridge != null) Bootstrap.StopServer();
@@ -549,43 +447,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 Bootstrap.RestartServer();
             }
-            CodeStudioMcpRegistration.RequestSync();
         }
 
         private static bool IsTransportRunning()
-        {
-            return Settings.TransportMode == McpTransportMode.Broker
-                ? Bootstrap.BrokerBridge != null || ManagedBrokerProcess.Inspect().IsProcessActive
-                : Bootstrap.Server != null && Bootstrap.Server.IsRunning;
-        }
-
-        private static string EmbeddedStatus(
-            Mcp.HttpMcpServer server,
-            Mcp.McpServerInstanceSnapshot instanceState)
-        {
-            if (server != null && server.IsRunning)
-                return $"running here · http://127.0.0.1:{server.Port}/mcp/";
-            if (instanceState.HasRemoteOwner)
-                return $"running in {instanceState.OwnerProjectName} · http://127.0.0.1:{instanceState.Port}/mcp/";
-            if (instanceState.IsTransitioning)
-                return $"transferring · http://127.0.0.1:{instanceState.Port}/mcp/";
-            return "stopped";
-        }
-
-        private static void ConfirmBringServerHere(Mcp.McpServerInstanceSnapshot instanceState)
-        {
-            var source = string.IsNullOrEmpty(instanceState.OwnerProjectName)
-                ? instanceState.OwnerProjectPath
-                : instanceState.OwnerProjectName;
-            var confirmed = EditorUtility.DisplayDialog(
-                "Bring MCP server here?",
-                $"Move the embedded MCP server from '{source}' to this Unity project?\n\n" +
-                $"Port {instanceState.Port} and the current token will be preserved.",
-                "Bring here",
-                "Cancel");
-            if (!confirmed) return;
-            TryTransportAction(Bootstrap.BringServerHere, "Transfer failed");
-        }
+            => Bootstrap.BrokerBridge != null || ManagedBrokerProcess.Inspect().IsProcessActive;
 
         private static void TryTransportAction(Action action, string title)
         {
@@ -604,11 +469,6 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                     "Confirm high-risk tools",
                     "When enabled, high-risk tools require a second call with a single-use confirmation token. Disabled by default so authorized agents can execute directly."),
                 Settings.RequireHighRiskConfirmation);
-            Settings.AllowExternalServiceTools = EditorGUILayout.Toggle(
-                new GUIContent(
-                    "Allow paid external AI",
-                    "Allows MCP tools to send approved text/images/meshes to external AI providers and consume credits. Paid calls still always require a confirmation token and an explicit per-workflow budget."),
-                Settings.AllowExternalServiceTools);
             Settings.AutoActivateRequiredWindows = EditorGUILayout.Toggle(
                 new GUIContent(
                     "Autonomous editor activation",

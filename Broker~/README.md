@@ -31,7 +31,7 @@ set UNITY_MCP_BROKER_TOKEN=<long random token>                # or $env:... in P
 .venv/Scripts/python main.py                                 # or a single broker, no supervision
 ```
 
-Then select **Broker** mode in **Window → Unity MCP Transport** and click **Connect**. `GET http://127.0.0.1:8765/health` needs no token. All settings are environment variables; the table is in the package [README](../README.md#configuration). For an isolated test instance set `UNITY_MCP_BROKER_ROOT`, `UNITY_MCP_BROKER_PORT`, `UNITY_MCP_BROKER_DB`, `UNITY_MCP_BROKER_LOG` and `UNITY_MCP_BROKER_SUPERVISOR_MUTEX`.
+Then click **Connect** under **Unity bridge** in **Window → Unity MCP Transport**. `GET http://127.0.0.1:8765/health` needs no token. All settings are environment variables; the table is in the package [README](../README.md#configuration). For an isolated test instance set `UNITY_MCP_BROKER_ROOT`, `UNITY_MCP_BROKER_PORT`, `UNITY_MCP_BROKER_DB`, `UNITY_MCP_BROKER_LOG` and `UNITY_MCP_BROKER_SUPERVISOR_MUTEX`.
 
 ## Tests
 

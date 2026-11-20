@@ -4,7 +4,7 @@ Thanks for helping. Issues and pull requests are welcome in English or Portugues
 
 ## Before you start
 
-- **Bugs:** open an issue with the Unity version, render pipeline, transport mode (Embedded or Broker), the tool call and its full answer, and the relevant lines from the Unity Console or `%LOCALAPPDATA%\UnityMcp\Broker\logs`. Remove tokens and private paths first.
+- **Bugs:** open an issue with the Unity version, render pipeline, broker version (`GET /health`), the tool call and its full answer, and the relevant lines from the Unity Console or `%LOCALAPPDATA%\UnityMcp\Broker\logs`. Remove tokens and private paths first.
 - **Features:** open an issue first for anything larger than a small fix, so the design can be agreed before you write code. New tools need a clear safety story: capability, risk, idempotence, and what happens after a Domain Reload.
 - **Security problems** never go in public issues; see [SECURITY.md](SECURITY.md).
 

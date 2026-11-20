@@ -2,29 +2,29 @@
 
 Deixa agentes de IA (Claude Code, Codex ou qualquer cliente do [Model Context Protocol](https://modelcontextprotocol.io)) inspecionar e editar um projeto Unity pelo próprio Editor. Cobre cenas, prefabs, assets, pacotes, builds, testes, Play Mode e mais, com identidades estáveis, escritas com Undo, permissões por capacidade e salvamento só quando pedido.
 
-O pacote (`com.maicon.scene-analyzer`) roda dentro do Editor. Um **broker** opcional em Python mantém o endereço MCP de pé enquanto a Unity compila, recarrega o domínio ou reinicia. Assim o agente não perde a conexão nem o trabalho.
+O pacote (`com.maicon.scene-analyzer`) roda dentro do Editor. Um **broker** em Python serve o endereço MCP e o mantém de pé enquanto a Unity compila, recarrega o domínio ou reinicia. Assim o agente não perde a conexão nem o trabalho.
 
 A documentação completa, em inglês, está no [README](../README.md).
 
 ## Requisitos
 
 - Unity 6000.1 a 6000.6, desenvolvido e testado na 6000.6.7f1. Windows é a plataforma principal.
-- Python 3.10 ou mais novo, para o modo broker (o recomendado).
+- Python 3.10 ou mais novo, para o broker.
 
 ## Instalar
 
 No Unity: **Window → Package Manager → + → Add package from git URL**:
 
 ```text
-https://github.com/Dellacurtais/unity-coder.git
+https://github.com/Dellacurtais/unity-mcp.git
 ```
 
 Acrescente `#vX.Y.Z` para fixar uma versão.
 
-## Começar (modo broker)
+## Começar
 
-1. Abra **Window → Unity MCP Transport** e escolha **Mode = Broker**.
-2. Clique em **Install**. A Unity acha o Python, copia o broker para `%LOCALAPPDATA%\UnityMcp\Broker` e instala as dependências num ambiente próprio.
+1. Abra **Window → Unity MCP Transport**.
+2. Em **Managed Python broker**, clique em **Install**. A Unity acha o Python, copia o broker para `%LOCALAPPDATA%\UnityMcp\Broker` e instala as dependências num ambiente próprio.
 3. Clique em **Start**. Daí em diante, a Unity sobe o broker sozinha sempre que o Editor abre sem nenhum rodando.
 4. Em **AI clients**, clique em **Install** ao lado do Claude Code ou do ChatGPT/Codex e reinicie o cliente.
 5. Peça ao agente `get_server_health` e depois `self_test`.

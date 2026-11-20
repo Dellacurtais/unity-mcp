@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using Maicon.SceneAnalyzer.Editor.Authoring;
-using Maicon.SceneAnalyzer.Editor.Chat;
 using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Broker;
@@ -27,73 +26,26 @@ namespace Maicon.SceneAnalyzer.Editor
 {
     /// Editor-load entry point. Owns the singleton instances of every long-lived
     /// piece of the plugin and wires them together. After a domain reload the
-    /// static ctor runs again with a clean AppDomain — settings persist via
-    /// EditorPrefs so the server picks up where it left off.
+    /// static ctor runs again with a clean AppDomain; settings persist via
+    /// EditorPrefs, and the bridge reconnects to the persistent broker.
     [InitializeOnLoad]
     public static class Bootstrap
     {
         public static SceneSnapshot Snapshot { get; private set; }
         public static AssetCatalog AssetCatalog { get; private set; }
         public static McpToolRegistry ToolRegistry { get; private set; }
-        public static HttpMcpServer Server { get; private set; }
         public static BrokerBridgeClient BrokerBridge { get; private set; }
         public static BrokerBridgeSnapshot BrokerBridgeState
             => BrokerBridge?.Snapshot ?? BrokerBridgeSnapshot.Stopped;
         private static McpRequestProcessor BrokerProcessor { get; set; }
         private static BrokerLifecycleMonitor BrokerLifecycle { get; set; }
-        internal static McpServerInstanceCoordinator ServerCoordinator { get; private set; }
-        internal static McpServerInstanceSnapshot ServerInstanceState
-            => ServerCoordinator?.Snapshot ?? McpServerInstanceSnapshot.Empty;
-        internal static string ServerCoordinationError { get; private set; }
+        internal static int InFlightRequests => BrokerProcessor?.InFlightCount ?? 0;
         public static DateTimeOffset DomainLoadedUtc { get; } = DateTimeOffset.UtcNow;
-
-        // Coder chat state (Model B — chat panel inside Unity).
-        public static ChatSession ChatSession { get; private set; }
-        public static CoderApiClient ChatClient { get; private set; }
 
         /// Absolute path of the Unity project root (parent of `Assets/`). Captured
         /// at editor load on the main thread so it can be safely used from any
-        /// background task (e.g. the chat client's project auto-discovery).
+        /// background task (the broker bridge identifies the project with it).
         public static string UnityProjectRoot { get; private set; }
-
-        /// Cache of providers/models fetched from `GET /api/coder/providers`.
-        /// Populated by CoderApiClient.RefreshProviders. The window reads this
-        /// to render the provider/model dropdowns dynamically.
-        public static List<CoderProviderInfo> CoderProviders { get; set; } = new();
-        public static List<CoderAgentInfo> CoderAgents { get; set; } = new();
-        public static List<CoderSessionInfo> CoderSessions { get; set; } = new();
-        public static event Action OnCoderProvidersChanged;
-        public static event Action OnCoderAgentsChanged;
-        public static event Action OnCoderSessionsChanged;
-
-        public static void NotifyCoderProvidersChanged()
-        {
-            try { OnCoderProvidersChanged?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
-        }
-
-        public static void NotifyCoderAgentsChanged()
-        {
-            try { OnCoderAgentsChanged?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
-        }
-
-        public static void NotifyCoderSessionsChanged()
-        {
-            try { OnCoderSessionsChanged?.Invoke(); } catch (Exception e) { Debug.LogException(e); }
-        }
-
-        public static void UpdateCoderSession(CoderSessionInfo session)
-        {
-            if (session == null || !CoderSessionIdentity.IsValid(session.Id)) return;
-            var index = CoderSessions.FindIndex(item =>
-                string.Equals(item.Id, session.Id, StringComparison.Ordinal));
-            if (index >= 0)
-            {
-                if (CoderSessions[index].SemanticallyEquals(session)) return;
-                CoderSessions[index] = session;
-            }
-            else CoderSessions.Insert(0, session);
-            NotifyCoderSessionsChanged();
-        }
 
         public static event Action OnServerCoordinationChanged;
         public static event Action<string> OnServerLog;
@@ -116,18 +68,6 @@ namespace Maicon.SceneAnalyzer.Editor
                 SceneAnalyzerVersion.Initialize();
                 BrokerProtocol.CaptureEditorIdentity();
                 ToolJobManager.InitializeOnMainThread();
-
-                // Migration: v0.8.0 and earlier defaulted CoderProjectId to 1
-                // and never persisted the workdir of the matched project. Any
-                // user with a stale cached id and no workdir is silently
-                // pinned to whatever has id 1 in the dashboard. Reset the id
-                // so the next Send/CreateSession auto-resolves correctly.
-                if (Settings.CoderSettingsVersion < 2)
-                {
-                    if (string.IsNullOrEmpty(Settings.CoderProjectWorkdir))
-                        Settings.CoderProjectId = 0;
-                    Settings.CoderSettingsVersion = 2;
-                }
 
                 // Confirmation was historically enabled without being exposed
                 // in the Transport window. Agents then avoided otherwise
@@ -374,15 +314,6 @@ namespace Maicon.SceneAnalyzer.Editor
                 // apply_color_grading) live in com.maicon.scene-analyzer.Editor.PostFx and are
                 // registered there via PostFxBootstrap when SRP Core is present.
 
-                Server = new HttpMcpServer(ToolRegistry);
-                Server.OnLog += msg => _ = MainThreadDispatcher.RunAsync(
-                    () => RecordEntry($"[server] {msg}"));
-                if (Settings.TransportMode == McpTransportMode.Embedded)
-                    EnsureEmbeddedCoordinator();
-
-                ChatSession = new ChatSession();
-                ChatClient = new CoderApiClient(ChatSession);
-
                 // Unity can compile secondary package assemblies without loading them
                 // when the project itself only contains asmdef-based code. Their
                 // [InitializeOnLoad] bootstraps then never run, leaving optional tools
@@ -395,48 +326,24 @@ namespace Maicon.SceneAnalyzer.Editor
                 AssemblyReloadEvents.afterAssemblyReload += OnAfterReload;
                 EditorApplication.quitting += OnQuitting;
 
-                bool wantAutoStart = Settings.TransportMode == McpTransportMode.Broker
-                    ? Settings.BrokerAutoConnect
-                    : Settings.AutoStartServer || Settings.ServerStickyRunning;
                 // AssetImportWorkers and batch-mode Editors (builds, -runTests) load this
                 // assembly too. They must not open MCP connections: the workers' bridges never
                 // finished their hello and stayed open in the broker, and a batch Editor would
                 // take over the project's route from the interactive one.
-                if (IsBackgroundEditorProcess())
-                {
-                    wantAutoStart = false;
-                }
-                else if (wantAutoStart)
-                {
-                    try { BrokerTokenSync.Converge(); }
-                    catch (Exception e) { Debug.LogWarning("[unity-mcp] token sync failed: " + e.Message); }
-                }
-                if (wantAutoStart && !string.IsNullOrEmpty(Settings.Token))
+                if (Settings.BrokerAutoConnect && !IsBackgroundEditorProcess())
                 {
                     try
                     {
-                        if (Settings.TransportMode == McpTransportMode.Broker)
-                        {
-                            ManagedBrokerProcess.EnsureRunningInBackground(message =>
-                                _ = MainThreadDispatcher.RunAsync(() => RecordEntry("[broker] " + message)));
-                            StartBrokerBridge(false);
-                        }
-                        else
-                            TryStartServer(
-                                Settings.Port,
-                                Settings.Token,
-                                null,
-                                false,
-                                $"online at port {Settings.Port}",
-                                false);
+                        BrokerTokenSync.Converge();
+                        ManagedBrokerProcess.EnsureRunningInBackground(message =>
+                            _ = MainThreadDispatcher.RunAsync(() => RecordEntry("[broker] " + message)));
+                        StartBrokerBridge(false);
                     }
                     catch (Exception e)
                     {
                         Debug.LogError($"[unity-mcp] auto-start failed: {e.Message}");
                     }
                 }
-
-                ServerCoordinator?.PollNow();
             }
             catch (Exception e)
             {
@@ -497,10 +404,7 @@ namespace Maicon.SceneAnalyzer.Editor
             }
         }
 
-        /// Fired when the server transitions state (started / stopped / restarted
-        /// after assembly reload). The chat panel subscribes so the dev sees a
-        /// timestamped marker in the conversation when Unity recovers from a
-        /// reload — no more "is the server back?" guesswork.
+        /// Fired when the broker bridge starts, stops or reconnects after a reload.
         public static event Action<string> OnServerStateChanged;
 
         private static void NotifyServerState(string state)
@@ -509,75 +413,30 @@ namespace Maicon.SceneAnalyzer.Editor
             catch (Exception e) { Debug.LogException(e); }
         }
 
+        /// Connects this Editor to the broker and keeps it connected after reloads.
         public static void StartServer()
         {
             BrokerTokenSync.Converge();
-            if (Settings.TransportMode == McpTransportMode.Broker)
-            {
-                StartBrokerBridge(true);
-                return;
-            }
-            EnsureEmbeddedCoordinator();
-            TryStartServer(
-                Settings.Port,
-                Settings.Token,
-                null,
-                true,
-                $"started at port {Settings.Port}",
-                true);
+            StartBrokerBridge(true);
         }
 
         public static void StopServer()
         {
-            if (Settings.TransportMode == McpTransportMode.Broker)
-            {
-                StopBrokerBridge();
-                Settings.BrokerAutoConnect = false;
-                NotifyServerState("broker bridge stopped");
-                return;
-            }
-            Server.Stop();
-            try { ServerCoordinator?.ReleaseExplicit(); }
-            catch (Exception e) { Debug.LogWarning($"[unity-mcp] failed to release MCP lease: {e.Message}"); }
-            Settings.ServerStickyRunning = false;
-            NotifyServerState("stopped (sticky cleared)");
+            StopBrokerBridge();
+            Settings.BrokerAutoConnect = false;
+            NotifyServerState("broker bridge stopped");
         }
 
         public static void RestartServer()
         {
             BrokerTokenSync.Converge();
-            if (Settings.TransportMode == McpTransportMode.Broker)
-            {
-                StopBrokerBridge();
-                StartBrokerBridge(true);
-                return;
-            }
-            var port = Server != null && Server.IsRunning ? Server.Port : Settings.Port;
-            Server?.Stop("MCP server settings changed — retry shortly");
-            TryStartServer(
-                port,
-                Settings.Token,
-                null,
-                true,
-                $"restarted at port {port}",
-                true);
-        }
-
-        public static void BringServerHere()
-        {
-            if (Settings.TransportMode == McpTransportMode.Broker)
-                throw new InvalidOperationException("Activate this project with broker_activate_project from the MCP client.");
-            if (ServerCoordinator == null)
-                throw new InvalidOperationException(ServerCoordinationError ?? "MCP instance coordination is unavailable.");
-            var requestId = ServerCoordinator.RequestHandover();
-            RecordEntry($"[server] transfer requested for this project ({requestId.Substring(0, 8)})");
-            NotifyServerState("transfer requested for this project");
+            StopBrokerBridge();
+            StartBrokerBridge(true);
         }
 
         private static void StartBrokerBridge(bool markAutoConnect)
         {
             StopBrokerBridge();
-            DisposeEmbeddedCoordinator();
             if (string.IsNullOrWhiteSpace(Settings.BrokerUrl))
                 throw new InvalidOperationException("Broker URL is required.");
             BrokerProcessor = new McpRequestProcessor(
@@ -597,7 +456,6 @@ namespace Maicon.SceneAnalyzer.Editor
             {
                 _ = MainThreadDispatcher.RunAsync(() =>
                 {
-                    CodeStudioMcpRegistration.RequestSync();
                     try { OnServerCoordinationChanged?.Invoke(); }
                     catch (Exception e) { Debug.LogException(e); }
                 });
@@ -621,171 +479,10 @@ namespace Maicon.SceneAnalyzer.Editor
             BrokerProcessor = null;
         }
 
-        private static void EnsureEmbeddedCoordinator()
-        {
-            if (ServerCoordinator != null) return;
-            try
-            {
-                ServerCoordinationError = null;
-                ServerCoordinator = McpServerInstanceCoordinator.CreateForCurrentProject(
-                    UnityProjectRoot, SceneAnalyzerVersion.Current);
-                ServerCoordinator.StateChanged += OnServerCoordinatorStateChanged;
-                ServerCoordinator.CommandRequested += OnServerCoordinatorCommand;
-            }
-            catch (Exception e)
-            {
-                ServerCoordinationError = e.Message;
-                Debug.LogWarning($"[unity-mcp] MCP instance coordination unavailable: {e.Message}");
-            }
-        }
-
-        private static void DisposeEmbeddedCoordinator()
-        {
-            var coordinator = ServerCoordinator;
-            ServerCoordinator = null;
-            if (coordinator == null) return;
-            try { coordinator.Dispose(); }
-            catch (Exception e) { Debug.LogWarning($"[unity-mcp] failed to dispose MCP coordinator: {e.Message}"); }
-        }
-
-        private static bool TryStartServer(
-            int port,
-            string token,
-            string handoverRequestId,
-            bool markSticky,
-            string successState,
-            bool throwWhenUnavailable)
-        {
-            if (Server == null) throw new InvalidOperationException("MCP server is not initialized.");
-            if (Server.IsRunning) return true;
-
-            var reservation = ServerCoordinator == null
-                ? McpServerAcquireResult.Rejected(
-                    port,
-                    ServerCoordinationError ?? "MCP instance coordination is unavailable; refusing an uncoordinated port bind.")
-                : string.IsNullOrEmpty(handoverRequestId)
-                    ? ServerCoordinator.TryAcquire(port, token)
-                    : ServerCoordinator.TryAcquireHandover(handoverRequestId, token);
-
-            if (!reservation.Acquired)
-            {
-                if (throwWhenUnavailable) throw new InvalidOperationException(reservation.Message);
-                RecordEntry($"[server] {reservation.Message}");
-                return false;
-            }
-
-            Settings.Port = reservation.Port;
-            try
-            {
-                Server.Start(reservation.Port, token);
-                ServerCoordinator?.MarkRunning(reservation.LeaseId, handoverRequestId);
-                if (markSticky) Settings.ServerStickyRunning = true;
-                NotifyServerState(successState);
-                return true;
-            }
-            catch (Exception e)
-            {
-                try
-                {
-                    if (Server.IsRunning)
-                        Server.Stop("MCP coordination failed during startup");
-                }
-                catch (Exception stopError)
-                {
-                    Debug.LogWarning($"[unity-mcp] failed to stop partially started MCP server: {stopError.Message}");
-                }
-
-                try { ServerCoordinator?.FailStart(reservation.LeaseId, e.Message, handoverRequestId); }
-                catch (Exception coordinationError)
-                {
-                    Debug.LogWarning($"[unity-mcp] failed to roll back MCP lease: {coordinationError.Message}");
-                }
-                throw;
-            }
-        }
-
-        private static void OnServerCoordinatorStateChanged(McpServerInstanceSnapshot _)
-        {
-            try { OnServerCoordinationChanged?.Invoke(); }
-            catch (Exception e) { Debug.LogException(e); }
-        }
-
-        private static void OnServerCoordinatorCommand(McpServerCoordinationCommand command)
-        {
-            try
-            {
-                switch (command.Kind)
-                {
-                    case McpServerCoordinationCommandKind.ReleaseForHandover:
-                        Server?.Stop($"MCP server moving to {command.DestinationProjectName}; retry shortly");
-                        ServerCoordinator.ReleaseForHandover(command.RequestId);
-                        NotifyServerState($"moved to {command.DestinationProjectName} (port {command.Port})");
-                        break;
-
-                    case McpServerCoordinationCommandKind.AcquireAfterHandover:
-                        TryStartServer(
-                            command.Port,
-                            Settings.Token,
-                            command.RequestId,
-                            true,
-                            $"moved here from {command.SourceProjectName} at port {command.Port}",
-                            true);
-                        break;
-
-                    case McpServerCoordinationCommandKind.RestoreAfterFailedHandover:
-                        TryStartServer(
-                            command.Port,
-                            Settings.Token,
-                            null,
-                            true,
-                            $"restored at port {command.Port} after failed transfer",
-                            true);
-                        break;
-                }
-            }
-            catch (Exception e)
-            {
-                try { ServerCoordinator?.FailHandover(command.RequestId, e.Message); }
-                catch (Exception coordinationError)
-                {
-                    Debug.LogWarning($"[unity-mcp] failed to mark MCP transfer failure: {coordinationError.Message}");
-                }
-
-                if (command.Kind == McpServerCoordinationCommandKind.ReleaseForHandover
-                    && Server != null
-                    && !Server.IsRunning)
-                {
-                    try
-                    {
-                        TryStartServer(
-                            command.Port,
-                            Settings.Token,
-                            null,
-                            true,
-                            $"restored at port {command.Port} after failed transfer release",
-                            true);
-                    }
-                    catch (Exception restoreError)
-                    {
-                        Debug.LogError($"[unity-mcp] failed to restore MCP server after transfer release failure: {restoreError.Message}");
-                    }
-                }
-
-                RecordEntry($"[server] transfer failed: {e.Message}");
-                NotifyServerState($"transfer failed: {e.Message}");
-            }
-        }
-
         private static void OnAfterReload()
         {
-            if (Settings.TransportMode == McpTransportMode.Broker)
-            {
-                if (BrokerBridge != null)
-                    NotifyServerState("broker bridge reconnecting after assembly reload");
-                return;
-            }
-            if (Server != null && Server.IsRunning)
-                NotifyServerState($"back online at port {Settings.Port} after assembly reload");
+            if (BrokerBridge != null)
+                NotifyServerState("broker bridge reconnecting after assembly reload");
         }
 
         public static void RecordEntry(string text)
@@ -800,51 +497,22 @@ namespace Maicon.SceneAnalyzer.Editor
 
         private static void OnBeforeReload()
         {
-            try { ChatClient?.Dispose(); }
-            catch (Exception e) { Debug.LogException(e); }
-
-            if (Settings.TransportMode == McpTransportMode.Broker)
+            try
             {
-                try
-                {
-                    using (var timeout = new System.Threading.CancellationTokenSource(500))
-                        BrokerLifecycle?.BeforeReloadAsync(timeout.Token).GetAwaiter().GetResult();
-                }
-                catch (Exception e) { Debug.LogWarning("[unity-mcp] failed to notify broker before reload: " + e.Message); }
-                StopBrokerBridge();
-                return;
+                using (var timeout = new System.Threading.CancellationTokenSource(500))
+                    BrokerLifecycle?.BeforeReloadAsync(timeout.Token).GetAwaiter().GetResult();
             }
-
-            try { ServerCoordinator?.PrepareForReload(); }
-            catch (Exception e) { Debug.LogException(e); }
-            try { Server?.Stop("Unity assembly reload — server restarting; retry in ~5s"); }
-            catch (Exception e) { Debug.LogException(e); }
-            finally
-            {
-                try { ServerCoordinator?.Dispose(); }
-                catch (Exception e) { Debug.LogException(e); }
-            }
+            catch (Exception e) { Debug.LogWarning("[unity-mcp] failed to notify broker before reload: " + e.Message); }
+            StopBrokerBridge();
         }
 
         private static void OnQuitting()
         {
-            try { ChatClient?.Dispose(); }
-            catch (Exception e) { Debug.LogException(e); }
             StopBrokerBridge();
-
+            // A supervised broker outlives the Editor; only a legacy broker that this
+            // Editor launched itself is stopped here.
             try { ManagedBrokerProcess.StopOwnedByCurrentUnity(); }
             catch (Exception e) { Debug.LogWarning("[unity-mcp] failed to stop owned managed broker: " + e.Message); }
-
-            try { Server?.Stop("Unity Editor is quitting"); }
-            catch (Exception e) { Debug.LogException(e); }
-
-            try { ServerCoordinator?.ReleaseForShutdown(); }
-            catch (Exception e) { Debug.LogException(e); }
-            finally
-            {
-                try { ServerCoordinator?.Dispose(); }
-                catch (Exception e) { Debug.LogException(e); }
-            }
         }
     }
 }

@@ -17,9 +17,9 @@
     "authoring"
   ],
   "category": "Editor",
-  "documentationUrl": "https://github.com/Dellacurtais/unity-coder#readme",
-  "changelogUrl": "https://github.com/Dellacurtais/unity-coder/blob/master/CHANGELOG.md",
-  "licensesUrl": "https://github.com/Dellacurtais/unity-coder/blob/master/LICENSE.md",
+  "documentationUrl": "https://github.com/Dellacurtais/unity-mcp#readme",
+  "changelogUrl": "https://github.com/Dellacurtais/unity-mcp/blob/master/CHANGELOG.md",
+  "licensesUrl": "https://github.com/Dellacurtais/unity-mcp/blob/master/LICENSE.md",
   "dependencies": {
     "com.unity.modules.animation": "1.0.0",
     "com.unity.modules.imageconversion": "1.0.0",

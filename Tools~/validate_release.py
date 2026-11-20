@@ -57,10 +57,9 @@ def main() -> int:
         )
 
     settings = read("Editor/Settings.cs")
-    require("Embedded = 0" in settings, "Embedded must remain enum value zero", failures)
     require(
-        "EditorPrefs.GetInt(KTransportMode, (int)McpTransportMode.Embedded)" in settings,
-        "Embedded must remain the default transport",
+        "McpTransportMode" not in settings and not (ROOT / "Editor/Mcp/HttpMcpServer.cs").exists(),
+        "the broker is the only transport; the embedded HTTP server must not come back",
         failures,
     )
 
@@ -126,7 +125,7 @@ def main() -> int:
         return 1
     print(
         f"release contract OK: {PACKAGE_NAME}@{RELEASE_VERSION}; "
-        "Embedded default; dependencies pinned"
+        "broker transport; dependencies pinned"
     )
     return 0
 

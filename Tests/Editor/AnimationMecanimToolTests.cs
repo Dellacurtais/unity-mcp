@@ -114,7 +114,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 var descriptor = runtimeTool.Descriptor;
                 Assert.That(descriptor.Capabilities, Is.EqualTo(McpCapability.RuntimeCommand), runtimeTool.Name);
                 Assert.That(descriptor.EditorMode, Is.EqualTo(McpEditorMode.PlayModeOnly), runtimeTool.Name);
-                Assert.That(HttpMcpServer.RequiresLegacyMutationFinalization(descriptor), Is.False, runtimeTool.Name);
+                Assert.That(McpRequestProcessor.RequiresLegacyMutationFinalization(descriptor), Is.False, runtimeTool.Name);
             }
 
             var readStateDescriptor = ((IMcpTool)new ReadAnimatorStateTool()).Descriptor;

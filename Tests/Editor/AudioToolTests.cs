@@ -127,7 +127,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 Assert.That(descriptor.EditorMode, Is.EqualTo(McpEditorMode.PlayModeOnly), runtimeTool.Name);
                 Assert.That(descriptor.Capabilities, Is.EqualTo(McpCapability.RuntimeCommand), runtimeTool.Name);
                 Assert.That((descriptor.Capabilities & McpCapability.SceneWrite), Is.EqualTo(McpCapability.None), runtimeTool.Name);
-                Assert.That(HttpMcpServer.RequiresLegacyMutationFinalization(descriptor), Is.False, runtimeTool.Name);
+                Assert.That(McpRequestProcessor.RequiresLegacyMutationFinalization(descriptor), Is.False, runtimeTool.Name);
             }
 
             var listenerTool = new AddAudioListenerTool();

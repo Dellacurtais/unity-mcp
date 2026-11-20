@@ -160,9 +160,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 },
                 ["transport"] = new JObject
                 {
-                    ["mode"] = Settings.TransportMode.ToString(),
-                    ["embeddedRunning"] = Bootstrap.Server?.IsRunning ?? false,
-                    ["embeddedPort"] = Bootstrap.Server?.Port ?? Settings.Port,
+                    ["mode"] = "Broker",
                     ["brokerUrl"] = Settings.BrokerUrl,
                     ["bridgeConnected"] = bridge.IsConnected,
                     ["bridgeState"] = bridge.State,
@@ -177,12 +175,11 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 },
                 ["server"] = new JObject
                 {
-                    ["running"] = Bootstrap.Server?.IsRunning ?? false,
-                    ["version"] = HttpMcpServer.ServerVersion,
-                    ["port"] = Bootstrap.Server?.Port ?? Settings.Port,
+                    ["running"] = bridge.IsConnected,
+                    ["version"] = SceneAnalyzerVersion.Current,
                     ["protocolPreferred"] = McpProtocolNegotiator.Preferred,
                     ["protocolSupported"] = new JArray(McpProtocolNegotiator.Supported),
-                    ["inFlightRequests"] = Bootstrap.Server?.InFlightCount ?? 0,
+                    ["inFlightRequests"] = Bootstrap.InFlightRequests,
                     ["dispatcherQueueDepth"] = MainThreadDispatcher.PendingCount,
                     ["mainThreadLastTickUtc"] = MainThreadDispatcher.LastPumpUtc,
                     ["maxConcurrentRequests"] = Settings.MaxConcurrentRequests,
@@ -305,8 +302,6 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 else if (status == "version_unsupported")
                     Issue("warning", "OPTIONAL_PACKAGE_VERSION_UNSUPPORTED", (string)compatibility["id"], issues);
             }
-            Check(string.Equals(SceneAnalyzerVersion.Current, HttpMcpServer.ServerVersion, StringComparison.Ordinal),
-                "VERSION_MISMATCH", $"package={SceneAnalyzerVersion.Current}, server={HttpMcpServer.ServerVersion}", issues, ref checks);
             Check(McpProtocolNegotiator.Supported.Contains(McpProtocolNegotiator.Preferred),
                 "PROTOCOL_PREFERRED_UNSUPPORTED", McpProtocolNegotiator.Preferred, issues, ref checks);
 
