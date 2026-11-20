@@ -15,13 +15,13 @@ using FormattingNs = Newtonsoft.Json.Formatting;
 
 namespace Maicon.SceneAnalyzer.Editor.Chat
 {
-    /// HTTP client for the coder agent in D:\MCP. Posts a user message to
+    /// HTTP client for the CodeStudio coder agent. Posts a user message to
     /// `/api/coder/sessions/<id>/messages` and parses the SSE response stream
     /// line-by-line, dispatching events into a ChatSession on the editor main
     /// thread.
     ///
-    /// Reference: D:\MCP\src\apps\http-api\server.ts:345-348 (server),
-    /// D:\MCP\src\apps\dashboard\hooks\agent-stream\openStream.ts:28-172
+    /// Reference (CodeStudio sources): src/apps/http-api/server.ts (server),
+    /// src/apps/dashboard/hooks/agent-stream/openStream.ts
     /// (browser client mirrored here).
     public sealed partial class CoderApiClient
     {
@@ -373,7 +373,6 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
                 "For ScriptableObject data assets, the equivalent loop is " +
                 "`list_scriptable_object_types` → `describe_component_type` (works for SO too) → `create_scriptable_object` (with `initialFields`) → `set_so_property` for later edits. " +
                 "For arrays/lists on either Components or SOs, prefer `modify_array_property` over `set_property` with the raw `Array.size`/`Array.data[N]` paths.\n\n" +
-                "**External AI 3D policy**: never request or expose a Tripo API key and never invent a raw provider endpoint. Start with `ai3d_list_providers` and `ai3d_plan_workflow`; choose only a typed workflowKind (`generate_asset`, `retopology`, `segment_complete`, or `rig_animation`). Only call `ai3d_start_workflow` after the user has reviewed the exact planHash, per-node budget cap and text/image/mesh disclosures. Treat provider completion as a candidate, then use validate → preview (plus `screenshot_scene_view` for A/B proof) → accept/reject. Respect qualityReport blockers: route rigged segmentation to the local Smart Body Split tools, and route rig/animation candidates through `rig_inspect` plus `rig_validate_clips`. Never instantiate an accepted asset or save a scene unless the user separately requests it.\n\n" +
                 "**After creating a NEW `.cs` MonoBehaviour script** (via filesystem write), prefer `wait_for_compile_clean` over `refresh_assets` — it tells you in ONE call whether the compile succeeded AND surfaces any error with file:line. If you still call `refresh_assets`, follow up with `read_console severity=errors_only since=<seq before refresh>` to verify there were no compile errors before calling `add_component`.\n\n" +
                 "**Avoid redundant tool calls**: the dashboard refuses identical tool+args calls after a few retries (`Refused: was called with these exact arguments N times`). Strategy: keep findings as plain text in your reply (instead of recalling the same query), change one argument when you do need fresh data, and after any error change strategy rather than repeat. The Unity tool responses end with `[unity-call #N @ HH:mm:ss.fff]` so revalidation against an unchanged scene works — but only when the INPUT args differ.\n\n" +
                 "Skills are optional specialization, not a gate before Unity work. For routine scene inspection, authoring, save and validation, call the relevant `ext_unity__*` tools directly. Use `list_skill_namespaces`, `get_skills_list`, `get_skill_content` or `invoke_skill` only when a reusable specialist workflow materially helps; never repeat discovery or delay an explicit Editor operation just to invoke a skill.\n\n" +
@@ -439,7 +438,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             });
         }
 
-        /// Fire-and-forget for the UI: ensures a D:\MCP project exists matching
+        /// Fire-and-forget for the UI: ensures a CodeStudio project exists matching
         /// the Unity workdir (creates if needed) and stores its id in Settings.
         public void EnsureProject(string serverUrl, string token, string unityRoot)
         {
@@ -635,7 +634,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
         /// Quick connectivity probe: GETs /api/projects and reports the HTTP
         /// status to the chat transcript. Useful when "I sent a message and
         /// nothing happened" — tells you immediately if the URL/port/token are
-        /// pointing at a reachable D:\MCP instance.
+        /// pointing at a reachable CodeStudio instance.
         public void TestConnection(string serverUrl, string token)
         {
             if (!TryBeginForegroundOperation(out var operationCts))
@@ -688,7 +687,7 @@ namespace Maicon.SceneAnalyzer.Editor.Chat
             public static EnsureProjectResult Empty => new EnsureProjectResult(0, "", "");
         }
 
-        /// Resolves the D:\MCP `project_id` for the given Unity workdir. Lists
+        /// Resolves the CodeStudio `project_id` for the given Unity workdir. Lists
         /// `/api/projects`, returns the id of one whose `root_path` matches the
         /// Unity workdir (case-insensitive, separator-insensitive). Creates a
         /// new one via POST if no match.

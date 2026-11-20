@@ -100,7 +100,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     ["previewAvailable"] = previewTool != null || confirmationRequired,
                     ["previewTool"] = previewTool,
                     ["confirmationPreview"] = confirmationRequired,
-                    ["supportedUnity"] = "6000.1-6000.3",
+                    ["supportedUnity"] = "6000.1-6000.6",
                 };
                 if (compatibilityByModule.TryGetValue(module, out var moduleCompatibility))
                     row["packageCompatibility"] = moduleCompatibility.DeepClone();
@@ -156,7 +156,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                     ["name"] = SceneAnalyzerVersion.PackageName,
                     ["version"] = SceneAnalyzerVersion.Current,
                     ["unityVersion"] = Application.unityVersion,
-                    ["supportedUnity"] = "6000.1-6000.3",
+                    ["supportedUnity"] = "6000.1-6000.6",
                 },
                 ["transport"] = new JObject
                 {

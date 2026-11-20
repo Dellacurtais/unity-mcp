@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.NavMesh.Tools;
@@ -91,7 +92,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh.Tests
             var invalidHost = new GameObject("InvalidSurface");
             var invalid = NavMeshSurfaceAuthor.AddSurface(new JObject
             {
-                ["instanceId"] = invalidHost.GetInstanceID(),
+                ["instanceId"] = invalidHost.GetMcpInstanceId(),
                 ["agentTypeID"] = 999999,
                 ["layerMask"] = "__MissingNavMeshLayer__",
                 ["defaultArea"] = "__MissingNavMeshArea__",
@@ -104,7 +105,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh.Tests
             var group = Undo.GetCurrentGroup();
             var result = new AddNavMeshSurfaceTool().Execute(new JObject
             {
-                ["instanceId"] = host.GetInstanceID(),
+                ["instanceId"] = host.GetMcpInstanceId(),
                 ["agentTypeID"] = 0,
                 ["collectObjects"] = "Volume",
                 ["useGeometry"] = "PhysicsColliders",
@@ -146,7 +147,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh.Tests
             var modifierHost = new GameObject("ModifierHost");
             var invalidModifier = NavMeshSurfaceAuthor.AddModifier(new JObject
             {
-                ["instanceId"] = modifierHost.GetInstanceID(),
+                ["instanceId"] = modifierHost.GetMcpInstanceId(),
                 ["volume"] = true,
                 ["area"] = "__MissingNavMeshArea__",
                 ["size"] = Vec(-1f, 2f, 3f),
@@ -158,7 +159,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh.Tests
             var endpoint = new GameObject("Endpoint");
             var invalidLink = NavMeshSurfaceAuthor.AddLink(new JObject
             {
-                ["instanceId"] = linkHost.GetInstanceID(),
+                ["instanceId"] = linkHost.GetMcpInstanceId(),
                 ["agentTypeID"] = 999999,
                 ["area"] = "__MissingNavMeshArea__",
                 ["width"] = -1f,
@@ -170,9 +171,9 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh.Tests
             var group = Undo.GetCurrentGroup();
             var result = new AddNavMeshLinkTool().Execute(new JObject
             {
-                ["instanceId"] = linkHost.GetInstanceID(),
+                ["instanceId"] = linkHost.GetMcpInstanceId(),
                 ["startPoint"] = Vec(0f, 0f, -2f),
-                ["endInstanceId"] = endpoint.GetInstanceID(),
+                ["endInstanceId"] = endpoint.GetMcpInstanceId(),
                 ["width"] = 1.5f,
                 ["agentTypeID"] = 0,
                 ["area"] = "Jump",
@@ -211,22 +212,22 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh.Tests
 
             Assert.That(NavMeshSurfaceAuthor.AddSurface(new JObject
             {
-                ["instanceId"] = prefabAsset.GetInstanceID(),
+                ["instanceId"] = prefabAsset.GetMcpInstanceId(),
                 ["collectObjects"] = "Children",
             }).Ok, Is.False);
             Assert.That(NavMeshSurfaceAuthor.AddModifier(new JObject
             {
-                ["instanceId"] = prefabAsset.GetInstanceID(),
+                ["instanceId"] = prefabAsset.GetMcpInstanceId(),
                 ["area"] = "Walkable",
             }).Ok, Is.False);
             Assert.That(NavMeshSurfaceAuthor.AddLink(new JObject
             {
-                ["instanceId"] = prefabAsset.GetInstanceID(),
+                ["instanceId"] = prefabAsset.GetMcpInstanceId(),
                 ["area"] = "Jump",
             }).Ok, Is.False);
             Assert.That(NavMeshSurfaceAuthor.BakeSurface(new JObject
             {
-                ["surfaceInstanceId"] = prefabAsset.GetInstanceID(),
+                ["surfaceInstanceId"] = prefabAsset.GetMcpInstanceId(),
             }).Ok, Is.False);
 
             AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
@@ -267,7 +268,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh.Tests
 
             var first = new BakeNavMeshSurfaceTool().Execute(new JObject
             {
-                ["surfaceInstanceId"] = host.GetInstanceID(),
+                ["surfaceInstanceId"] = host.GetMcpInstanceId(),
             });
             var firstPath = (string)first.Json?["surfaces"]?[0]?["assetPath"];
             string secondPath = null;
@@ -280,7 +281,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh.Tests
 
                 var second = new BakeNavMeshSurfaceTool().Execute(new JObject
                 {
-                    ["surfaceInstanceId"] = host.GetInstanceID(),
+                    ["surfaceInstanceId"] = host.GetMcpInstanceId(),
                 });
                 secondPath = (string)second.Json?["surfaces"]?[0]?["assetPath"];
 

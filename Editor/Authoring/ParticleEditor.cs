@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -19,7 +20,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (string.IsNullOrEmpty(moduleName) || fields == null)
                 return OpResult.Fail("module + fields required");
 
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             var ps = go.GetComponent<ParticleSystem>();
             if (ps == null) return OpResult.Fail("no ParticleSystem on this GameObject");
@@ -57,7 +58,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var simulatedTime = time > 0f ? time : 1f;
             var withChildren = (bool?)args["withChildren"] ?? true;
 
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             var ps = go.GetComponent<ParticleSystem>();
             if (ps == null) return OpResult.Fail("no ParticleSystem on this GameObject");

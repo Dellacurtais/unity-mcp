@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core;
 using Newtonsoft.Json.Linq;
@@ -72,7 +73,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
         {
             var go = MeshResolver.ResolveGameObject(args, out var targetError);
             if (go == null) return ToolResult.Error("NOT_FOUND", targetError);
-            int instanceId = go.GetInstanceID();
+            int instanceId = go.GetMcpInstanceId();
 
             var mesh = MeshResolver.ResolveMesh(go);
             if (mesh == null) return ToolResult.Error("NOT_FOUND", $"GameObject {instanceId} has no mesh");

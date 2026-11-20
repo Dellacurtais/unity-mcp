@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 
@@ -25,7 +26,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 gameObject.transform.localPosition = position;
                 gameObject.transform.localRotation = rotation;
                 mutation.Complete();
-                return OpResult.Success(gameObject.GetInstanceID(), $"created empty '{name}'");
+                return OpResult.Success(gameObject.GetMcpInstanceId(), $"created empty '{name}'");
             }
         }
     }

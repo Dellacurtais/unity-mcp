@@ -106,17 +106,17 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             Assert.That(ToolSchemaValidator.ValidateArguments(new JObject { ["sceneName"] = "" }, tool.InputSchema, out _), Is.False);
             Assert.That(ToolSchemaValidator.ValidateArguments(new JObject { ["sceneHandle"] = 0 }, tool.InputSchema, out _), Is.False);
-            Assert.That(ToolSchemaValidator.ValidateArguments(new JObject { ["sceneHandle"] = (int)active.handle }, tool.InputSchema, out _), Is.True);
+            Assert.That(ToolSchemaValidator.ValidateArguments(new JObject { ["sceneHandle"] = active.GetMcpSceneHandle() }, tool.InputSchema, out _), Is.True);
             Assert.That(ToolSchemaValidator.ValidateArguments(new JObject
             {
                 ["sceneName"] = active.name,
-                ["sceneHandle"] = (int)active.handle,
+                ["sceneHandle"] = active.GetMcpSceneHandle(),
             }, tool.InputSchema, out _), Is.False);
             Assert.That(tool.Execute(new JObject { ["sceneName"] = "" }).IsError, Is.True);
             Assert.That(tool.Execute(new JObject { ["sceneGuid"] = "not-a-guid" }).IsError, Is.True);
-            var alreadyActive = tool.Execute(new JObject { ["sceneHandle"] = (int)active.handle });
+            var alreadyActive = tool.Execute(new JObject { ["sceneHandle"] = active.GetMcpSceneHandle() });
             Assert.That(alreadyActive.IsError, Is.False, alreadyActive.Text);
-            Assert.That((int)alreadyActive.Json?["scene"]?["handle"], Is.EqualTo((int)active.handle));
+            Assert.That((int)alreadyActive.Json?["scene"]?["handle"], Is.EqualTo(active.GetMcpSceneHandle()));
         }
 
         [Test]
@@ -199,7 +199,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That((bool)result.Json["truncated"], Is.True);
             var first = (JObject)result.Json["nodes"][0];
             Assert.That(first.Properties().Select(property => property.Name), Is.EquivalentTo(new[] { "instanceId", "name", "parentId", "target" }));
-            Assert.That((int)first["target"]["instanceId"], Is.EqualTo(root.GetInstanceID()));
+            Assert.That((int)first["target"]["instanceId"], Is.EqualTo(root.GetMcpInstanceId()));
         }
 
         [Test]
@@ -280,12 +280,12 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var result = new ReadComponentTool().Execute(new JObject
             {
-                ["instanceId"] = camera.GetInstanceID(),
+                ["instanceId"] = camera.GetMcpInstanceId(),
             });
 
             Assert.That(result.IsError, Is.False, result.Text);
-            Assert.That((int)result.Json?["instanceId"], Is.EqualTo(camera.GetInstanceID()), "legacy instanceId remains available");
-            Assert.That((int)result.Json?["componentInstanceId"], Is.EqualTo(camera.GetInstanceID()));
+            Assert.That((int)result.Json?["instanceId"], Is.EqualTo(camera.GetMcpInstanceId()), "legacy instanceId remains available");
+            Assert.That((int)result.Json?["componentInstanceId"], Is.EqualTo(camera.GetMcpInstanceId()));
             Assert.That((JArray)result.Json?["components"], Has.Count.EqualTo(1));
             Assert.That((string)result.Json?["components"]?[0]?["componentType"], Is.EqualTo(typeof(Camera).FullName));
         }
@@ -321,7 +321,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(valid.IsError, Is.False, valid.Text);
             Assert.That(valid.Json, Is.Not.Null, "query_scene must return machine-readable matches");
             Assert.That((int)valid.Json?["matchCount"], Is.EqualTo(1));
-            Assert.That((int)valid.Json?["matches"]?[0]?["instanceId"], Is.EqualTo(go.GetInstanceID()));
+            Assert.That((int)valid.Json?["matches"]?[0]?["instanceId"], Is.EqualTo(go.GetMcpInstanceId()));
             Assert.That(unknownLayer.IsError, Is.True, "unknown layer must not silently remove the layer filter");
             Assert.That(unknownTag.IsError, Is.True, "unknown tag must fail before CompareTag-style access or an unbounded query");
             Assert.That(negativeRadius.IsError, Is.True, "negative radius must not silently turn into an unbounded query");
@@ -374,7 +374,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var active = SceneManager.GetActiveScene();
             var result = new CloseSceneTool().Execute(new JObject
             {
-                ["sceneHandle"] = (int)active.handle,
+                ["sceneHandle"] = active.GetMcpSceneHandle(),
                 ["discardUnsaved"] = true,
             });
 
@@ -393,7 +393,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             EditorSceneManager.MarkSceneDirty(scene);
             var tool = new CloseSceneTool();
 
-            var rejected = tool.Execute(new JObject { ["sceneHandle"] = (int)scene.handle });
+            var rejected = tool.Execute(new JObject { ["sceneHandle"] = scene.GetMcpSceneHandle() });
             Assert.That(rejected.IsError, Is.True);
             Assert.That(scene.IsValid() && scene.isLoaded, Is.True);
 
@@ -401,7 +401,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 Assert.That(SceneManager.SetActiveScene(previousActive), Is.True);
             var discarded = tool.Execute(new JObject
             {
-                ["sceneHandle"] = (int)scene.handle,
+                ["sceneHandle"] = scene.GetMcpSceneHandle(),
                 ["discardUnsaved"] = true,
             });
             Assert.That(discarded.IsError, Is.False, discarded.Text);
@@ -415,19 +415,19 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var active = SceneManager.GetActiveScene();
             Assert.That(ToolSchemaValidator.ValidateArguments(new JObject
             {
-                ["sceneHandle"] = (int)active.handle,
+                ["sceneHandle"] = active.GetMcpSceneHandle(),
                 ["saveAsCopy"] = true,
             }, tool.InputSchema, out _), Is.False);
             Assert.That(ToolSchemaValidator.ValidateArguments(new JObject
             {
-                ["sceneHandle"] = (int)active.handle,
+                ["sceneHandle"] = active.GetMcpSceneHandle(),
                 ["destinationPath"] = Root + "/Copy.unity",
                 ["saveAsCopy"] = true,
             }, tool.InputSchema, out _), Is.True);
 
             var invalid = tool.Execute(new JObject
             {
-                ["sceneHandle"] = (int)active.handle,
+                ["sceneHandle"] = active.GetMcpSceneHandle(),
                 ["destinationPath"] = Root + "/ Bad/Copy.unity",
                 ["saveAsCopy"] = true,
             });
@@ -451,7 +451,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 result = new SaveSceneTool().Execute(new JObject
                 {
-                    ["sceneHandle"] = (int)active.handle,
+                    ["sceneHandle"] = active.GetMcpSceneHandle(),
                     ["destinationPath"] = destination,
                     ["saveAsCopy"] = true,
                 });
@@ -466,6 +466,29 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(active.isDirty, Is.True, "Unity SaveScene(saveAsCopy:true) must not clear the dirty marker");
             Assert.That(AssetDatabase.LoadAssetAtPath<SceneAsset>(destination), Is.Not.Null);
             Assert.That((bool)result.Json?["saveAsCopy"], Is.True);
+        }
+
+        [Test]
+        public void SaveScene_AsCopyAllowsPreviouslyDeletedDestination()
+        {
+            var active = SceneManager.GetActiveScene();
+            var sourcePath = active.path;
+            var destination = Root + "/DeletedCopy.unity";
+            var arguments = new JObject
+            {
+                ["sceneHandle"] = active.GetMcpSceneHandle(),
+                ["destinationPath"] = destination,
+                ["saveAsCopy"] = true,
+            };
+            var tool = new SaveSceneTool();
+            var first = tool.Execute(arguments);
+            Assert.That(first.IsError, Is.False, first.Text);
+            Assert.That(AssetDatabase.DeleteAsset(destination), Is.True);
+            Assert.That(AssetDatabase.AssetPathToGUID(destination, AssetPathToGUIDOptions.OnlyExistingAssets), Is.Empty);
+            var second = tool.Execute(arguments);
+            Assert.That(second.IsError, Is.False, second.Text);
+            Assert.That(active.path, Is.EqualTo(sourcePath));
+            Assert.That(AssetDatabase.LoadAssetAtPath<SceneAsset>(destination), Is.Not.Null);
         }
 
         [Test]
@@ -486,7 +509,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 result = new SaveSceneTool().Execute(new JObject
                 {
-                    ["sceneHandle"] = (int)active.handle,
+                    ["sceneHandle"] = active.GetMcpSceneHandle(),
                     ["destinationPath"] = destination,
                 });
             }
@@ -526,9 +549,9 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(result.IsError, Is.False, result.Text);
             Assert.That(result.Json, Is.Not.Null, "get_active_cameras must return machine-readable data");
             Assert.That((int)result.Json?["count"], Is.EqualTo(1));
-            Assert.That((int)result.Json?["mainCameraInstanceId"], Is.EqualTo(enabled.GetInstanceID()));
+            Assert.That((int)result.Json?["mainCameraInstanceId"], Is.EqualTo(enabled.GetMcpInstanceId()));
             Assert.That((JArray)result.Json?["cameras"], Has.Count.EqualTo(1));
-            Assert.That((int)result.Json?["cameras"]?[0]?["sceneHandle"], Is.EqualTo((int)SceneManager.GetActiveScene().handle));
+            Assert.That((int)result.Json?["cameras"]?[0]?["sceneHandle"], Is.EqualTo(SceneManager.GetActiveScene().GetMcpSceneHandle()));
         }
 
         private static IMcpTool CreatePlayTool(string typeName)

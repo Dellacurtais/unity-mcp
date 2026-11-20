@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
@@ -108,7 +109,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                     }
                     gameObjectName = go.name;
                     meshName = mesh.name;
-                    instanceId = go.GetInstanceID();
+                    instanceId = go.GetMcpInstanceId();
                     meshObj = MeshSidecarClient.MeshToObj(mesh, ltw);
                 }, cancellationToken);
             }

@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.IO;
 using System.Linq;
@@ -182,7 +183,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 ["position"] = new JArray(1f, 2f, 3f),
             });
             Assert.That(created.IsError, Is.False, created.Text);
-            var go = EditorUtility.InstanceIDToObject((int)created.Json["instanceId"]) as GameObject;
+            var go = UnityObjectIds.Resolve((int)created.Json["instanceId"]) as GameObject;
             Assert.That(go, Is.Not.Null);
             var source = go.GetComponent<AudioSource>();
             Assert.That(source.clip, Is.SameAs(AssetDatabase.LoadAssetAtPath<AudioClip>(ClipPath)));
@@ -211,7 +212,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var create3D = new CreateAudioSource3DTool();
             var rejected = create3D.Execute(new JObject
             {
-                ["instanceId"] = go.GetInstanceID(),
+                ["instanceId"] = go.GetMcpInstanceId(),
                 ["clipGuidOrPath"] = Root + "/Missing.wav",
                 ["volume"] = 0.9f,
                 ["minDistance"] = 4f,
@@ -225,7 +226,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var configured = create3D.Execute(new JObject
             {
-                ["instanceId"] = go.GetInstanceID(),
+                ["instanceId"] = go.GetMcpInstanceId(),
                 ["clipGuidOrPath"] = ClipPath,
                 ["volume"] = 0.6f,
                 ["pitch"] = 1.1f,
@@ -252,7 +253,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var setProps = new SetAudioSourcePropsTool();
             var badPatch = setProps.Execute(new JObject
             {
-                ["instanceId"] = go.GetInstanceID(),
+                ["instanceId"] = go.GetMcpInstanceId(),
                 ["volume"] = 0.8f,
                 ["clip"] = Root + "/Missing.wav",
             });
@@ -262,7 +263,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var badDistances = setProps.Execute(new JObject
             {
-                ["instanceId"] = go.GetInstanceID(),
+                ["instanceId"] = go.GetMcpInstanceId(),
                 ["minDistance"] = 20f,
                 ["maxDistance"] = 10f,
             });
@@ -272,7 +273,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var changed = setProps.Execute(new JObject
             {
-                ["instanceId"] = go.GetInstanceID(),
+                ["instanceId"] = go.GetMcpInstanceId(),
                 ["volume"] = 0.7f,
                 ["pitch"] = -1.5f,
                 ["clip"] = ClipPath,
@@ -410,7 +411,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var target = new GameObject("ListenerTarget");
             var added = new AddAudioListenerTool().Execute(new JObject
             {
-                ["instanceId"] = target.GetInstanceID(),
+                ["instanceId"] = target.GetMcpInstanceId(),
                 ["removeOthers"] = true,
             });
             Assert.That(added.IsError, Is.False, added.Text);
@@ -450,7 +451,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var assign = new AssignToMixerGroupTool();
             var ambiguous = assign.Execute(new JObject
             {
-                ["instanceId"] = go.GetInstanceID(),
+                ["instanceId"] = go.GetMcpInstanceId(),
                 ["mixerGroup"] = "Master",
             });
             Assert.That(ambiguous.IsError, Is.True);
@@ -458,7 +459,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var routed = assign.Execute(new JObject
             {
-                ["instanceId"] = go.GetInstanceID(),
+                ["instanceId"] = go.GetMcpInstanceId(),
                 ["mixerGroup"] = "Master",
                 ["mixerGuidOrPath"] = MixerAPath,
             });
@@ -478,7 +479,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var play = new PlayAudioSourceTool().Execute(new JObject
             {
-                ["instanceId"] = go.GetInstanceID(),
+                ["instanceId"] = go.GetMcpInstanceId(),
                 ["action"] = "play",
             });
             Assert.That(play.IsError, Is.True);
@@ -507,7 +508,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         private static int Count<T>() where T : UnityEngine.Object
-            => UnityEngine.Object.FindObjectsByType<T>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length;
+            => UnityObjectIds.FindAll<T>(FindObjectsInactive.Include).Length;
 
         private static AudioMixer CreateMixer(string path)
         {

@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -180,7 +181,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (t.Type == JTokenType.Integer)
             {
                 var id = (int)t;
-                return EditorUtility.InstanceIDToObject(id) as GameObject;
+                return UnityObjectIds.Resolve(id) as GameObject;
             }
             // not supporting path lookup for now — clients should pass instanceId
             return null;

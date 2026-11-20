@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -105,7 +106,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
 
             if (includeComponents)
             {
-                var go = EditorUtility.InstanceIDToObject(instanceId) as GameObject;
+                var go = UnityObjectIds.Resolve(instanceId) as GameObject;
                 var comps = new JArray();
                 if (go != null)
                 {
@@ -116,7 +117,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
                         else comps.Add(new JObject
                         {
                             ["componentType"] = c.GetType().FullName,
-                            ["instanceId"] = c.GetInstanceID(),
+                            ["instanceId"] = c.GetMcpInstanceId(),
                             ["enabled"] = (c is Behaviour b) ? b.enabled : (JToken)true,
                         });
                     }

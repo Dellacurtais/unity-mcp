@@ -55,7 +55,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
 
             var target = AssetDatabase.LoadMainAssetAtPath(path);
             if (target == null) return ToolResult.Error("NOT_FOUND", $"failed to load: {path}");
-            int targetId = target.GetInstanceID();
+
 
             var snapshot = Bootstrap.Snapshot;
             snapshot.RefreshIfNeeded();
@@ -67,7 +67,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
             foreach (var info in snapshot.All())
             {
                 if (found >= probeLimit) break;
-                var go = EditorUtility.InstanceIDToObject(info.InstanceID) as GameObject;
+                var go = UnityObjectIds.Resolve(info.InstanceID) as GameObject;
                 if (go == null) continue;
 
                 foreach (var c in go.GetComponents<Component>())
@@ -80,7 +80,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Discover
                     {
                         enter = false;
                         if (sp.propertyType != SerializedPropertyType.ObjectReference) continue;
-                        if (sp.objectReferenceInstanceIDValue != targetId) continue;
+                        if (!UnityObjectIds.References(sp, target)) continue;
                         refs.Add(new JObject
                         {
                             ["instanceId"] = info.InstanceID,

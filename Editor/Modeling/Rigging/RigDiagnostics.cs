@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -134,7 +135,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
             if (renderers.Length == 0)
             {
                 var selectedTransform = selected.transform;
-                var match = UnityEngine.Object.FindObjectsByType<SkinnedMeshRenderer>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+                var match = UnityObjectIds.FindAll<SkinnedMeshRenderer>(FindObjectsInactive.Include)
                     .FirstOrDefault(value => value != null && value.sharedMesh != null && value.gameObject.scene.IsValid()
                         && (value.rootBone == selectedTransform || (value.bones ?? Array.Empty<Transform>()).Contains(selectedTransform)));
                 if (match != null)
@@ -151,7 +152,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
             {
                 var bones = renderers[rendererIndex].bones ?? Array.Empty<Transform>();
                 for (int boneIndex = 0; boneIndex < bones.Length; boneIndex++)
-                    if (bones[boneIndex] != null && seen.Add(bones[boneIndex].GetInstanceID())) uniqueBones.Add(bones[boneIndex]);
+                    if (bones[boneIndex] != null && seen.Add(bones[boneIndex].GetMcpInstanceId())) uniqueBones.Add(bones[boneIndex]);
             }
 
             string rigType = animator != null && animator.avatar != null && animator.avatar.isHuman
@@ -199,9 +200,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
             if (animator != null) return animator.transform;
             if (renderer.rootBone == null) return renderer.transform;
             var ancestors = new HashSet<int>();
-            for (var value = renderer.transform; value != null; value = value.parent) ancestors.Add(value.GetInstanceID());
+            for (var value = renderer.transform; value != null; value = value.parent) ancestors.Add(value.GetMcpInstanceId());
             for (var value = renderer.rootBone; value != null; value = value.parent)
-                if (ancestors.Contains(value.GetInstanceID())) return value;
+                if (ancestors.Contains(value.GetMcpInstanceId())) return value;
             return renderer.transform;
         }
 
@@ -501,7 +502,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
                         continue;
                     }
                     string path = RigTargetResolver.RelativePath(bone, context.Root.transform);
-                    if (!seen.Add(bone.GetInstanceID()))
+                    if (!seen.Add(bone.GetMcpInstanceId()))
                         Info(report, "SHARED_BONE", "Bone é compartilhado por mais de um renderer ou slot.", path);
                     if (path.StartsWith("<outside>", StringComparison.Ordinal))
                         Error(report, "BONE_OUTSIDE_ROOT", "Bone está fora da hierarquia do personagem.", path);

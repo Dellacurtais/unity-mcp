@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -18,7 +19,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult Create3DSource(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var existing = id == 0 ? null : EditorUtility.InstanceIDToObject(id) as GameObject;
+            var existing = id == 0 ? null : UnityObjectIds.Resolve(id) as GameObject;
             if (id != 0 && existing == null)
                 return OpResult.Fail($"GameObject not found: instanceId={id}");
 
@@ -98,11 +99,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 if (mixerGroup != null) source.outputAudioMixerGroup = mixerGroup;
 
                 mutation.Complete();
-                var result = OpResult.Success(go.GetInstanceID(),
+                var result = OpResult.Success(go.GetMcpInstanceId(),
                     $"{(creating ? "created" : "configured")} 3D AudioSource on '{go.name}' min={source.minDistance} max={source.maxDistance} rolloff={source.rolloffMode}");
                 result.Data = new JObject
                 {
-                    ["instanceId"] = go.GetInstanceID(),
+                    ["instanceId"] = go.GetMcpInstanceId(),
                     ["created"] = creating,
                     ["sourceState"] = SourceState(source),
                     ["clip"] = ClipReference(source.clip),
@@ -115,7 +116,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult SetSourceProps(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             var source = go.GetComponent<AudioSource>();
             if (source == null) return OpResult.Fail("no AudioSource on GameObject");
@@ -229,7 +230,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 return OpResult.Fail("PLAY_MODE_REQUIRED: play_audio_source is only available in Play Mode");
 
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             var source = go.GetComponent<AudioSource>();
             if (source == null) return OpResult.Fail("no AudioSource on GameObject");
@@ -327,7 +328,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     snapshots.Add(new JObject
                     {
                         ["name"] = snapshot.name,
-                        ["instanceId"] = snapshot.GetInstanceID(),
+                        ["instanceId"] = snapshot.GetMcpInstanceId(),
                     });
                 }
             }
@@ -355,7 +356,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             mixerJson["groups"] = groups;
             mixerJson["snapshots"] = snapshots;
             mixerJson["exposedParameters"] = exposedParameters;
-            var result = OpResult.Success(mixer.GetInstanceID(),
+            var result = OpResult.Success(mixer.GetMcpInstanceId(),
                 $"AudioMixer '{mixer.name}': {groups.Count} group(s), {snapshots.Count} snapshot(s), {exposedParameters.Count} exposed parameter(s)");
             result.Data = mixerJson;
             return result;
@@ -364,7 +365,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult AssignToMixerGroup(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             var source = go.GetComponent<AudioSource>();
             if (source == null) return OpResult.Fail("no AudioSource on GameObject");
@@ -405,7 +406,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (!mixer.SetFloat(parameterName, value))
                 return OpResult.Fail($"parameter '{parameterName}' is not exposed on '{mixer.name}' or cannot be set while snapshots are being edited");
 
-            var result = OpResult.Success(mixer.GetInstanceID(), $"{mixer.name}.{parameterName} = {value:F3}");
+            var result = OpResult.Success(mixer.GetMcpInstanceId(), $"{mixer.name}.{parameterName} = {value:F3}");
             result.Data = new JObject
             {
                 ["mixer"] = MixerReference(mixer),
@@ -430,13 +431,13 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 return OpResult.Fail(transitionError);
 
             snapshot.TransitionTo(transition);
-            var result = OpResult.Success(mixer.GetInstanceID(),
+            var result = OpResult.Success(mixer.GetMcpInstanceId(),
                 $"transitioning '{mixer.name}' to snapshot '{snapshotName}' over {transition:F2}s");
             result.Data = new JObject
             {
                 ["mixer"] = MixerReference(mixer),
                 ["snapshot"] = snapshotName,
-                ["snapshotInstanceId"] = snapshot.GetInstanceID(),
+                ["snapshotInstanceId"] = snapshot.GetMcpInstanceId(),
                 ["transitionSeconds"] = transition,
             };
             return result;
@@ -460,7 +461,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (string.IsNullOrEmpty(groupRef) && args["mixerGuidOrPath"] != null)
                 return OpResult.Fail("mixerGroup is required when mixerGuidOrPath is supplied");
 
-            var existingObjects = Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            var existingObjects = UnityObjectIds.FindAll<GameObject>(FindObjectsInactive.Include)
                 .Where(candidate => candidate.scene.IsValid() && candidate.name == BgmGameObjectName)
                 .ToArray();
             if (existingObjects.Length > 1)
@@ -500,11 +501,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 source.outputAudioMixerGroup = mixerGroup;
                 mutation.Complete();
 
-                var result = OpResult.Success(gameObject.GetInstanceID(),
+                var result = OpResult.Success(gameObject.GetMcpInstanceId(),
                     $"BGM '{clip.name}' configured on {BgmGameObjectName} (volume={source.volume}, mixer={(mixerGroup != null ? mixerGroup.name : "none")})");
                 result.Data = new JObject
                 {
-                    ["instanceId"] = gameObject.GetInstanceID(),
+                    ["instanceId"] = gameObject.GetMcpInstanceId(),
                     ["created"] = existing == null,
                     ["clip"] = ClipReference(clip),
                     ["mixer"] = MixerReference(mixerGroup != null ? mixerGroup.audioMixer : null),
@@ -542,11 +543,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 zone.reverbPreset = preset;
                 mutation.Complete();
 
-                var result = OpResult.Success(gameObject.GetInstanceID(),
+                var result = OpResult.Success(gameObject.GetMcpInstanceId(),
                     $"reverb zone '{name}' preset={zone.reverbPreset} min={zone.minDistance} max={zone.maxDistance}");
                 result.Data = new JObject
                 {
-                    ["instanceId"] = gameObject.GetInstanceID(),
+                    ["instanceId"] = gameObject.GetMcpInstanceId(),
                     ["name"] = gameObject.name,
                     ["preset"] = zone.reverbPreset.ToString(),
                     ["minDistance"] = zone.minDistance,
@@ -560,12 +561,12 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult AddListener(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var gameObject = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var gameObject = UnityObjectIds.Resolve(id) as GameObject;
             if (gameObject == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
 
             var removeOthers = (bool?)args["removeOthers"] ?? true;
             var others = removeOthers
-                ? Object.FindObjectsByType<AudioListener>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+                ? UnityObjectIds.FindAll<AudioListener>(FindObjectsInactive.Include)
                     .Where(listener => listener.gameObject != gameObject)
                     .ToArray()
                 : Array.Empty<AudioListener>();
@@ -584,7 +585,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 result.Data = new JObject
                 {
                     ["instanceId"] = id,
-                    ["listenerInstanceId"] = listener.GetInstanceID(),
+                    ["listenerInstanceId"] = listener.GetMcpInstanceId(),
                     ["created"] = created,
                     ["removedCount"] = others.Length,
                     ["activeInHierarchy"] = gameObject.activeInHierarchy,
@@ -596,13 +597,13 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         public static OpResult InspectAudioSetup(JObject args)
         {
-            var listeners = Object.FindObjectsByType<AudioListener>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            var listeners = UnityObjectIds.FindAll<AudioListener>(FindObjectsInactive.Include)
                 .OrderBy(listener => HierarchyPath(listener.gameObject), StringComparer.Ordinal)
                 .ToArray();
-            var sources = Object.FindObjectsByType<AudioSource>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            var sources = UnityObjectIds.FindAll<AudioSource>(FindObjectsInactive.Include)
                 .OrderBy(source => HierarchyPath(source.gameObject), StringComparer.Ordinal)
                 .ToArray();
-            var zones = Object.FindObjectsByType<AudioReverbZone>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            var zones = UnityObjectIds.FindAll<AudioReverbZone>(FindObjectsInactive.Include)
                 .OrderBy(zone => HierarchyPath(zone.gameObject), StringComparer.Ordinal)
                 .ToArray();
 
@@ -611,8 +612,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             {
                 listenerItems.Add(new JObject
                 {
-                    ["instanceId"] = listener.GetInstanceID(),
-                    ["gameObjectInstanceId"] = listener.gameObject.GetInstanceID(),
+                    ["instanceId"] = listener.GetMcpInstanceId(),
+                    ["gameObjectInstanceId"] = listener.gameObject.GetMcpInstanceId(),
                     ["name"] = listener.gameObject.name,
                     ["hierarchyPath"] = HierarchyPath(listener.gameObject),
                     ["activeInHierarchy"] = listener.gameObject.activeInHierarchy,
@@ -635,8 +636,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             {
                 zoneItems.Add(new JObject
                 {
-                    ["instanceId"] = zone.GetInstanceID(),
-                    ["gameObjectInstanceId"] = zone.gameObject.GetInstanceID(),
+                    ["instanceId"] = zone.GetMcpInstanceId(),
+                    ["gameObjectInstanceId"] = zone.gameObject.GetMcpInstanceId(),
                     ["name"] = zone.gameObject.name,
                     ["hierarchyPath"] = HierarchyPath(zone.gameObject),
                     ["activeInHierarchy"] = zone.gameObject.activeInHierarchy,
@@ -664,7 +665,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var byMixer = new JArray();
             foreach (var bucket in sources
                 .GroupBy(source => source.outputAudioMixerGroup != null
-                    ? source.outputAudioMixerGroup.GetInstanceID()
+                    ? source.outputAudioMixerGroup.GetMcpInstanceId()
                     : 0)
                 .Select(grouping => new
                 {
@@ -674,7 +675,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 .OrderByDescending(bucket => bucket.Count)
                 .ThenBy(bucket => bucket.Group != null ? AssetDatabase.GetAssetPath(bucket.Group.audioMixer) : string.Empty, StringComparer.Ordinal)
                 .ThenBy(bucket => bucket.Group != null ? bucket.Group.name : string.Empty, StringComparer.Ordinal)
-                .ThenBy(bucket => bucket.Group != null ? bucket.Group.GetInstanceID() : 0))
+                .ThenBy(bucket => bucket.Group != null ? bucket.Group.GetMcpInstanceId() : 0))
             {
                 var groupLabel = bucket.Group != null
                     ? bucket.Group.audioMixer.name + "/" + bucket.Group.name
@@ -731,7 +732,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (hasInstanceId)
             {
                 var id = (int)args["mixerInstanceId"];
-                var byId = EditorUtility.InstanceIDToObject(id) as AudioMixer;
+                var byId = UnityObjectIds.Resolve(id) as AudioMixer;
                 if (byId == null) error = $"mixer not found: instanceId={id}";
                 return byId;
             }
@@ -805,7 +806,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 matches.AddRange(exact.Length > 0 ? exact : candidates);
             }
 
-            matches = matches.GroupBy(candidate => candidate.GetInstanceID()).Select(grouping => grouping.First()).ToList();
+            matches = matches.GroupBy(candidate => candidate.GetMcpInstanceId()).Select(grouping => grouping.First()).ToList();
             if (matches.Count == 0)
             {
                 error = $"mixer group not found: {groupReference}";
@@ -879,7 +880,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 return false;
             }
             var id = (int)token;
-            parent = EditorUtility.InstanceIDToObject(id) as GameObject;
+            parent = UnityObjectIds.Resolve(id) as GameObject;
             if (parent == null)
             {
                 error = $"parent GameObject not found: instanceId={id}";
@@ -945,8 +946,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             return new JObject
             {
-                ["instanceId"] = source.GetInstanceID(),
-                ["gameObjectInstanceId"] = source.gameObject.GetInstanceID(),
+                ["instanceId"] = source.GetMcpInstanceId(),
+                ["gameObjectInstanceId"] = source.gameObject.GetMcpInstanceId(),
                 ["name"] = source.gameObject.name,
                 ["clip"] = ClipReference(source.clip),
                 ["loop"] = source.loop,
@@ -977,7 +978,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new JObject
             {
                 ["name"] = clip.name,
-                ["instanceId"] = clip.GetInstanceID(),
+                ["instanceId"] = clip.GetMcpInstanceId(),
                 ["assetPath"] = path,
                 ["guid"] = string.IsNullOrEmpty(path) ? null : AssetDatabase.AssetPathToGUID(path),
                 ["length"] = clip.length,
@@ -993,7 +994,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new JObject
             {
                 ["name"] = mixer.name,
-                ["instanceId"] = mixer.GetInstanceID(),
+                ["instanceId"] = mixer.GetMcpInstanceId(),
                 ["assetPath"] = path,
                 ["guid"] = string.IsNullOrEmpty(path) ? null : AssetDatabase.AssetPathToGUID(path),
             };
@@ -1005,7 +1006,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new JObject
             {
                 ["name"] = group.name,
-                ["instanceId"] = group.GetInstanceID(),
+                ["instanceId"] = group.GetMcpInstanceId(),
                 ["mixerName"] = group.audioMixer != null ? group.audioMixer.name : null,
                 ["mixerAssetPath"] = group.audioMixer != null ? AssetDatabase.GetAssetPath(group.audioMixer) : null,
             };

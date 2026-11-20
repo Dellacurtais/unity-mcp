@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -82,7 +83,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                     Name = scene.name,
                     Path = scene.path,
                     Guid = sceneGuid,
-                    Handle = scene.handle,
+                    Handle = scene.GetMcpSceneHandle(),
                     IsActive = scene == active,
                     IsPrefabStage = false,
                 });
@@ -94,7 +95,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
 
             var prefabStage = PrefabStageUtility.GetCurrentPrefabStage();
             if (prefabStage != null && prefabStage.scene.IsValid()
-                && !_loadedScenes.Exists(x => x.Handle == prefabStage.scene.handle))
+                && !_loadedScenes.Exists(x => x.Handle == prefabStage.scene.GetMcpSceneHandle()))
             {
                 var stageScene = prefabStage.scene;
                 _loadedScenes.Add(new LoadedScene
@@ -102,7 +103,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                     Name = stageScene.name,
                     Path = prefabStage.assetPath,
                     Guid = string.IsNullOrEmpty(prefabStage.assetPath) ? null : AssetDatabase.AssetPathToGUID(prefabStage.assetPath),
-                    Handle = stageScene.handle,
+                    Handle = stageScene.GetMcpSceneHandle(),
                     IsActive = false,
                     IsPrefabStage = true,
                 });
@@ -117,13 +118,13 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             var capturedTarget = ToolTargetRef.Capture(go);
             var info = new GameObjectInfo
             {
-                InstanceID = go.GetInstanceID(),
+                InstanceID = go.GetMcpInstanceId(),
                 Name = go.name,
                 ParentId = parentId,
                 SceneName = scene.name,
                 ScenePath = capturedTarget.ScenePath,
                 SceneGuid = capturedTarget.SceneGuid,
-                SceneHandle = scene.handle,
+                SceneHandle = scene.GetMcpSceneHandle(),
                 HierarchyPath = ToolTargetRef.BuildHierarchyPath(go.transform),
                 GlobalObjectId = capturedTarget.GlobalObjectId,
                 CaptureDomainId = capturedTarget.CaptureDomainId,
@@ -177,7 +178,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                 var componentTarget = ToolTargetRef.Capture(c);
                 info.Components.Add(new ComponentInfo
                 {
-                    InstanceID = c.GetInstanceID(),
+                    InstanceID = c.GetMcpInstanceId(),
                     GlobalObjectId = componentTarget?.GlobalObjectId,
                     CaptureDomainId = componentTarget?.CaptureDomainId,
                     ComponentOrdinal = componentTarget?.ComponentOrdinal ?? -1,
@@ -196,9 +197,9 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                             ? AssetDatabase.GetAssetPath(sharedMats[mi])
                             : null;
                     }
-                    _renderers[r.GetInstanceID()] = new RendererSummary
+                    _renderers[r.GetMcpInstanceId()] = new RendererSummary
                     {
-                        OwnerInstanceID = go.GetInstanceID(),
+                        OwnerInstanceID = go.GetMcpInstanceId(),
                         MaterialPaths = paths,
                         MaterialCount = paths.Length,
                         ShadowCasting = r.shadowCastingMode,
@@ -215,7 +216,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             for (int i = 0; i < go.transform.childCount; i++)
             {
                 var child = go.transform.GetChild(i).gameObject;
-                info.ChildIds.Add(child.GetInstanceID());
+                info.ChildIds.Add(child.GetMcpInstanceId());
                 Capture(child, info.InstanceID, scene, isPrefabStage, includeRenderers);
             }
         }

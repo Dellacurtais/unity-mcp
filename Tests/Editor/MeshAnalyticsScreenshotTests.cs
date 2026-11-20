@@ -1,4 +1,6 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
+using System.Collections;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools;
@@ -6,6 +8,7 @@ using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace Maicon.SceneAnalyzer.Editor.Tests
 {
@@ -38,8 +41,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Assert.That(descriptor.HeadlessSafe, Is.False);
         }
 
-        [Test]
-        public void ScreenshotObject_RendersBatchedPngsWithoutChangingSource()
+        [UnityTest]
+        public IEnumerator ScreenshotObject_RendersBatchedPngsWithoutChangingSource()
         {
             var source = GameObject.CreatePrimitive(PrimitiveType.Cube);
             source.name = "ScreenshotSource";
@@ -51,12 +54,19 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var rotationBefore = source.transform.rotation;
             var scaleBefore = source.transform.localScale;
             int layerBefore = source.layer;
+            Material material = null;
+            bool previousAsyncCompilation = ShaderUtil.allowAsyncCompilation;
 
             try
             {
+                ShaderUtil.allowAsyncCompilation = false;
+                material = CreateCaptureMaterial();
+                source.GetComponent<Renderer>().sharedMaterial = material;
+                yield return null;
+
                 var result = new ScreenshotObjectTool().Execute(new JObject
                 {
-                    ["instanceId"] = source.GetInstanceID(),
+                    ["instanceId"] = source.GetMcpInstanceId(),
                     ["views"] = new JArray { "front", "iso" },
                     ["width"] = 96,
                     ["height"] = 80,
@@ -91,25 +101,36 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             }
             finally
             {
+                ShaderUtil.allowAsyncCompilation = previousAsyncCompilation;
                 UnityEngine.Object.DestroyImmediate(source);
+                if (material != null) UnityEngine.Object.DestroyImmediate(material);
             }
         }
 
-        [Test]
-        public void ScreenshotObject_CapturesPrefabAssetWithoutOpeningPrefabStage()
+        [UnityTest]
+        public IEnumerator ScreenshotObject_CapturesPrefabAssetWithoutOpeningPrefabStage()
         {
             string folderName = "__McpObjectScreenshotTests_" + Guid.NewGuid().ToString("N");
             string folder = "Assets/" + folderName;
             string prefabPath = folder + "/Capture.prefab";
             GameObject authoringRoot = null;
+            bool previousAsyncCompilation = ShaderUtil.allowAsyncCompilation;
             try
             {
+                ShaderUtil.allowAsyncCompilation = false;
                 Assert.That(AssetDatabase.CreateFolder("Assets", folderName), Is.Not.Empty);
                 authoringRoot = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 authoringRoot.name = "PrefabCaptureSource";
+                var material = CreateCaptureMaterial();
+                AssetDatabase.CreateAsset(material, folder + "/Capture.mat");
+                authoringRoot.GetComponent<Renderer>().sharedMaterial = material;
                 Assert.That(PrefabUtility.SaveAsPrefabAsset(authoringRoot, prefabPath), Is.Not.Null);
                 UnityEngine.Object.DestroyImmediate(authoringRoot);
                 authoringRoot = null;
+                AssetDatabase.ImportAsset(prefabPath, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+                // Previous fixtures may have switched render pipelines. Let the
+                // Editor complete that transition before checking rendered pixels.
+                yield return null;
 
                 var result = new ScreenshotObjectTool().Execute(new JObject
                 {
@@ -127,9 +148,26 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             }
             finally
             {
+                ShaderUtil.allowAsyncCompilation = previousAsyncCompilation;
                 if (authoringRoot != null) UnityEngine.Object.DestroyImmediate(authoringRoot);
                 AssetDatabase.DeleteAsset(folder);
             }
+        }
+
+        private static Material CreateCaptureMaterial()
+        {
+            // Capture tests should not depend on the host project's lighting or
+            // default material, which can change when other fixtures switch pipelines.
+            var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+            var shaderName = pipeline == null ? "Unlit/Color"
+                : pipeline.GetType().Name.Contains("HDRenderPipeline") ? "HDRP/Unlit"
+                : "Universal Render Pipeline/Unlit";
+            var shader = Shader.Find(shaderName);
+            Assert.That(shader, Is.Not.Null, "The capture fixture needs an unlit shader for the active pipeline.");
+            var material = new Material(shader);
+            foreach (var property in new[] { "_Color", "_BaseColor", "_UnlitColor" })
+                if (material.HasProperty(property)) material.SetColor(property, Color.cyan);
+            return material;
         }
 
         private static void AssertPngHasVisualContent(byte[] png)

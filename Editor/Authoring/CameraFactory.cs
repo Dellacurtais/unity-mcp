@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
@@ -47,8 +48,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
                 if (isMain)
                 {
-                    foreach (var existing in UnityEngine.Object.FindObjectsByType<GameObject>(
-                                 FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    foreach (var existing in UnityObjectIds.FindAll<GameObject>(
+                                 FindObjectsInactive.Include))
                     {
                         if (existing == gameObject || existing.scene != gameObject.scene || !existing.CompareTag("MainCamera"))
                             continue;
@@ -61,7 +62,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 mutation.Touch(camera);
                 mutation.Touch(gameObject.transform);
                 mutation.Complete();
-                return OpResult.Success(gameObject.GetInstanceID(), $"created camera '{name}'");
+                return OpResult.Success(gameObject.GetMcpInstanceId(), $"created camera '{name}'");
             }
         }
 

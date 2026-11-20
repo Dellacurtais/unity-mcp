@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using Maicon.SceneAnalyzer.Editor.Modeling.Commands;
@@ -218,7 +219,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Operations.SurfaceFit
                     if (targets[i] != null)
                     {
                         ids.Add(GlobalObjectId.GetGlobalObjectIdSlow(targets[i]).ToString());
-                        instanceIds.Add(targets[i].GetInstanceID());
+                        instanceIds.Add(targets[i].GetMcpInstanceId());
                     }
             return new SmartSurfaceFitParameters
             {
@@ -280,7 +281,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Operations.SurfaceFit
                     if (targets[i] != null)
                     {
                         ids.Add(GlobalObjectId.GetGlobalObjectIdSlow(targets[i]).ToString());
-                        instanceIds.Add(targets[i].GetInstanceID());
+                        instanceIds.Add(targets[i].GetMcpInstanceId());
                     }
             return new SmartSurfaceFitParameters
             {
@@ -349,7 +350,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Operations.SurfaceFit
             int instanceId = parameters.targetInstanceIds != null && index < parameters.targetInstanceIds.Length
                 ? parameters.targetInstanceIds[index]
                 : 0;
-            var value = instanceId == 0 ? null : EditorUtility.EntityIdToObject((EntityId)instanceId);
+            var value = instanceId == 0 ? null : UnityObjectIds.Resolve(instanceId);
             renderer = value as Renderer;
             if (renderer == null && value is GameObject gameObject) renderer = gameObject.GetComponent<Renderer>();
             if (renderer == null && value is Component component) renderer = component.GetComponent<Renderer>();

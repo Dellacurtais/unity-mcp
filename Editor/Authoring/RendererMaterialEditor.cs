@@ -16,7 +16,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var matRef = (string)args["materialGuid"] ?? (string)args["material"];
             if (string.IsNullOrEmpty(matRef)) return OpResult.Fail("materialGuid is required");
 
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             var renderer = go.GetComponent<Renderer>();
             if (renderer == null) return OpResult.Fail("GameObject has no Renderer");
@@ -45,7 +45,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             result.Data = new JObject
             {
                 ["instanceId"] = id,
-                ["rendererInstanceId"] = renderer.GetInstanceID(),
+                ["rendererInstanceId"] = renderer.GetMcpInstanceId(),
                 ["slotIndex"] = slot,
                 ["material"] = ToolTargetRef.Capture(mat)?.ToJson(),
             };

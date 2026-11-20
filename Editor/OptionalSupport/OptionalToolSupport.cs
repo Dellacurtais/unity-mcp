@@ -178,9 +178,9 @@ namespace Maicon.SceneAnalyzer.Editor.Optional
             var scene = component.gameObject.scene;
             if (!scene.IsValid() || !scene.isLoaded) return false;
             for (int i = 0; i < SceneManager.sceneCount; i++)
-                if (SceneManager.GetSceneAt(i).handle == scene.handle) return true;
+                if (SceneManager.GetSceneAt(i).GetMcpSceneHandle() == scene.GetMcpSceneHandle()) return true;
             var prefabStage = PrefabStageUtility.GetCurrentPrefabStage();
-            return prefabStage != null && prefabStage.scene.handle == scene.handle;
+            return prefabStage != null && prefabStage.scene.GetMcpSceneHandle() == scene.GetMcpSceneHandle();
         }
 
         public static JObject ComponentJson(Component component, int maxProperties = 128)

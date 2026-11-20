@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -704,7 +705,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
             ISet<int> boneLocks, ISet<int> vertexLocks, ISet<int> region)
         {
             if (undoGroup >= 0 && (owner != value || renderer != skin || (paint && !paintWeights))) FinishStroke(false);
-            string signature = string.Join("|", value != null ? value.GetInstanceID() : 0, target?.StateHash ?? string.Empty, skin != null ? skin.GetInstanceID() : 0, selectedBone, showSkeleton, showHeatmap, paintWeights,
+            string signature = string.Join("|", value != null ? value.GetMcpInstanceId() : 0, target?.StateHash ?? string.Empty, skin != null ? skin.GetMcpInstanceId() : 0, selectedBone, showSkeleton, showHeatmap, paintWeights,
                 settings?.Mode.ToString() ?? string.Empty, settings?.Radius ?? 0f, settings?.Strength ?? 0f, settings?.MirrorX ?? false, settings?.XRay ?? false,
                 SetSignature(boneLocks), SetSignature(vertexLocks), SetSignature(region));
             bool rendererChanged = renderer != skin;
@@ -757,9 +758,9 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
             var mesh = renderer.sharedMesh;
             var bones = renderer.bones ?? Array.Empty<Transform>();
             if (mesh == null || boneIndex < 0 || boneIndex >= bones.Length) return;
-            if (heatmapMeshId != mesh.GetInstanceID() || heatmapBone != boneIndex || heatmapWeightHash != context.SkinWeightHash)
+            if (heatmapMeshId != mesh.GetMcpInstanceId() || heatmapBone != boneIndex || heatmapWeightHash != context.SkinWeightHash)
             {
-                heatmapMeshId = mesh.GetInstanceID(); heatmapBone = boneIndex; heatmapWeightHash = context.SkinWeightHash;
+                heatmapMeshId = mesh.GetMcpInstanceId(); heatmapBone = boneIndex; heatmapWeightHash = context.SkinWeightHash;
                 heatmapValues = RigInspectorService.ComputeInfluenceHeatmap(mesh, boneIndex);
             }
             if (heatmapBake == null) heatmapBake = new Mesh { name = "RigHeatmapPreview" };
@@ -860,7 +861,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
         private static void EnsurePaintSpatialCache(SkinnedMeshRenderer skin, bool force)
         {
             var mesh = skin != null ? skin.sharedMesh : null; if (mesh == null) { InvalidatePaintSpatialCache(false); return; }
-            int pose = ComputePoseSignature(skin); int rendererId = skin.GetInstanceID(); int meshId = mesh.GetInstanceID();
+            int pose = ComputePoseSignature(skin); int rendererId = skin.GetMcpInstanceId(); int meshId = mesh.GetMcpInstanceId();
             if (!force && paintSpatialIndex != null && paintRendererId == rendererId && paintMeshId == meshId && paintPoseSignature == pose) return;
             if (paintBake == null) paintBake = new Mesh { name = "RigWeightPaintSpatialCache" };
             skin.BakeMesh(paintBake); paintVertices = paintBake.vertices;

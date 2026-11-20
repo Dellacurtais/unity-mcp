@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -295,7 +296,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 {
                     ["name"] = scene.name,
                     ["path"] = scene.path,
-                    ["handle"] = (int)scene.handle,
+                    ["handle"] = scene.GetMcpSceneHandle(),
                 },
                 ["ambient"] = new JObject
                 {

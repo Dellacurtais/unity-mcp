@@ -32,7 +32,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 catch (Exception exception) { return OpResult.Fail($"ADD_COMPONENT_FAILED: {exception.Message}"); }
                 if (component == null) return OpResult.Fail($"ADD_COMPONENT_FAILED: Unity could not add {type.Name}");
                 mutation.Complete();
-                return OpResult.Success(component.GetInstanceID(), $"added {type.Name}");
+                return OpResult.Success(component.GetMcpInstanceId(), $"added {type.Name}");
             }
         }
 

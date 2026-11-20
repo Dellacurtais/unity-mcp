@@ -104,7 +104,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             {
                 var rootObject = ToolTargetResolver.ResolveGameObject(new JObject { ["target"] = args["root"].DeepClone() }, out var rootError);
                 if (rootObject == null) return ToolResult.Error("ROOT_NOT_FOUND", rootError);
-                root = snapshot.Get(rootObject.GetInstanceID());
+                root = snapshot.Get(rootObject.GetMcpInstanceId());
                 if (root == null || !sceneHandles.Contains(root.SceneHandle))
                     return ToolResult.Error("ROOT_OUTSIDE_SCOPE", "root must belong to the selected loaded scene(s).");
             }

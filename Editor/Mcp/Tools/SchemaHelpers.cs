@@ -133,7 +133,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools
             ["properties"] = new JObject
             {
                 ["kind"] = new JObject { ["type"] = "string" },
-                ["instanceId"] = new JObject { ["type"] = "integer" },
+                ["instanceId"] = new JObject { ["type"] = "integer", ["description"] = "Opaque MCP object handle returned by this package. Reacquire after domain reload; not a native Unity EntityId." },
                 ["captureDomainId"] = new JObject { ["type"] = "string" },
                 ["globalObjectId"] = new JObject { ["type"] = "string" },
                 ["assetGuid"] = new JObject { ["type"] = "string" },
@@ -141,7 +141,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools
                 ["assetPath"] = new JObject { ["type"] = "string" },
                 ["sceneGuid"] = new JObject { ["type"] = "string" },
                 ["scenePath"] = new JObject { ["type"] = "string" },
-                ["sceneHandle"] = new JObject { ["type"] = "integer" },
+                ["sceneHandle"] = new JObject { ["type"] = "integer", ["description"] = "Opaque MCP scene handle returned by this package; not raw Unity SceneHandle data." },
                 ["hierarchyPath"] = new JObject { ["type"] = "string" },
                 ["componentType"] = new JObject { ["type"] = "string" },
                 ["componentOrdinal"] = new JObject { ["type"] = "integer" },

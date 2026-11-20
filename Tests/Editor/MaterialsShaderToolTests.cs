@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System.IO;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Mcp;
@@ -95,6 +96,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             material.SetFloat("_RangeValue", 0.5f);
             material.SetVector("_VectorValue", new Vector4(1f, 2f, 3f, 4f));
             EditorUtility.SetDirty(material);
+            var originalColor = material.GetColor("_ColorValue");
 
             var tool = new SetMaterialPropertyTypedTool();
             var badColor = tool.Execute(new JObject
@@ -104,7 +106,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 ["value"] = "not-a-color",
             });
             Assert.That(badColor.IsError, Is.True);
-            Assert.That(material.GetColor("_ColorValue"), Is.EqualTo(new Color(0.1f, 0.2f, 0.3f, 1f)));
+            Assert.That(material.GetColor("_ColorValue"), Is.EqualTo(originalColor));
 
             var badRange = tool.Execute(new JObject
             {
@@ -141,10 +143,12 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             });
             Assert.That(changed.IsError, Is.False, changed.Text);
             Assert.That(changed.Json["effectiveValue"], Is.TypeOf<JObject>());
-            Assert.That(material.GetColor("_ColorValue"), Is.EqualTo(new Color(0.2f, 0.4f, 0.6f, 1f)));
+            Assert.That(material.GetColor("_ColorValue"), Is.EqualTo(new Color(0.2f, 0.4f, 0.6f, 1f))
+                .Using(new UnityEngine.TestTools.Utils.ColorEqualityComparer(0.000001f)));
 
             Undo.PerformUndo();
-            Assert.That(material.GetColor("_ColorValue"), Is.EqualTo(new Color(0.1f, 0.2f, 0.3f, 1f)));
+            Assert.That(material.GetColor("_ColorValue"), Is.EqualTo(originalColor)
+                .Using(new UnityEngine.TestTools.Utils.ColorEqualityComparer(0.000001f)));
         }
 
         [Test]
@@ -166,7 +170,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var tool = new SetMaterialTool();
             var args = new JObject
             {
-                ["instanceId"] = instance.GetInstanceID(),
+                ["instanceId"] = instance.GetMcpInstanceId(),
                 ["material"] = replacementPath,
                 ["slotIndex"] = 0,
             };

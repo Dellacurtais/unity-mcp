@@ -40,7 +40,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         public static JObject TargetResult(int instanceId, JToken data = null)
         {
-            var target = EditorUtility.InstanceIDToObject(instanceId);
+            var target = UnityObjectIds.Resolve(instanceId);
             var payload = new JObject
             {
                 ["instanceId"] = instanceId,
@@ -60,7 +60,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 return false;
             }
 
-            gameObject = EditorUtility.InstanceIDToObject(instanceId) as GameObject;
+            gameObject = UnityObjectIds.Resolve(instanceId) as GameObject;
             if (gameObject == null)
             {
                 error = $"REF_BROKEN: GameObject not found: instanceId={instanceId}";
@@ -117,7 +117,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var seen = new HashSet<int>();
             foreach (var target in targets ?? Array.Empty<UnityEngine.Object>())
             {
-                if (target == null || !seen.Add(target.GetInstanceID())) continue;
+                if (target == null || !seen.Add(target.GetMcpInstanceId())) continue;
                 var gameObject = target as GameObject ?? (target as Component)?.gameObject;
                 if (gameObject != null && gameObject.scene.IsValid())
                     EditorSceneManager.MarkSceneDirty(gameObject.scene);

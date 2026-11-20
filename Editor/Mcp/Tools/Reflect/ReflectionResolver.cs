@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -145,7 +146,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
                 var path = AssetDatabase.GetAssetPath(uobj);
                 var o = new JObject
                 {
-                    ["instanceId"] = uobj.GetInstanceID(),
+                    ["instanceId"] = uobj.GetMcpInstanceId(),
                     ["name"] = uobj.name,
                     ["type"] = uobj.GetType().FullName,
                 };
@@ -225,9 +226,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Reflect
 
         private static UnityEngine.Object ResolveUnityObject(int instanceId)
         {
-            if (instanceId == 0) return null;
-            return Resources.FindObjectsOfTypeAll<UnityEngine.Object>()
-                .FirstOrDefault(candidate => candidate != null && candidate.GetInstanceID() == instanceId);
+            return UnityObjectIds.Resolve(instanceId);
         }
 
         private static object CoerceValue(JToken token, Type targetType, string paramName)

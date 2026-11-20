@@ -1,0 +1,29 @@
+name: Feature request
+description: Propose a new tool, module or behaviour.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can an agent not do today, or what is painful?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Tool names, inputs and outputs if you have them in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety
+      description: Does it write, delete, run code or reach outside the Editor? Can it be retried after a Domain Reload?
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to implement this myself.

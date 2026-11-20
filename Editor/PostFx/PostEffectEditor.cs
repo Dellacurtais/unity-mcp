@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -57,11 +58,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new OpResult
             {
                 Ok = true,
-                InstanceID = volume.gameObject.GetInstanceID(),
+                InstanceID = volume.gameObject.GetMcpInstanceId(),
                 Summary = $"removed {effectType.Name}",
                 Data = new JObject
                 {
-                    ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                    ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
                     ["effect"] = effectType.FullName,
                     ["profile"] = ProfileJson(profile),
                 },
@@ -77,7 +78,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
             var effects = new JArray();
             var summary = new System.Text.StringBuilder();
-            summary.Append($"volume #{volume.gameObject.GetInstanceID()} '{volume.name}' has {profile.components.Count} effect(s):");
+            summary.Append($"volume #{volume.gameObject.GetMcpInstanceId()} '{volume.name}' has {profile.components.Count} effect(s):");
             foreach (var component in profile.components.Where(item => item != null))
             {
                 var activeOverrides = CountActiveOverrides(component);
@@ -88,11 +89,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new OpResult
             {
                 Ok = true,
-                InstanceID = volume.gameObject.GetInstanceID(),
+                InstanceID = volume.gameObject.GetMcpInstanceId(),
                 Summary = summary.ToString(),
                 Data = new JObject
                 {
-                    ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                    ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
                     ["profile"] = ProfileJson(profile),
                     ["count"] = effects.Count,
                     ["effects"] = effects,
@@ -187,11 +188,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 return new OpResult
                 {
                     Ok = true,
-                    InstanceID = volume.gameObject.GetInstanceID(),
+                    InstanceID = volume.gameObject.GetMcpInstanceId(),
                     Summary = $"effect {effectType.Name} already present on volume",
                     Data = new JObject
                     {
-                        ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                        ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
                         ["created"] = false,
                         ["effect"] = EffectJson(existing),
                         ["profile"] = ProfileJson(profile),
@@ -217,11 +218,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new OpResult
             {
                 Ok = true,
-                InstanceID = volume.gameObject.GetInstanceID(),
+                InstanceID = volume.gameObject.GetMcpInstanceId(),
                 Summary = $"added {effectType.Name} to volume profile",
                 Data = new JObject
                 {
-                    ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                    ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
                     ["created"] = true,
                     ["overrideAll"] = overrideAll,
                     ["effect"] = EffectJson(created),
@@ -259,11 +260,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new OpResult
             {
                 Ok = true,
-                InstanceID = volume.gameObject.GetInstanceID(),
+                InstanceID = volume.gameObject.GetMcpInstanceId(),
                 Summary = $"set {effectType.Name}.{propertyName}",
                 Data = new JObject
                 {
-                    ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                    ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
                     ["effect"] = effectType.FullName,
                     ["property"] = propertyName,
                     ["value"] = ReadParameterValue(change),
@@ -346,11 +347,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new OpResult
             {
                 Ok = true,
-                InstanceID = volume.gameObject.GetInstanceID(),
+                InstanceID = volume.gameObject.GetMcpInstanceId(),
                 Summary = $"applied color grading ({string.Join(", ", requested.Select(item => item.parameter))})",
                 Data = new JObject
                 {
-                    ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                    ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
                     ["effect"] = colorAdjustmentsType.FullName,
                     ["created"] = created,
                     ["changes"] = changes,
@@ -372,7 +373,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var id = (int?)args["volumeInstanceId"] ?? (int?)args["instanceId"] ?? 0;
             if (id == 0) return (null, "volumeInstanceId is required");
-            var target = EditorUtility.InstanceIDToObject(id);
+            var target = UnityObjectIds.Resolve(id);
             var volume = target as Volume;
             if (volume == null && target is GameObject gameObject) volume = gameObject.GetComponent<Volume>();
             if (volume == null) return (null, $"Volume not found: instanceId={id}");
@@ -681,7 +682,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             if (token.Type == JTokenType.Integer)
             {
-                var instance = EditorUtility.InstanceIDToObject((int)token);
+                var instance = UnityObjectIds.Resolve((int)token);
                 if (instance == null || !target.IsInstanceOfType(instance))
                     throw new FormatException($"instanceId {(int)token} is not a {target.Name}");
                 return instance;
@@ -794,7 +795,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 var path = AssetDatabase.GetAssetPath(unityObject);
                 return new JObject
                 {
-                    ["instanceId"] = unityObject.GetInstanceID(),
+                    ["instanceId"] = unityObject.GetMcpInstanceId(),
                     ["name"] = unityObject.name,
                     ["path"] = string.IsNullOrEmpty(path) ? null : path,
                     ["guid"] = string.IsNullOrEmpty(path) ? null : AssetDatabase.AssetPathToGUID(path),

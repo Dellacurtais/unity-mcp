@@ -62,7 +62,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 var gameObjectRef = ToolTargetRef.Capture(child);
                 var componentRef = ToolTargetRef.Capture(secondCollider);
-                Assert.That(gameObjectRef.SceneHandle, Is.EqualTo((int)scene.handle));
+                Assert.That(gameObjectRef.SceneHandle, Is.EqualTo(scene.GetMcpSceneHandle()));
                 Assert.That(gameObjectRef.HierarchyPath, Is.EqualTo("TargetRoot/TargetChild"));
                 Assert.That(gameObjectRef.AssetGuid, Is.Null.Or.Empty);
                 Assert.That(componentRef.AssetGuid, Is.Null.Or.Empty);
@@ -74,14 +74,14 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 Assert.That(gameObjectJson["componentOrdinal"], Is.Null, "non-component targets must not emit a null component ordinal");
                 Assert.That(ToolTargetResolver.Resolve(gameObjectRef, out var goError), Is.SameAs(child), goError);
                 Assert.That(ToolTargetResolver.Resolve(componentRef, out var componentError), Is.SameAs(secondCollider), componentError);
-                componentRef.InstanceId = firstCollider.GetInstanceID();
+                componentRef.InstanceId = firstCollider.GetMcpInstanceId();
                 Assert.That(ToolTargetResolver.Resolve(componentRef, out var provenanceError), Is.Null);
                 StringAssert.StartsWith("TARGET_IDENTITY_STALE", provenanceError);
                 var legacyStableRef = ToolTargetRef.FromJson(componentRef.ToJson());
                 legacyStableRef.CaptureDomainId = null;
                 Assert.That(ToolTargetResolver.Resolve(legacyStableRef, out var ordinalError), Is.SameAs(secondCollider), ordinalError);
-                componentRef.InstanceId = secondCollider.GetInstanceID();
-                var legacyRef = new ToolTargetRef { InstanceId = firstCollider.GetInstanceID() };
+                componentRef.InstanceId = secondCollider.GetMcpInstanceId();
+                var legacyRef = new ToolTargetRef { InstanceId = firstCollider.GetMcpInstanceId() };
                 Assert.That(ToolTargetResolver.Resolve(legacyRef, out var legacyError), Is.SameAs(firstCollider), legacyError);
                 var staleStableRef = ToolTargetRef.FromJson(componentRef.ToJson());
                 staleStableRef.GlobalObjectId = "invalid-global-id";
@@ -224,7 +224,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 var result = new SaveSceneTool().Execute(new JObject
                 {
-                    ["sceneHandle"] = (int)scene.handle,
+                    ["sceneHandle"] = scene.GetMcpSceneHandle(),
                     ["destinationPath"] = "Assets/Scenes/../Escaped.unity",
                 });
                 Assert.That(result.IsError, Is.True);
@@ -251,7 +251,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             for (int i = 0; i < SceneManager.sceneCount; i++)
             {
                 var candidate = SceneManager.GetSceneAt(i);
-                if ((int)candidate.handle == handle) { scene = candidate; break; }
+                if (candidate.GetMcpSceneHandle() == handle) { scene = candidate; break; }
             }
             try
             {

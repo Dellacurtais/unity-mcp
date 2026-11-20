@@ -90,12 +90,12 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 return new OpResult
                 {
                     Ok = true,
-                    InstanceID = gameObject.GetInstanceID(),
+                    InstanceID = gameObject.GetMcpInstanceId(),
                     Summary = $"created {type} light intensity={light.intensity} range={light.range}",
                     Data = new JObject
                     {
-                        ["instanceId"] = gameObject.GetInstanceID(),
-                        ["lightInstanceId"] = light.GetInstanceID(),
+                        ["instanceId"] = gameObject.GetMcpInstanceId(),
+                        ["lightInstanceId"] = light.GetMcpInstanceId(),
                         ["target"] = ToolTargetRef.Capture(gameObject)?.ToJson(),
                         ["lightTarget"] = ToolTargetRef.Capture(light)?.ToJson(),
                         ["name"] = gameObject.name,

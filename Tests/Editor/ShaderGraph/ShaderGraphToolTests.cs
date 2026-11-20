@@ -38,7 +38,7 @@ namespace Maicon.SceneAnalyzer.Editor.ShaderGraph.Tests
         {
             var package = PackageInfo.FindForPackageName("com.unity.shadergraph");
             Assert.That(package, Is.Not.Null);
-            Assert.That(package.version, Is.EqualTo("17.3.0"));
+            Assert.That(Version.Parse(package.version.Split('-')[0]), Is.GreaterThanOrEqualTo(new Version(17, 0, 0)));
             var module = Maicon.SceneAnalyzer.Editor.Mcp.OptionalModuleRegistry.All.Single(value => value.Id == "shadergraph");
             Assert.That(module.PackageVersion, Is.EqualTo(package.version));
             CollectionAssert.AreEquivalent(new[]

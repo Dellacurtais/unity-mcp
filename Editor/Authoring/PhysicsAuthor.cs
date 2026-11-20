@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -213,7 +214,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult CheckGround(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
 
             if (!TryParseFiniteVector3(args["originOffset"], "originOffset", Vector3.zero, false, out var originOffset, out var error))
@@ -267,7 +268,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult ComputeBounds(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             var recursive = (bool?)args["recursive"] ?? true;
 
@@ -399,7 +400,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 }
                 if (!string.IsNullOrEmpty(pathContains))
                 {
-                    var path = snapshot.GetPath(go.GetInstanceID());
+                    var path = snapshot.GetPath(go.GetMcpInstanceId());
                     if (path == null || path.IndexOf(pathContains, StringComparison.OrdinalIgnoreCase) < 0) return false;
                 }
                 var parent = go.transform.parent;
@@ -410,13 +411,13 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var matches = new List<(GameObject go, float dist, int depth)>();
             if (resolvedTypes != null)
             {
-                var seeds = UnityEngine.Object.FindObjectsByType(resolvedTypes[0], FindObjectsInactive.Include, FindObjectsSortMode.None);
+                var seeds = UnityObjectIds.FindAll(resolvedTypes[0], FindObjectsInactive.Include);
                 var seenIds = new HashSet<int>();
                 foreach (var seed in seeds)
                 {
                     var seedComponent = seed as Component;
                     var go = seedComponent?.gameObject;
-                    if (go == null || snapshot.Get(go.GetInstanceID()) == null || !seenIds.Add(go.GetInstanceID())) continue;
+                    if (go == null || snapshot.Get(go.GetMcpInstanceId()) == null || !seenIds.Add(go.GetMcpInstanceId())) continue;
                     var hasAll = true;
                     for (int i = 1; i < resolvedTypes.Length; i++)
                     {
@@ -430,7 +431,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             {
                 foreach (var info in snapshot.All())
                 {
-                    var go = EditorUtility.InstanceIDToObject(info.InstanceID) as GameObject;
+                    var go = UnityObjectIds.Resolve(info.InstanceID) as GameObject;
                     if (go != null && TryMatchAux(go, out var distance, out var depth))
                         matches.Add((go, distance, depth));
                 }
@@ -464,14 +465,14 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             for (var index = 0; index < returned; index++)
             {
                 var match = matches[index];
-                var info = snapshot.Get(match.go.GetInstanceID());
+                var info = snapshot.Get(match.go.GetMcpInstanceId());
                 var position = match.go.transform.position;
                 rows.Add(new JObject
                 {
-                    ["instanceId"] = match.go.GetInstanceID(),
+                    ["instanceId"] = match.go.GetMcpInstanceId(),
                     ["target"] = ToolTargetRef.Capture(match.go)?.ToJson(),
                     ["name"] = match.go.name,
-                    ["hierarchyPath"] = snapshot.GetPath(match.go.GetInstanceID()),
+                    ["hierarchyPath"] = snapshot.GetPath(match.go.GetMcpInstanceId()),
                     ["sceneName"] = info?.SceneName,
                     ["scenePath"] = info?.ScenePath,
                     ["sceneGuid"] = info?.SceneGuid,
@@ -521,7 +522,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
             foreach (var info in snapshot.All())
             {
-                var go = EditorUtility.InstanceIDToObject(info.InstanceID) as GameObject;
+                var go = UnityObjectIds.Resolve(info.InstanceID) as GameObject;
                 if (go == null) continue;
 
                 Bump(byTag, go.tag);
@@ -554,8 +555,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
                 var prefabType = PrefabUtility.GetPrefabAssetType(go);
                 var status = PrefabUtility.GetPrefabInstanceStatus(go);
-                if (status == PrefabInstanceStatus.Connected) prefabLinked++;
-                else if (status == PrefabInstanceStatus.MissingAsset) prefabBroken++;
+                if (status == UnityEditor.PrefabInstanceStatus.Connected) prefabLinked++;
+                else if (status == UnityEditor.PrefabInstanceStatus.MissingAsset) prefabBroken++;
                 else if (prefabType == PrefabAssetType.NotAPrefab) prefabUnlinked++;
             }
 
@@ -690,7 +691,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult AutoFitCollider(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             if (PrefabUtility.IsPartOfPrefabAsset(go))
                 return OpResult.Fail("Prefab assets must be opened in Prefab Mode or edited through prefab asset tools");
@@ -748,7 +749,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 mutation.Complete();
             }
 
-            var result = OpResult.Success(added.GetInstanceID(),
+            var result = OpResult.Success(added.GetMcpInstanceId(),
                 $"added {kind} collider on '{go.name}'  local size~{localBounds.size.x:F2}×{localBounds.size.y:F2}×{localBounds.size.z:F2}");
             result.Data = new JObject
             {
@@ -767,7 +768,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult AddCompoundColliders(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var rootGo = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var rootGo = UnityObjectIds.Resolve(id) as GameObject;
             if (rootGo == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             if (PrefabUtility.IsPartOfPrefabAsset(rootGo))
                 return OpResult.Fail("Prefab assets must be opened in Prefab Mode or edited through prefab asset tools");
@@ -803,7 +804,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     foreach (var plan in plans)
                     {
                         var gameObject = plan.renderer.gameObject;
-                        if (!visitedObjects.Add(gameObject.GetInstanceID())) continue;
+                        if (!visitedObjects.Add(gameObject.GetMcpInstanceId())) continue;
                         foreach (var existing in gameObject.GetComponents<Collider>())
                         {
                             if (existing == null || existing is CharacterController) continue;
@@ -848,7 +849,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult SetPhysicsMaterial(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             if (PrefabUtility.IsPartOfPrefabAsset(go))
                 return OpResult.Fail("Prefab assets must be opened in Prefab Mode or edited through prefab asset tools");
@@ -857,7 +858,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             Collider collider;
             if (colliderId != 0)
             {
-                collider = EditorUtility.InstanceIDToObject(colliderId) as Collider;
+                collider = UnityObjectIds.Resolve(colliderId) as Collider;
                 if (collider == null)
                     return OpResult.Fail($"Collider not found: colliderInstanceId={colliderId}");
                 if (collider.gameObject != go)
@@ -1297,8 +1298,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var distance = left.distance.CompareTo(right.distance);
             if (distance != 0) return distance;
-            var leftId = left.collider != null ? left.collider.GetInstanceID() : 0;
-            var rightId = right.collider != null ? right.collider.GetInstanceID() : 0;
+            var leftId = left.collider != null ? left.collider.GetMcpInstanceId() : 0;
+            var rightId = right.collider != null ? right.collider.GetMcpInstanceId() : 0;
             return leftId.CompareTo(rightId);
         }
 
@@ -1306,8 +1307,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             var name = string.Compare(left != null ? left.gameObject.name : string.Empty, right != null ? right.gameObject.name : string.Empty, StringComparison.Ordinal);
             if (name != 0) return name;
-            var leftId = left != null ? left.GetInstanceID() : 0;
-            var rightId = right != null ? right.GetInstanceID() : 0;
+            var leftId = left != null ? left.GetMcpInstanceId() : 0;
+            var rightId = right != null ? right.GetMcpInstanceId() : 0;
             return leftId.CompareTo(rightId);
         }
 
@@ -1318,7 +1319,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new JObject
             {
                 ["name"] = gameObject != null ? gameObject.name : null,
-                ["instanceId"] = gameObject != null ? gameObject.GetInstanceID() : 0,
+                ["instanceId"] = gameObject != null ? gameObject.GetMcpInstanceId() : 0,
                 ["target"] = ToolTargetRef.Capture(gameObject)?.ToJson(),
                 ["colliderTarget"] = ToolTargetRef.Capture(collider)?.ToJson(),
                 ["tag"] = gameObject != null ? gameObject.tag : null,
@@ -1338,7 +1339,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new JObject
             {
                 ["name"] = gameObject != null ? gameObject.name : null,
-                ["instanceId"] = gameObject != null ? gameObject.GetInstanceID() : 0,
+                ["instanceId"] = gameObject != null ? gameObject.GetMcpInstanceId() : 0,
                 ["target"] = ToolTargetRef.Capture(gameObject)?.ToJson(),
                 ["colliderTarget"] = ToolTargetRef.Capture(collider)?.ToJson(),
                 ["tag"] = gameObject != null ? gameObject.tag : null,
@@ -1387,7 +1388,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             if (h.collider == null) return "(null collider)";
             var go = h.collider.gameObject;
-            return $"#{go.GetInstanceID()} '{go.name}'  d={h.distance:F2}  tag={go.tag} layer={LayerMask.LayerToName(go.layer)}  "
+            return $"#{go.GetMcpInstanceId()} '{go.name}'  d={h.distance:F2}  tag={go.tag} layer={LayerMask.LayerToName(go.layer)}  "
                 + $"point=[{h.point.x:F2},{h.point.y:F2},{h.point.z:F2}]  collider={h.collider.GetType().Name}{(h.collider.isTrigger ? " (trigger)" : "")}";
         }
 
@@ -1395,7 +1396,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             if (c == null) return "(null)";
             var go = c.gameObject;
-            return $"#{go.GetInstanceID()} '{go.name}'  tag={go.tag} layer={LayerMask.LayerToName(go.layer)}  {c.GetType().Name}{(c.isTrigger ? " (trigger)" : "")}";
+            return $"#{go.GetMcpInstanceId()} '{go.name}'  tag={go.tag} layer={LayerMask.LayerToName(go.layer)}  {c.GetType().Name}{(c.isTrigger ? " (trigger)" : "")}";
         }
 
         private static void Bump(Dictionary<string, int> d, string key)

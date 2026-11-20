@@ -80,7 +80,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     ["defaultWeight"] = layer.defaultWeight,
                     ["blendingMode"] = layer.blendingMode.ToString(),
                     ["avatarMask"] = AssetReference(layer.avatarMask),
-                    ["stateMachineInstanceId"] = layer.stateMachine != null ? layer.stateMachine.GetInstanceID() : 0,
+                    ["stateMachineInstanceId"] = layer.stateMachine != null ? layer.stateMachine.GetMcpInstanceId() : 0,
                     ["defaultState"] = layer.stateMachine != null && layer.stateMachine.defaultState != null
                         ? layer.stateMachine.defaultState.name
                         : null,
@@ -92,7 +92,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var data = AssetReference(controller);
             data["parameters"] = parameters;
             data["layers"] = layers;
-            var result = OpResult.Success(controller.GetInstanceID(),
+            var result = OpResult.Success(controller.GetMcpInstanceId(),
                 $"AnimatorController '{controller.name}': {parameters.Count} parameter(s), {layers.Count} layer(s)");
             result.Data = data;
             return result;
@@ -141,7 +141,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             data["eventCount"] = events.Length;
             data["events"] = new JArray(events.Select(AnimationEventJson));
 
-            var result = OpResult.Success(clip.GetInstanceID(),
+            var result = OpResult.Success(clip.GetMcpInstanceId(),
                 $"AnimationClip '{clip.name}': {data["curveCount"]} curve(s), {events.Length} event(s)");
             result.Data = data;
             return result;
@@ -194,11 +194,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     return Fail("UNSUPPORTED_PARAMETER_TYPE", parameter.type.ToString());
             }
 
-            var result = OpResult.Success(animator.GetInstanceID(), $"set {parameter.type} parameter '{name}'");
+            var result = OpResult.Success(animator.GetMcpInstanceId(), $"set {parameter.type} parameter '{name}'");
             result.Data = new JObject
             {
-                ["instanceId"] = animator.gameObject.GetInstanceID(),
-                ["animatorInstanceId"] = animator.GetInstanceID(),
+                ["instanceId"] = animator.gameObject.GetMcpInstanceId(),
+                ["animatorInstanceId"] = animator.GetMcpInstanceId(),
                 ["parameter"] = RuntimeParameterJson(animator, parameter),
             };
             return result;
@@ -223,11 +223,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 return Fail("STATE_NOT_FOUND", $"state '{requestedState}' was not found on layer {(layer < 0 ? "any" : layer.ToString())}");
 
             animator.Play(resolvedState, resolvedLayer, normalizedTime);
-            var result = OpResult.Success(animator.GetInstanceID(), $"playing '{resolvedState}' on layer {resolvedLayer}");
+            var result = OpResult.Success(animator.GetMcpInstanceId(), $"playing '{resolvedState}' on layer {resolvedLayer}");
             result.Data = new JObject
             {
-                ["instanceId"] = animator.gameObject.GetInstanceID(),
-                ["animatorInstanceId"] = animator.GetInstanceID(),
+                ["instanceId"] = animator.gameObject.GetMcpInstanceId(),
+                ["animatorInstanceId"] = animator.GetMcpInstanceId(),
                 ["state"] = resolvedState,
                 ["layer"] = resolvedLayer,
                 ["normalizedTime"] = normalizedTime,
@@ -262,12 +262,12 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             }
 
             var parameters = new JArray(animator.parameters.Select(parameter => RuntimeParameterJson(animator, parameter)));
-            var result = OpResult.Success(animator.GetInstanceID(),
+            var result = OpResult.Success(animator.GetMcpInstanceId(),
                 $"Animator on '{animator.gameObject.name}': {layers.Count} layer(s), {parameters.Count} parameter(s)");
             result.Data = new JObject
             {
-                ["instanceId"] = animator.gameObject.GetInstanceID(),
-                ["animatorInstanceId"] = animator.GetInstanceID(),
+                ["instanceId"] = animator.gameObject.GetMcpInstanceId(),
+                ["animatorInstanceId"] = animator.GetMcpInstanceId(),
                 ["controller"] = AssetReference(animator.runtimeAnimatorController),
                 ["layers"] = layers,
                 ["parameters"] = parameters,
@@ -297,7 +297,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             }
             if (controller == null) return Fail("CREATE_CONTROLLER_FAILED", path);
 
-            var result = OpResult.Success(controller.GetInstanceID(), $"created AnimatorController '{path}'");
+            var result = OpResult.Success(controller.GetMcpInstanceId(), $"created AnimatorController '{path}'");
             result.CreatedAssetPath = path;
             result.Data = new JObject
             {
@@ -340,7 +340,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 mutation.Touch(state);
                 mutation.Complete();
 
-                var result = OpResult.Success(controller.GetInstanceID(), $"added state '{stateName}' to layer {layerIndex}");
+                var result = OpResult.Success(controller.GetMcpInstanceId(), $"added state '{stateName}' to layer {layerIndex}");
                 result.Data = new JObject
                 {
                     ["controller"] = AssetReference(controller),
@@ -398,7 +398,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 mutation.Touch(transition);
                 mutation.Complete();
 
-                var result = OpResult.Success(controller.GetInstanceID(),
+                var result = OpResult.Success(controller.GetMcpInstanceId(),
                     $"added transition {(anyState ? "AnyState" : fromName)} -> {toName} on layer {layerIndex}");
                 result.Data = new JObject
                 {
@@ -467,7 +467,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 mutation.Complete();
 
                 var parameter = controller.parameters.Single(candidate => candidate.name == name);
-                var result = OpResult.Success(controller.GetInstanceID(), $"added {parameterType} parameter '{name}'");
+                var result = OpResult.Success(controller.GetMcpInstanceId(), $"added {parameterType} parameter '{name}'");
                 result.Data = new JObject
                 {
                     ["controller"] = AssetReference(controller),
@@ -480,7 +480,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         public static OpResult AssignControllerToAnimator(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var gameObject = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var gameObject = UnityObjectIds.Resolve(id) as GameObject;
             if (gameObject == null) return Fail("TARGET_NOT_FOUND", $"GameObject not found: instanceId={id}");
             var animator = gameObject.GetComponent<Animator>();
             if (animator == null) return Fail("ANIMATOR_NOT_FOUND", "no Animator on GameObject");
@@ -502,7 +502,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 result.Data = new JObject
                 {
                     ["instanceId"] = id,
-                    ["animatorInstanceId"] = animator.GetInstanceID(),
+                    ["animatorInstanceId"] = animator.GetMcpInstanceId(),
                     ["controller"] = AssetReference(controller),
                     ["target"] = ToolTargetRef.Capture(gameObject)?.ToJson(),
                 };
@@ -544,7 +544,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 if (layers[index].stateMachine != null) mutation.Touch(layers[index].stateMachine);
                 mutation.Complete();
 
-                var result = OpResult.Success(controller.GetInstanceID(), $"added layer '{name}' at index {index}");
+                var result = OpResult.Success(controller.GetMcpInstanceId(), $"added layer '{name}' at index {index}");
                 result.Data = new JObject
                 {
                     ["controller"] = AssetReference(controller),
@@ -555,7 +555,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                         ["defaultWeight"] = layers[index].defaultWeight,
                         ["blendingMode"] = layers[index].blendingMode.ToString(),
                         ["avatarMask"] = AssetReference(layers[index].avatarMask),
-                        ["stateMachineInstanceId"] = layers[index].stateMachine != null ? layers[index].stateMachine.GetInstanceID() : 0,
+                        ["stateMachineInstanceId"] = layers[index].stateMachine != null ? layers[index].stateMachine.GetMcpInstanceId() : 0,
                     },
                 };
                 return result;
@@ -594,7 +594,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 mutation.Touch(tree);
                 mutation.Complete();
 
-                var result = OpResult.Success(controller.GetInstanceID(), $"created {blendType} BlendTree state '{stateName}'");
+                var result = OpResult.Success(controller.GetMcpInstanceId(), $"created {blendType} BlendTree state '{stateName}'");
                 result.Data = new JObject
                 {
                     ["controller"] = AssetReference(controller),
@@ -669,7 +669,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 mutation.Complete();
 
                 var child = tree.children[tree.children.Length - 1];
-                var result = OpResult.Success(controller.GetInstanceID(), $"added '{clip.name}' to BlendTree '{stateName}'");
+                var result = OpResult.Success(controller.GetMcpInstanceId(), $"added '{clip.name}' to BlendTree '{stateName}'");
                 result.Data = new JObject
                 {
                     ["controller"] = AssetReference(controller),
@@ -713,7 +713,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 mutation.Record(clip, "Add Animation Event");
                 AnimationUtility.SetAnimationEvents(clip, events.ToArray());
                 mutation.Complete();
-                var result = OpResult.Success(clip.GetInstanceID(), $"added event '{functionName}' at {time:F3}s to '{clip.name}'");
+                var result = OpResult.Success(clip.GetMcpInstanceId(), $"added event '{functionName}' at {time:F3}s to '{clip.name}'");
                 result.Data = new JObject
                 {
                     ["clip"] = AssetReference(clip),
@@ -753,7 +753,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             data["humanBones"] = humanBones;
             data["skeleton"] = skeleton;
 
-            var result = OpResult.Success(avatar.GetInstanceID(),
+            var result = OpResult.Success(avatar.GetMcpInstanceId(),
                 $"Avatar '{avatar.name}': valid={avatar.isValid}, human={avatar.isHuman}, bones={humanBones.Count}");
             result.Data = data;
             return result;
@@ -782,7 +782,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     error = "BAD_ARGS: controllerInstanceId must be an integer";
                     return null;
                 }
-                controller = EditorUtility.InstanceIDToObject((int)idToken) as AnimatorController;
+                controller = UnityObjectIds.Resolve((int)idToken) as AnimatorController;
             }
             else controller = LoadAsset<AnimatorController>(reference);
 
@@ -840,7 +840,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
         {
             error = null;
             var id = (int?)args["instanceId"] ?? 0;
-            var gameObject = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var gameObject = UnityObjectIds.Resolve(id) as GameObject;
             if (gameObject == null)
             {
                 error = $"TARGET_NOT_FOUND: GameObject not found: instanceId={id}";
@@ -1265,7 +1265,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             {
                 ["name"] = target.name,
                 ["type"] = target.GetType().FullName,
-                ["instanceId"] = target.GetInstanceID(),
+                ["instanceId"] = target.GetMcpInstanceId(),
                 ["assetPath"] = string.IsNullOrEmpty(path) ? null : path,
                 ["guid"] = string.IsNullOrEmpty(path) ? null : AssetDatabase.AssetPathToGUID(path),
                 ["target"] = ToolTargetRef.Capture(target)?.ToJson(),
@@ -1308,7 +1308,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new JObject
             {
                 ["name"] = state.name,
-                ["instanceId"] = state.GetInstanceID(),
+                ["instanceId"] = state.GetMcpInstanceId(),
                 ["speed"] = state.speed,
                 ["tag"] = state.tag,
                 ["writeDefaultValues"] = state.writeDefaultValues,
@@ -1338,7 +1338,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             if (transition == null) return null;
             return new JObject
             {
-                ["instanceId"] = transition.GetInstanceID(),
+                ["instanceId"] = transition.GetMcpInstanceId(),
                 ["to"] = transition.destinationState != null ? transition.destinationState.name : null,
                 ["toStateMachine"] = transition.destinationStateMachine != null ? transition.destinationStateMachine.name : null,
                 ["isExit"] = transition.isExit,

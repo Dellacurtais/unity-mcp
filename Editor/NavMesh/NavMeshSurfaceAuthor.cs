@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -79,8 +80,8 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
             {
                 var item = new JObject
                 {
-                    ["instanceId"] = snapshot.Surface.gameObject.GetInstanceID(),
-                    ["surfaceInstanceId"] = snapshot.Surface.GetInstanceID(),
+                    ["instanceId"] = snapshot.Surface.gameObject.GetMcpInstanceId(),
+                    ["surfaceInstanceId"] = snapshot.Surface.GetMcpInstanceId(),
                     ["name"] = snapshot.Surface.gameObject.name,
                     ["assetPath"] = snapshot.NewPath,
                 };
@@ -92,7 +93,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
             return new OpResult
             {
                 Ok = true,
-                InstanceID = surfaces.Count == 1 ? surfaces[0].GetInstanceID() : 0,
+                InstanceID = surfaces.Count == 1 ? surfaces[0].GetMcpInstanceId() : 0,
                 Summary = $"baked and persisted {surfaces.Count} NavMeshSurface(s)",
                 Data = new JObject { ["bakedCount"] = surfaces.Count, ["surfaces"] = baked },
                 CreatedAssetPath = surfaces.Count == 1 ? (string)baked[0]["assetPath"] : null,
@@ -165,7 +166,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
             return new OpResult
             {
                 Ok = true,
-                InstanceID = surface.GetInstanceID(),
+                InstanceID = surface.GetMcpInstanceId(),
                 Summary = $"configured NavMeshSurface on '{go.name}'",
                 Data = SurfaceJson(surface),
             };
@@ -212,8 +213,8 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
                 data = new JObject
                 {
                     ["kind"] = "volume",
-                    ["instanceId"] = modifier.GetInstanceID(),
-                    ["hostInstanceId"] = go.GetInstanceID(),
+                    ["instanceId"] = modifier.GetMcpInstanceId(),
+                    ["hostInstanceId"] = go.GetMcpInstanceId(),
                     ["area"] = modifier.area,
                     ["areaName"] = AreaName(modifier.area),
                     ["center"] = JsonHelpers.Vec3(modifier.center),
@@ -237,8 +238,8 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
                 data = new JObject
                 {
                     ["kind"] = "hierarchy",
-                    ["instanceId"] = modifier.GetInstanceID(),
-                    ["hostInstanceId"] = go.GetInstanceID(),
+                    ["instanceId"] = modifier.GetMcpInstanceId(),
+                    ["hostInstanceId"] = go.GetMcpInstanceId(),
                     ["overrideArea"] = modifier.overrideArea,
                     ["area"] = modifier.area,
                     ["areaName"] = AreaName(modifier.area),
@@ -253,7 +254,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
             EditorUtility.SetDirty(component);
             PrefabUtility.RecordPrefabInstancePropertyModifications(component);
             EditorSceneManager.MarkSceneDirty(go.scene);
-            return new OpResult { Ok = true, InstanceID = component.GetInstanceID(), Summary = $"configured {component.GetType().Name} on '{go.name}'", Data = data };
+            return new OpResult { Ok = true, InstanceID = component.GetMcpInstanceId(), Summary = $"configured {component.GetType().Name} on '{go.name}'", Data = data };
         }
 
         public static OpResult AddLink(JObject args)
@@ -314,8 +315,8 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
             EditorSceneManager.MarkSceneDirty(go.scene);
             var data = new JObject
             {
-                ["instanceId"] = link.GetInstanceID(),
-                ["hostInstanceId"] = go.GetInstanceID(),
+                ["instanceId"] = link.GetMcpInstanceId(),
+                ["hostInstanceId"] = go.GetMcpInstanceId(),
                 ["startPoint"] = JsonHelpers.Vec3(link.startPoint),
                 ["endPoint"] = JsonHelpers.Vec3(link.endPoint),
                 ["width"] = link.width,
@@ -327,17 +328,17 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
                 ["costModifier"] = link.costModifier,
                 ["activated"] = link.activated,
             };
-            if (link.startTransform != null) data["startInstanceId"] = link.startTransform.gameObject.GetInstanceID();
-            if (link.endTransform != null) data["endInstanceId"] = link.endTransform.gameObject.GetInstanceID();
-            return new OpResult { Ok = true, InstanceID = link.GetInstanceID(), Summary = $"configured NavMeshLink on '{go.name}'", Data = data };
+            if (link.startTransform != null) data["startInstanceId"] = link.startTransform.gameObject.GetMcpInstanceId();
+            if (link.endTransform != null) data["endInstanceId"] = link.endTransform.gameObject.GetMcpInstanceId();
+            return new OpResult { Ok = true, InstanceID = link.GetMcpInstanceId(), Summary = $"configured NavMeshLink on '{go.name}'", Data = data };
         }
 
         private static IEnumerable<NavMeshSurface> FindLoadedSurfaces() =>
-            UnityEngine.Object.FindObjectsByType<NavMeshSurface>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            UnityObjectIds.FindAll<NavMeshSurface>(FindObjectsInactive.Include)
                 .Where(surface => surface != null && !EditorUtility.IsPersistent(surface) && surface.gameObject.scene.IsValid() && surface.gameObject.scene.isLoaded)
                 .OrderBy(surface => surface.gameObject.scene.path, StringComparer.Ordinal)
                 .ThenBy(surface => surface.gameObject.name, StringComparer.Ordinal)
-                .ThenBy(surface => surface.GetInstanceID());
+                .ThenBy(surface => surface.GetMcpInstanceId());
 
         private sealed class BakeSnapshot
         {
@@ -453,8 +454,8 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
         {
             var data = new JObject
             {
-                ["instanceId"] = surface.gameObject.GetInstanceID(),
-                ["surfaceInstanceId"] = surface.GetInstanceID(),
+                ["instanceId"] = surface.gameObject.GetMcpInstanceId(),
+                ["surfaceInstanceId"] = surface.GetMcpInstanceId(),
                 ["name"] = surface.gameObject.name,
                 ["agentTypeID"] = surface.agentTypeID,
                 ["agentTypeName"] = UnityEngine.AI.NavMesh.GetSettingsNameFromID(surface.agentTypeID),
@@ -480,7 +481,7 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
 
         private static bool TryResolveSurface(int id, out NavMeshSurface surface, out string error)
         {
-            var target = EditorUtility.InstanceIDToObject(id);
+            var target = UnityObjectIds.Resolve(id);
             surface = target as NavMeshSurface;
             if (surface == null)
             {
@@ -488,13 +489,13 @@ namespace Maicon.SceneAnalyzer.Editor.NavMesh
                 surface = go != null ? go.GetComponent<NavMeshSurface>() : null;
             }
             if (surface == null) { error = $"NavMeshSurface not found: instanceId={id}"; return false; }
-            if (!TryResolveSceneGameObject(surface.gameObject.GetInstanceID(), out _, out error)) return false;
+            if (!TryResolveSceneGameObject(surface.gameObject.GetMcpInstanceId(), out _, out error)) return false;
             return true;
         }
 
         private static bool TryResolveSceneGameObject(int id, out GameObject go, out string error)
         {
-            var target = EditorUtility.InstanceIDToObject(id);
+            var target = UnityObjectIds.Resolve(id);
             go = target as GameObject ?? (target as Component)?.gameObject;
             if (go == null) { error = $"GameObject not found: instanceId={id}"; return false; }
             if (EditorUtility.IsPersistent(go) || PrefabUtility.IsPartOfPrefabAsset(go))

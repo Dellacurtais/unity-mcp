@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -42,7 +43,7 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx.Tests
             });
 
             Assert.That(result.IsError, Is.False, result.Text);
-            var gameObject = EditorUtility.InstanceIDToObject((int)result.Json["instanceId"]) as GameObject;
+            var gameObject = UnityObjectIds.Resolve((int)result.Json["instanceId"]) as GameObject;
             Assert.That(gameObject, Is.Not.Null);
             _gameObjects.Add(gameObject);
             var collider = gameObject.GetComponent<BoxCollider>();
@@ -58,7 +59,7 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx.Tests
             var volume = CreateVolumeWithProfile(out var profile, out var path);
             AssertOk(PostEffectEditor.AddEffect(new JObject
             {
-                ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
                 ["effect"] = typeof(AuditVolumeEffect).FullName,
             }));
 
@@ -68,7 +69,7 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx.Tests
 
             var ambiguous = PostEffectEditor.AddEffect(new JObject
             {
-                ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
                 ["effect"] = "AuditSharedEffect",
             });
             Assert.That(ambiguous.Ok, Is.False);
@@ -86,7 +87,7 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx.Tests
             var group = Undo.GetCurrentGroup();
             AssertOk(PostEffectEditor.SetEffectProperty(new JObject
             {
-                ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
                 ["effect"] = typeof(AuditVolumeEffect).FullName,
                 ["property"] = "intensity",
                 ["value"] = 2f,
@@ -111,7 +112,7 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx.Tests
             var group = Undo.GetCurrentGroup();
             AssertOk(PostEffectEditor.RemoveEffect(new JObject
             {
-                ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
                 ["effect"] = typeof(AuditVolumeEffect).FullName,
             }));
             Undo.CollapseUndoOperations(group);
@@ -131,7 +132,7 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx.Tests
             var volume = CreateVolumeWithProfile(out var profile, out _);
             var empty = PostEffectEditor.ApplyColorGrading(new JObject
             {
-                ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
             });
 
             Assert.That(empty.Ok, Is.False);
@@ -147,7 +148,7 @@ namespace Maicon.SceneAnalyzer.Editor.PostFx.Tests
 
             var list = new ListPostEffectsTool().Execute(new JObject
             {
-                ["volumeInstanceId"] = volume.gameObject.GetInstanceID(),
+                ["volumeInstanceId"] = volume.gameObject.GetMcpInstanceId(),
             });
             Assert.That(list.IsError, Is.False, list.Text);
             Assert.That((int)list.Json["count"], Is.EqualTo(1));

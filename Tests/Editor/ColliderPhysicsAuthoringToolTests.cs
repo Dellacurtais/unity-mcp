@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System.Collections.Generic;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Authoring;
@@ -105,7 +106,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var invalidKindExisting = invalidKindObject.AddComponent<BoxCollider>();
             var invalidKind = PhysicsAuthor.AutoFitCollider(new JObject
             {
-                ["instanceId"] = invalidKindObject.GetInstanceID(),
+                ["instanceId"] = invalidKindObject.GetMcpInstanceId(),
                 ["kind"] = "not-a-kind",
                 ["replaceExisting"] = true,
             });
@@ -117,7 +118,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var missingMeshExisting = missingMeshObject.AddComponent<SphereCollider>();
             var missingMesh = PhysicsAuthor.AutoFitCollider(new JObject
             {
-                ["instanceId"] = missingMeshObject.GetInstanceID(),
+                ["instanceId"] = missingMeshObject.GetMcpInstanceId(),
                 ["kind"] = "mesh",
                 ["useChildren"] = false,
                 ["replaceExisting"] = true,
@@ -132,7 +133,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var dynamicExisting = dynamicObject.AddComponent<BoxCollider>();
             var nonConvexDynamic = PhysicsAuthor.AutoFitCollider(new JObject
             {
-                ["instanceId"] = dynamicObject.GetInstanceID(),
+                ["instanceId"] = dynamicObject.GetMcpInstanceId(),
                 ["kind"] = "mesh",
                 ["useChildren"] = false,
                 ["replaceExisting"] = true,
@@ -146,7 +147,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var triggerExisting = triggerObject.AddComponent<CapsuleCollider>();
             var nonConvexTrigger = PhysicsAuthor.AutoFitCollider(new JObject
             {
-                ["instanceId"] = triggerObject.GetInstanceID(),
+                ["instanceId"] = triggerObject.GetMcpInstanceId(),
                 ["kind"] = "mesh",
                 ["useChildren"] = false,
                 ["replaceExisting"] = true,
@@ -169,7 +170,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var boxUndoGroup = Undo.GetCurrentGroup();
             var boxResult = new AutoFitColliderTool().Execute(new JObject
             {
-                ["instanceId"] = boxObject.GetInstanceID(),
+                ["instanceId"] = boxObject.GetMcpInstanceId(),
                 ["kind"] = "box",
                 ["useChildren"] = false,
                 ["replaceExisting"] = true,
@@ -199,7 +200,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var capsuleObject = CreateRendererObject("LongCapsule", new Vector3(6f, 2f, 1f));
             var capsuleResult = new AutoFitColliderTool().Execute(new JObject
             {
-                ["instanceId"] = capsuleObject.GetInstanceID(),
+                ["instanceId"] = capsuleObject.GetMcpInstanceId(),
                 ["kind"] = "capsule",
                 ["useChildren"] = false,
                 ["replaceExisting"] = false,
@@ -217,7 +218,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var emptyRoot = new GameObject("EmptyRoot");
             var empty = PhysicsAuthor.AddCompoundColliders(new JObject
             {
-                ["instanceId"] = emptyRoot.GetInstanceID(),
+                ["instanceId"] = emptyRoot.GetMcpInstanceId(),
             });
             Assert.That(empty.Ok, Is.False, "a write that adds zero colliders must not report success");
 
@@ -226,7 +227,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var invalidExisting = invalidChild.AddComponent<BoxCollider>();
             var invalidKind = PhysicsAuthor.AddCompoundColliders(new JObject
             {
-                ["instanceId"] = invalidRoot.GetInstanceID(),
+                ["instanceId"] = invalidRoot.GetMcpInstanceId(),
                 ["kind"] = "not-a-kind",
                 ["replaceExisting"] = true,
             });
@@ -240,7 +241,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var meshlessExisting = meshlessChild.AddComponent<SphereCollider>();
             var meshless = PhysicsAuthor.AddCompoundColliders(new JObject
             {
-                ["instanceId"] = meshlessRoot.GetInstanceID(),
+                ["instanceId"] = meshlessRoot.GetMcpInstanceId(),
                 ["kind"] = "mesh",
                 ["replaceExisting"] = true,
             });
@@ -262,7 +263,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var group = Undo.GetCurrentGroup();
             var result = new AddCompoundCollidersTool().Execute(new JObject
             {
-                ["instanceId"] = root.GetInstanceID(),
+                ["instanceId"] = root.GetMcpInstanceId(),
                 ["kind"] = "capsule",
                 ["replaceExisting"] = true,
                 ["isTrigger"] = true,
@@ -307,7 +308,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var result = new SetPhysicsMaterialTool().Execute(new JObject
             {
-                ["instanceId"] = target.GetInstanceID(),
+                ["instanceId"] = target.GetMcpInstanceId(),
                 ["materialGuidOrPath"] = materialPath,
             });
 
@@ -338,14 +339,14 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var result = new SetPhysicsMaterialTool().Execute(new JObject
             {
-                ["instanceId"] = instance.GetInstanceID(),
-                ["colliderInstanceId"] = target.GetInstanceID(),
+                ["instanceId"] = instance.GetMcpInstanceId(),
+                ["colliderInstanceId"] = target.GetMcpInstanceId(),
                 ["materialGuidOrPath"] = AssetDatabase.AssetPathToGUID(replacementPath),
             });
 
             Assert.That(result.IsError, Is.False, result.Text);
             Assert.That(result.Json, Is.TypeOf<JObject>());
-            Assert.That((int)result.Json["collider"]["instanceId"], Is.EqualTo(target.GetInstanceID()));
+            Assert.That((int)result.Json["collider"]["instanceId"], Is.EqualTo(target.GetMcpInstanceId()));
             Assert.That((string)result.Json["material"]["assetPath"], Is.EqualTo(replacementPath));
             Assert.That(target.sharedMaterial, Is.SameAs(replacement));
             Assert.That(untouched.sharedMaterial, Is.SameAs(original));
@@ -379,8 +380,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var materialResult = new SetPhysicsMaterialTool().Execute(new JObject
             {
-                ["instanceId"] = prefabAsset.GetInstanceID(),
-                ["colliderInstanceId"] = originalCollider.GetInstanceID(),
+                ["instanceId"] = prefabAsset.GetMcpInstanceId(),
+                ["colliderInstanceId"] = originalCollider.GetMcpInstanceId(),
                 ["materialGuidOrPath"] = materialPath,
             });
             Assert.That(materialResult.IsError, Is.True);
@@ -388,7 +389,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var autoFitResult = new AutoFitColliderTool().Execute(new JObject
             {
-                ["instanceId"] = prefabAsset.GetInstanceID(),
+                ["instanceId"] = prefabAsset.GetMcpInstanceId(),
                 ["kind"] = "sphere",
                 ["useChildren"] = false,
                 ["replaceExisting"] = false,
@@ -398,7 +399,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var compoundResult = new AddCompoundCollidersTool().Execute(new JObject
             {
-                ["instanceId"] = prefabAsset.GetInstanceID(),
+                ["instanceId"] = prefabAsset.GetMcpInstanceId(),
                 ["kind"] = "capsule",
                 ["replaceExisting"] = false,
             });

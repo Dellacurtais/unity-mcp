@@ -174,11 +174,11 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
 
         public ToolResult Execute(JObject args)
         {
-            var elements = UnityEngine.Object.FindObjectsByType<UIBehaviour>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            var elements = UnityObjectIds.FindAll<UIBehaviour>(FindObjectsInactive.Include)
                 .Where(component => component is Graphic || component is Selectable || component is LayoutGroup
                     || component is CanvasScaler || component is GraphicRaycaster)
                 .ToArray();
-            var canvases = UnityEngine.Object.FindObjectsByType<Canvas>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var canvases = UnityObjectIds.FindAll<Canvas>(FindObjectsInactive.Include);
             return ToolResult.Ok($"{canvases.Length} Canvas(es), {elements.Length} uGUI component(s)", new JObject
             {
                 ["canvases"] = new JArray(canvases.Select(canvas => new JObject
@@ -228,7 +228,7 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
             GameObject parent = null;
             if (args["parentInstanceId"] != null)
             {
-                parent = EditorUtility.EntityIdToObject((EntityId)(int)args["parentInstanceId"]) as GameObject;
+                parent = UnityObjectIds.Resolve((int)args["parentInstanceId"]) as GameObject;
                 if (parent == null) return ToolResult.Error("PARENT_NOT_FOUND", "parentInstanceId must reference a GameObject");
             }
             if (!Enum.TryParse((string)args["renderMode"] ?? "ScreenSpaceOverlay", true, out RenderMode mode))
@@ -257,7 +257,7 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
                     }
                     if ((bool?)args["createEventSystem"] ?? true)
                     {
-                        var existing = UnityEngine.Object.FindFirstObjectByType<EventSystem>(FindObjectsInactive.Include);
+                        var existing = UnityEngine.Object.FindAnyObjectByType<EventSystem>(FindObjectsInactive.Include);
                         if (existing == null)
                         {
                             eventSystemObject = new GameObject("EventSystem", typeof(EventSystem));
@@ -322,7 +322,7 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
 
         public ToolResult Execute(JObject args)
         {
-            var parent = EditorUtility.EntityIdToObject((EntityId)(int)args["parentInstanceId"]) as GameObject;
+            var parent = UnityObjectIds.Resolve((int)args["parentInstanceId"]) as GameObject;
             if (parent == null || parent.GetComponent<RectTransform>() == null)
                 return ToolResult.Error("PARENT_NOT_RECT_TRANSFORM", "parentInstanceId must resolve to a RectTransform GameObject");
             var kind = (string)args["kind"];
@@ -667,7 +667,7 @@ namespace Maicon.SceneAnalyzer.Editor.UGUI
             if (gameObject == null) return error;
             var button = gameObject.GetComponent<Button>();
             if (button == null) return ToolResult.Error("BUTTON_NOT_FOUND", gameObject.name);
-            var listenerObject = EditorUtility.EntityIdToObject((EntityId)(int)args["listenerInstanceId"]) as GameObject;
+            var listenerObject = UnityObjectIds.Resolve((int)args["listenerInstanceId"]) as GameObject;
             if (listenerObject == null)
                 return ToolResult.Error("LISTENER_NOT_FOUND", "listenerInstanceId must reference a GameObject");
             var type = ComponentTypeInspector.ResolveType((string)args["componentType"]);

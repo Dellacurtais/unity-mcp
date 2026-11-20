@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -128,8 +129,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var reparented = tool.Execute(new JObject
             {
-                ["instanceId"] = child.GetInstanceID(),
-                ["newParentId"] = parent.GetInstanceID(),
+                ["instanceId"] = child.GetMcpInstanceId(),
+                ["newParentId"] = parent.GetMcpInstanceId(),
                 ["worldPositionStays"] = false,
             });
             Assert.That(reparented.IsError, Is.False, reparented.Text);
@@ -140,8 +141,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var cycle = tool.Execute(new JObject
             {
-                ["instanceId"] = parent.GetInstanceID(),
-                ["newParentId"] = child.GetInstanceID(),
+                ["instanceId"] = parent.GetMcpInstanceId(),
+                ["newParentId"] = child.GetMcpInstanceId(),
             });
             Assert.That(cycle.IsError, Is.True);
             Assert.That(parent.transform.parent, Is.Null);
@@ -159,7 +160,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             });
 
             Assert.That(result.IsError, Is.False, result.Text);
-            var created = EditorUtility.InstanceIDToObject((int)result.Json?["instanceId"]) as GameObject;
+            var created = UnityObjectIds.Resolve((int)result.Json?["instanceId"]) as GameObject;
             Assert.That(created, Is.Not.Null);
             Assert.That(created.CompareTag("MainCamera"), Is.True);
             Assert.That(previous.CompareTag("Untagged"), Is.True, "inactive MainCamera objects must also be retagged");
@@ -179,12 +180,12 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var renamed = new RenameObjectTool().Execute(new JObject
             {
-                ["instanceId"] = asset.GetInstanceID(),
+                ["instanceId"] = asset.GetMcpInstanceId(),
                 ["name"] = "MutatedAsset",
             });
             var transformed = new SetTransformTool().Execute(new JObject
             {
-                ["instanceId"] = asset.GetInstanceID(),
+                ["instanceId"] = asset.GetMcpInstanceId(),
                 ["position"] = new JArray(5f, 6f, 7f),
                 ["space"] = "Local",
             });
@@ -207,7 +208,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var result = new SetTransformTool().Execute(new JObject
             {
-                ["instanceId"] = instance.GetInstanceID(),
+                ["instanceId"] = instance.GetMcpInstanceId(),
                 ["position"] = new JArray(desired.x, desired.y, desired.z),
                 ["space"] = "Local",
             });
@@ -228,7 +229,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var target = new GameObject("FiniteTarget");
             var result = new SetTransformTool().Execute(new JObject
             {
-                ["instanceId"] = target.GetInstanceID(),
+                ["instanceId"] = target.GetMcpInstanceId(),
                 ["position"] = new JArray(float.NaN, 1f, 2f),
             });
 
@@ -249,7 +250,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 current = child.transform;
             }
 
-            var result = new DeleteObjectTool().Execute(new JObject { ["instanceId"] = root.GetInstanceID() });
+            var result = new DeleteObjectTool().Execute(new JObject { ["instanceId"] = root.GetMcpInstanceId() });
             Assert.That(result.IsError, Is.True);
             Assert.That(root != null, Is.True);
         }
@@ -326,7 +327,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         }
 
         private static GameObject[] SceneObjects()
-            => UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            => UnityObjectIds.FindAll<GameObject>(FindObjectsInactive.Include)
                 .Where(gameObject => gameObject.scene.IsValid() && gameObject.scene.isLoaded)
                 .ToArray();
 

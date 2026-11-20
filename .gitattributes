@@ -1,0 +1,26 @@
+# Normalize text to LF in the repository; Unity and Python read either ending.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF on checkout.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Unity serialized assets are text but must never be merged line by line by accident.
+*.meta    text eol=lf
+*.asset   text eol=lf
+*.prefab  text eol=lf
+*.unity   text eol=lf
+*.asmdef  text eol=lf
+
+# Binary content
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.fbx  binary
+*.glb  binary
+*.dll  binary
+*.so   binary
+*.dylib binary
+*.zip  binary

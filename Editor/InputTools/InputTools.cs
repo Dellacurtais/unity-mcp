@@ -189,7 +189,7 @@ namespace Maicon.SceneAnalyzer.Editor.InputTools
             var package = PackageInfo.FindForAssembly(typeof(InputActionAsset).Assembly);
             var assets = AssetDatabase.FindAssets("t:InputActionAsset")
                 .Select(AssetDatabase.GUIDToAssetPath).OrderBy(path => path, StringComparer.Ordinal).ToArray();
-            var players = UnityEngine.Object.FindObjectsByType<PlayerInput>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var players = UnityObjectIds.FindAll<PlayerInput>(FindObjectsInactive.Include);
             return ToolResult.Ok("Input System context", new JObject
             {
                 ["package"] = package != null ? new JObject
@@ -494,7 +494,7 @@ namespace Maicon.SceneAnalyzer.Editor.InputTools
                             issues.Add(new JObject { ["severity"] = "warning", ["code"] = "ACTION_WITHOUT_BINDING", ["assetPath"] = path, ["action"] = map.name + "/" + action.name });
                 }
             }
-            foreach (var player in UnityEngine.Object.FindObjectsByType<PlayerInput>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            foreach (var player in UnityObjectIds.FindAll<PlayerInput>(FindObjectsInactive.Include))
             {
                 if (player.actions == null)
                     issues.Add(new JObject { ["severity"] = "error", ["code"] = "PLAYER_INPUT_WITHOUT_ACTIONS", ["target"] = ToolTargetRef.Capture(player)?.ToJson() });

@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core;
 using Newtonsoft.Json.Linq;
@@ -37,7 +38,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
         {
             if (!MeshResolver.TryGetMeshAndTransforms(args, out var go, out var mesh, out var ltw, out var targetError))
                 return ToolResult.Error("NOT_FOUND", targetError);
-            int instanceId = go.GetInstanceID();
+            int instanceId = go.GetMcpInstanceId();
             if (!MeshResolver.IsReadable(mesh, out var notReadable))
                 return ToolResult.Error("MESH_NOT_READABLE", notReadable);
 

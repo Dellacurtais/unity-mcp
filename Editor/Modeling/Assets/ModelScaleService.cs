@@ -390,7 +390,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Assets
         {
             var data = new StringBuilder(ToolTargetRef.Capture(root).ToJson().ToString());
             for (var parent = root.transform.parent; parent != null; parent = parent.parent)
-                data.Append('|').Append(parent.GetInstanceID()).Append(EditorJsonUtility.ToJson(parent));
+                data.Append('|').Append(parent.GetMcpInstanceId()).Append(EditorJsonUtility.ToJson(parent));
             var hashedAssets = new HashSet<Object>();
             foreach (var component in root.GetComponentsInChildren<Component>(true))
             {

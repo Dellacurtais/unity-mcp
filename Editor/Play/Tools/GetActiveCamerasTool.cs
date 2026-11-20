@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools;
 using Newtonsoft.Json.Linq;
@@ -36,12 +37,12 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
                 var scenePath = scene.path ?? string.Empty;
                 var entry = new JObject
                 {
-                    ["instanceId"] = c.GetInstanceID(),
+                    ["instanceId"] = c.GetMcpInstanceId(),
                     ["name"] = c.name,
                     ["sceneName"] = scene.name,
                     ["scenePath"] = scenePath,
                     ["sceneGuid"] = string.IsNullOrEmpty(scenePath) ? null : AssetDatabase.AssetPathToGUID(scenePath),
-                    ["sceneHandle"] = (int)scene.handle,
+                    ["sceneHandle"] = scene.GetMcpSceneHandle(),
                     ["enabled"] = c.enabled,
                     ["tag"] = c.tag,
                     ["depth"] = c.depth,
@@ -64,7 +65,7 @@ namespace Maicon.SceneAnalyzer.Editor.Play.Tools
             return ToolResult.Ok(summary, new JObject
             {
                 ["count"] = arr.Count,
-                ["mainCameraInstanceId"] = main != null ? main.GetInstanceID() : (JToken)null,
+                ["mainCameraInstanceId"] = main != null ? main.GetMcpInstanceId() : (JToken)null,
                 ["cameras"] = arr,
             });
         }

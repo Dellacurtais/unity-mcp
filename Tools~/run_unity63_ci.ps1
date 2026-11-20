@@ -104,7 +104,7 @@ try {
     Invoke-UnityStage 'import' @('-quit', '-executeMethod', 'Unity63Ci.ImportGate.Verify')
     if (-not (Test-Path -LiteralPath $env:UNITY_MCP_CI_REPORT)) { throw 'Import verification did not produce its report.' }
     $editResults = Join-Path $artifacts 'editmode.xml'
-    # Tests also live in Modeling, AI3D, NavMesh, ShaderGraph and PostFx namespaces.
+    # Tests also live in Modeling, NavMesh, ShaderGraph and PostFx namespaces.
     # The shared root includes every package suite while excluding the CI helper.
     Invoke-UnityStage 'editmode' @('-runTests', '-testPlatform', 'EditMode', '-testFilter', 'Maicon.SceneAnalyzer', '-testResults', $editResults)
     Assert-TestResult $editResults

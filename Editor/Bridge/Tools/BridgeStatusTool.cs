@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Bridge;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
@@ -24,7 +25,7 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
         public ToolResult Execute(JObject args)
         {
             var inst = McpCommandBridge.Instance;
-            var installedBridges = Object.FindObjectsByType<McpCommandBridge>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var installedBridges = UnityObjectIds.FindAll<McpCommandBridge>(FindObjectsInactive.Include);
             if (installedBridges.Length > 1)
                 return ToolResult.Error("BRIDGE_DUPLICATES", $"found {installedBridges.Length} McpCommandBridge components; keep exactly one");
             var installed = installedBridges.Length == 1 ? installedBridges[0] : inst;
@@ -41,7 +42,7 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
             {
                 return ToolResult.Ok("bridge installed in the scene; enter Play Mode to activate runtime handlers", new JObject
                 {
-                    ["installed"] = true, ["runtimeActive"] = false, ["sceneObjectInstanceId"] = installed.gameObject.GetInstanceID(),
+                    ["installed"] = true, ["runtimeActive"] = false, ["sceneObjectInstanceId"] = installed.gameObject.GetMcpInstanceId(),
                     ["registeredHandlers"] = new JArray(), ["queuedScripts"] = 0, ["activeScripts"] = 0,
                     ["runningScriptId"] = 0, ["lastDispatch"] = JValue.CreateNull(),
                 });
@@ -63,7 +64,7 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                 new JObject
                 {
                     ["installed"] = true, ["runtimeActive"] = true,
-                    ["sceneObjectInstanceId"] = inst.gameObject.GetInstanceID(),
+                    ["sceneObjectInstanceId"] = inst.gameObject.GetMcpInstanceId(),
                     ["registeredHandlers"] = handlers, ["queuedScripts"] = inst.QueuedScripts,
                     ["activeScripts"] = inst.ActiveScripts, ["runningScriptId"] = inst.RunningScriptId,
                     ["maxQueuedScripts"] = inst.maxQueuedScripts,

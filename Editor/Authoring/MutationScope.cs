@@ -97,7 +97,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         public void TouchScene(Scene scene)
         {
-            if (scene.IsValid()) _sceneHandles.Add(scene.handle);
+            if (scene.IsValid()) _sceneHandles.Add(scene.GetMcpSceneHandle());
         }
 
         // SceneManager.GetSceneByHandle was removed in Unity 6000.3; resolve by iterating loaded scenes.
@@ -106,7 +106,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             for (int i = 0; i < SceneManager.sceneCount; i++)
             {
                 var scene = SceneManager.GetSceneAt(i);
-                if ((int)scene.handle == handle) return scene;
+                if (scene.GetMcpSceneHandle() == handle) return scene;
             }
             return default;
         }
@@ -159,7 +159,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var touchedObjects = new HashSet<int>();
             if (arguments != null) FinalizeToken(arguments, touchedScenes, touchedObjects);
             if (resultInstanceId != 0)
-                FinalizeObject(EditorUtility.InstanceIDToObject(resultInstanceId), touchedScenes, touchedObjects);
+                FinalizeObject(UnityObjectIds.Resolve(resultInstanceId), touchedScenes, touchedObjects);
 
             var scenes = new JArray();
             foreach (var handle in touchedScenes)
@@ -180,7 +180,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 {
                     if (property.Name.EndsWith("Id", StringComparison.OrdinalIgnoreCase)
                         && property.Value.Type == JTokenType.Integer)
-                        CaptureObject(EditorUtility.InstanceIDToObject((int)property.Value), scenes, objects);
+                        CaptureObject(UnityObjectIds.Resolve((int)property.Value), scenes, objects);
                     else
                         CaptureToken(property.Value, scenes, objects);
                 }
@@ -193,9 +193,9 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         private static void CaptureObject(UnityEngine.Object target, HashSet<int> scenes, HashSet<int> objects)
         {
-            if (target == null || !objects.Add(target.GetInstanceID())) return;
+            if (target == null || !objects.Add(target.GetMcpInstanceId())) return;
             var gameObject = target as GameObject ?? (target as Component)?.gameObject;
-            if (gameObject != null && gameObject.scene.IsValid()) scenes.Add(gameObject.scene.handle);
+            if (gameObject != null && gameObject.scene.IsValid()) scenes.Add(gameObject.scene.GetMcpSceneHandle());
         }
 
         private static void FinalizeToken(JToken token, HashSet<int> scenes, HashSet<int> objects)
@@ -206,7 +206,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 {
                     if (property.Name.EndsWith("Id", StringComparison.OrdinalIgnoreCase)
                         && property.Value.Type == JTokenType.Integer)
-                        FinalizeObject(EditorUtility.InstanceIDToObject((int)property.Value), scenes, objects);
+                        FinalizeObject(UnityObjectIds.Resolve((int)property.Value), scenes, objects);
                     else
                         FinalizeToken(property.Value, scenes, objects);
                 }
@@ -219,7 +219,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         private static void FinalizeObject(UnityEngine.Object target, HashSet<int> scenes, HashSet<int> objects)
         {
-            if (target == null || !objects.Add(target.GetInstanceID())) return;
+            if (target == null || !objects.Add(target.GetMcpInstanceId())) return;
             var gameObject = target as GameObject ?? (target as Component)?.gameObject;
             if (gameObject == null)
             {
@@ -228,7 +228,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 return;
             }
 
-            if (gameObject.scene.IsValid()) scenes.Add(gameObject.scene.handle);
+            if (gameObject.scene.IsValid()) scenes.Add(gameObject.scene.GetMcpSceneHandle());
             if (!PrefabUtility.IsPartOfPrefabInstance(gameObject)) return;
             PrefabUtility.RecordPrefabInstancePropertyModifications(gameObject);
             PrefabUtility.RecordPrefabInstancePropertyModifications(gameObject.transform);

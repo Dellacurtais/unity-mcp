@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.IO;
 using Newtonsoft.Json.Linq;
@@ -70,9 +71,9 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 var profileGuid = AssetDatabase.AssetPathToGUID(profilePath);
                 var data = new JObject
                 {
-                    ["instanceId"] = gameObject.GetInstanceID(),
-                    ["volumeInstanceId"] = gameObject.GetInstanceID(),
-                    ["volumeComponentInstanceId"] = volume.GetInstanceID(),
+                    ["instanceId"] = gameObject.GetMcpInstanceId(),
+                    ["volumeInstanceId"] = gameObject.GetMcpInstanceId(),
+                    ["volumeComponentInstanceId"] = volume.GetMcpInstanceId(),
                     ["name"] = gameObject.name,
                     ["isGlobal"] = volume.isGlobal,
                     ["priority"] = volume.priority,
@@ -86,7 +87,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                         : new JObject
                         {
                             ["type"] = typeof(BoxCollider).FullName,
-                            ["instanceId"] = localCollider.GetInstanceID(),
+                            ["instanceId"] = localCollider.GetMcpInstanceId(),
                             ["isTrigger"] = localCollider.isTrigger,
                         },
                 };
@@ -94,7 +95,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 return new OpResult
                 {
                     Ok = true,
-                    InstanceID = gameObject.GetInstanceID(),
+                    InstanceID = gameObject.GetMcpInstanceId(),
                     Summary = $"created {(isGlobal ? "global" : "local box")} Volume '{name}' with profile {profilePath}",
                     CreatedAssetPath = profileWasCreated ? profilePath : null,
                     Data = data,

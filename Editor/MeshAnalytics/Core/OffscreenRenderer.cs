@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using UnityEngine;
@@ -195,8 +196,8 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             private static int FindIsolationLayer()
             {
                 var usage = new int[32];
-                foreach (var renderer in UnityEngine.Object.FindObjectsByType<Renderer>(
-                             FindObjectsInactive.Include, FindObjectsSortMode.None))
+                foreach (var renderer in UnityObjectIds.FindAll<Renderer>(
+                             FindObjectsInactive.Include))
                 {
                     if (renderer == null || !renderer.gameObject.scene.IsValid()) continue;
                     usage[renderer.gameObject.layer]++;

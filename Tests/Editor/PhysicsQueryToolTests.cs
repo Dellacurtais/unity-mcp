@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Mcp;
@@ -225,7 +226,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var zeroGroundDirection = new CheckGroundTool().Execute(new JObject
             {
-                ["instanceId"] = alpha.GetInstanceID(),
+                ["instanceId"] = alpha.GetMcpInstanceId(),
                 ["down"] = Vec(0f, 0f, 0f),
             });
             Assert.That(zeroGroundDirection.IsError, Is.True, "check_ground must reject a zero direction");
@@ -235,7 +236,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             bounds.AddComponent<MeshFilter>().sharedMesh = CreateUnitMesh();
             var boundsResult = new ComputeBoundsTool().Execute(new JObject
             {
-                ["instanceId"] = bounds.GetInstanceID(),
+                ["instanceId"] = bounds.GetMcpInstanceId(),
                 ["recursive"] = false,
             });
             Assert.That(boundsResult.IsError, Is.False, boundsResult.Text);

@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -310,10 +311,10 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             EditorSceneManager.MarkSceneDirty(host.scene);
             var data = new JObject
             {
-                ["instanceId"] = link.GetInstanceID(),
-                ["hostInstanceId"] = host.GetInstanceID(),
-                ["startInstanceId"] = startTransform.gameObject.GetInstanceID(),
-                ["endInstanceId"] = end.GetInstanceID(),
+                ["instanceId"] = link.GetMcpInstanceId(),
+                ["hostInstanceId"] = host.GetMcpInstanceId(),
+                ["startInstanceId"] = startTransform.gameObject.GetMcpInstanceId(),
+                ["endInstanceId"] = end.GetMcpInstanceId(),
                 ["area"] = link.area,
                 ["areaName"] = AreaName(link.area),
                 ["costOverride"] = link.costOverride,
@@ -322,7 +323,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 ["autoUpdatePositions"] = link.autoUpdatePositions,
                 ["deprecated"] = true,
             };
-            return new OpResult { Ok = true, InstanceID = link.GetInstanceID(), Data = data, Summary = $"configured deprecated OffMeshLink on '{host.name}'" };
+            return new OpResult { Ok = true, InstanceID = link.GetMcpInstanceId(), Data = data, Summary = $"configured deprecated OffMeshLink on '{host.name}'" };
         }
 
         public static OpResult AddObstacle(JObject args)
@@ -374,8 +375,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             EditorSceneManager.MarkSceneDirty(go.scene);
             var data = new JObject
             {
-                ["instanceId"] = obstacle.GetInstanceID(),
-                ["hostInstanceId"] = go.GetInstanceID(),
+                ["instanceId"] = obstacle.GetMcpInstanceId(),
+                ["hostInstanceId"] = go.GetMcpInstanceId(),
                 ["shape"] = obstacle.shape.ToString(),
                 ["center"] = JsonHelpers.Vec3(obstacle.center),
                 ["size"] = JsonHelpers.Vec3(obstacle.size),
@@ -386,7 +387,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 ["carvingMoveThreshold"] = obstacle.carvingMoveThreshold,
                 ["carvingTimeToStationary"] = obstacle.carvingTimeToStationary,
             };
-            return new OpResult { Ok = true, InstanceID = obstacle.GetInstanceID(), Data = data, Summary = $"configured NavMeshObstacle on '{go.name}'" };
+            return new OpResult { Ok = true, InstanceID = obstacle.GetMcpInstanceId(), Data = data, Summary = $"configured NavMeshObstacle on '{go.name}'" };
         }
 
         public static int ParseAreaMask(JToken token)
@@ -482,7 +483,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
 
         private static bool TryResolveSceneGameObject(int id, out GameObject go, out string error)
         {
-            var target = EditorUtility.InstanceIDToObject(id);
+            var target = UnityObjectIds.Resolve(id);
             go = target as GameObject ?? (target as Component)?.gameObject;
             if (go == null) { error = $"GameObject not found: instanceId={id}"; return false; }
             if (EditorUtility.IsPersistent(go) || PrefabUtility.IsPartOfPrefabAsset(go))
@@ -567,8 +568,8 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             var onNavMesh = agent.isActiveAndEnabled && agent.isOnNavMesh;
             var data = new JObject
             {
-                ["instanceId"] = go.GetInstanceID(),
-                ["agentInstanceId"] = agent.GetInstanceID(),
+                ["instanceId"] = go.GetMcpInstanceId(),
+                ["agentInstanceId"] = agent.GetMcpInstanceId(),
                 ["name"] = go.name,
                 ["isOnNavMesh"] = onNavMesh,
                 ["speed"] = agent.speed,

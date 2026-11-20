@@ -10,7 +10,7 @@ adjacent to the C# package without being part of the asmdef compilation.
 ## Quick start
 
 ```bash
-cd extensions/unity-scene-analyzer/Sidecar~
+cd Sidecar~   # from the package root
 python -m venv .venv
 
 # Windows PowerShell:

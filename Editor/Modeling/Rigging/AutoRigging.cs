@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -381,8 +382,8 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
     internal static class RigAutoRigProposalRegistry
     {
         private static readonly Dictionary<int, RigAutoRigProposal> Values = new Dictionary<int, RigAutoRigProposal>();
-        public static void Store(RigAutoRigProposal proposal) { if (proposal?.Target != null) Values[proposal.Target.GetInstanceID()] = proposal; }
-        public static RigAutoRigProposal Get(GameObject target) { Values.TryGetValue(target != null ? target.GetInstanceID() : 0, out var value); return value; }
+        public static void Store(RigAutoRigProposal proposal) { if (proposal?.Target != null) Values[proposal.Target.GetMcpInstanceId()] = proposal; }
+        public static RigAutoRigProposal Get(GameObject target) { Values.TryGetValue(target != null ? target.GetMcpInstanceId() : 0, out var value); return value; }
     }
 
     [InitializeOnLoad]

@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
@@ -85,13 +86,13 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Tools
                 {
                     edgesBundle = MeshAnalysisCache.CreateResult(meshKeyEdges, analysisKeyEdges, ownerGo, ownerLtw);
                     edgesBundle.EdgeChains.AddRange(SharpEdgeDetector.Detect(ownerMesh, ownerLtw,
-                        analysisKeyEdges, edgesHash, ownerGo.GetInstanceID(), sep));
+                        analysisKeyEdges, edgesHash, ownerGo.GetMcpInstanceId(), sep));
                     MeshAnalysisCache.StoreAndPersist(analysisKeyEdges, edgesHash, edgesBundle);
                 }
                 chains = edgesBundle.EdgeChains;
                 sourceTag = $"auto:{chains.Count}";
             }
-            int ownerInstance = ownerGo.GetInstanceID();
+            int ownerInstance = ownerGo.GetMcpInstanceId();
 
             var p = new ParallelChainDetector.Params
             {

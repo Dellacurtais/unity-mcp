@@ -138,7 +138,7 @@ def test_core_profile_contains_the_shipped_inspection_and_property_tools():
 def test_modeling_profile_pages_include_model_scale_and_existing_mesh_rig_tools():
     registry = RegistryCache()
     required = {"model_preview_scale", "model_apply_scale", "mesh_analyze_cleanup",
-                "mesh_preview_cleanup", "mesh_apply_cleanup", "rig_inspect", "animation_list", "ai3d_generate"}
+                "mesh_preview_cleanup", "mesh_apply_cleanup", "rig_inspect", "animation_list"}
     registry.update("p", "v1", [{"name": name} for name in sorted(required | {"read_scene", "create_empty"})])
     page = registry.list_tools("p", {"_meta": {"profile": "modeling", "pageSize": 3}})
     names = []

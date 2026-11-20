@@ -15,7 +15,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
     public static class MeshResolver
     {
         public static GameObject ResolveGameObject(int instanceId)
-            => EditorUtility.EntityIdToObject((EntityId)instanceId) as GameObject;
+            => UnityObjectIds.Resolve(instanceId) as GameObject;
 
         public static GameObject ResolveGameObject(JObject arguments, out string error)
             => ToolTargetResolver.ResolveGameObject(arguments, out error);
@@ -103,7 +103,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             if (AssetDatabase.TryGetGUIDAndLocalFileIdentifier(mesh, out string guid, out long localFileId)
                 && !string.IsNullOrEmpty(guid))
                 return $"{guid}:{localFileId}";
-            return $"runtime:{mesh.GetInstanceID()}";
+            return $"runtime:{mesh.GetMcpInstanceId()}";
         }
 
         public static string MakeAnalysisKey(Mesh mesh, GameObject owner)
@@ -113,7 +113,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             var target = ToolTargetRef.Capture(owner);
             var ownerKey = !string.IsNullOrEmpty(target?.GlobalObjectId)
                 ? target.GlobalObjectId
-                : $"instance:{owner.GetInstanceID()}";
+                : $"instance:{owner.GetMcpInstanceId()}";
             return $"{meshKey}@{ownerKey}";
         }
 

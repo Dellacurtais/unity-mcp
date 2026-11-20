@@ -334,8 +334,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                         }
                         var gameObject = target as GameObject ?? (target as Component)?.gameObject;
                         executionArguments["instanceId"] = gameObject != null
-                            ? gameObject.GetInstanceID()
-                            : target.GetInstanceID();
+                            ? gameObject.GetMcpInstanceId()
+                            : target.GetMcpInstanceId();
                         executionArguments.Remove("target");
                     }
                 }
@@ -511,7 +511,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp
                 if (IsSerializedTargetReference(obj)) return;
                 if (obj["target"] == null && obj["instanceId"]?.Type == JTokenType.Integer)
                 {
-                    var unityObject = UnityEditor.EditorUtility.InstanceIDToObject((int)obj["instanceId"]);
+                    var unityObject = UnityObjectIds.Resolve((int)obj["instanceId"]);
                     var target = ToolTargetRef.Capture(unityObject);
                     if (target != null) obj["target"] = target.ToJson();
                 }

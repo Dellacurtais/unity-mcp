@@ -16,7 +16,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools
             var root = new JObject
             {
                 ["componentType"] = component.GetType().FullName,
-                ["instanceId"] = component.GetInstanceID(),
+                ["instanceId"] = component.GetMcpInstanceId(),
                 ["target"] = ToolTargetRef.Capture(component)?.ToJson(),
                 ["enabled"] = component is Behaviour behaviour ? behaviour.enabled : (JToken)true,
             };

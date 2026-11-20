@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -38,7 +39,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             go.transform.localPosition = JsonHelpers.ParseVector3(args["position"]);
             go.transform.localRotation = JsonHelpers.ParseRotation(args["rotation"]);
 
-            return OpResult.Success(go.GetInstanceID(), $"created particle system '{name}' from template '{template}'");
+            return OpResult.Success(go.GetMcpInstanceId(), $"created particle system '{name}' from template '{template}'");
         }
 
         private static void ApplyTemplate(ParticleSystem ps, string template)

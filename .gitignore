@@ -1,4 +1,4 @@
-# Unity generated folders
+# This repository is a Unity package (UPM). Unity project folders never belong here.
 [Ll]ibrary/
 [Tt]emp/
 [Oo]bj/
@@ -9,10 +9,15 @@
 [Uu]ser[Ss]ettings/
 MemoryCaptures/
 Recordings/
-.validation
-# Unity generated project files
 ExportedObj/
+
+# Local validation workspace: disposable Unity projects, test results and evidence.
+# Keep it on your machine; CI recreates what it needs.
+.validation/
+
+# Generated project and IDE files
 *.csproj
+!Tools~/CSharpSyntaxCheck/*.csproj
 *.unityproj
 *.sln
 *.suo
@@ -25,40 +30,32 @@ ExportedObj/
 *.mdb
 *.opendb
 *.VC.db
-
-# Unity Asset Store tools
-/[Aa]ssets/AssetStoreTools*
-
-# Python sidecar environments and caches
-Sidecar~/.venv/
-Sidecar~/venv/
-Sidecar~/env/
-Sidecar~/__pycache__/
-Sidecar~/.pytest_cache/
-Sidecar~/.mypy_cache/
-Sidecar~/.ruff_cache/
-Sidecar~/htmlcov/
-Sidecar~/.coverage
-Broker~/.venv/
-Broker~/venv/
-Broker~/env/
-Broker~/__pycache__/
-Broker~/.pytest_cache/
-Broker~/.coverage
-TripoGateway~/.venv/
-TripoGateway~/venv/
-TripoGateway~/env/
-TripoGateway~/__pycache__/
-TripoGateway~/.pytest_cache/
-TripoGateway~/.coverage
-*.py[cod]
-
-# IDE and editor settings
 .vscode/
 .idea/
 .vs/
+
+# Python environments and caches (Broker~, Sidecar~, Tools~)
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.egg-info/
+
+# Secrets and local runtime data
+.env
+.env.*
+*.sqlite3
+*.sqlite3-*
+*.log
 
 # Local tooling and operating-system files
 .mcp-indexer/
 .DS_Store
 Thumbs.db
+desktop.ini

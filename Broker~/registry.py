@@ -266,6 +266,6 @@ class RegistryCache:
                         "exit_play_mode", "set_play_paused", "step_frame", "get_play_state",
                         "get_compilation_status", "read_console", "self_test"})
         if profile == "modeling":
-            return name.startswith(("mesh_", "model_", "rig_", "animation_", "ai3d_"))
+            return name.startswith(("mesh_", "model_", "rig_", "animation_"))
         advanced = meta.get("risk") == "Critical" or meta.get("category") in {"reflect", "reflection", "packages", "build"}
         return advanced if profile == "admin" else not advanced and not read_only

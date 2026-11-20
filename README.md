@@ -1,20 +1,167 @@
 # Unity MCP Transport
 
-Production-grade Unity Editor automation exposed to AI agents over the Model Context Protocol (MCP). The package targets Unity **6000.1–6000.3**, keeps legacy tool names and `instanceId` inputs compatible, and adds stable Unity identities, structured results, capability gates, optional confirmation for high-risk operations, explicit persistence, jobs, health reporting, and package-gated ecosystem modules.
+[![Release static validation](https://github.com/Dellacurtais/unity-coder/actions/workflows/release-static.yml/badge.svg)](https://github.com/Dellacurtais/unity-coder/actions/workflows/release-static.yml)
 
-Legacy performance/validation tools have been removed. Lightweight hierarchy, Undo and Play events invalidate scene snapshots; snapshots are refreshed only when an explicit MCP read needs them.
+Let AI agents (Claude Code, Codex, any [Model Context Protocol](https://modelcontextprotocol.io) client) inspect and author a Unity project through the Editor itself: scenes, prefabs, assets, packages, builds, tests, Play Mode and more, with stable object identities, Undo-safe writes, capability gates and explicit saves.
 
-Agent coordination and Unity 6.3 validation are documented in [Agent environment](Documentation~/agent-environment-implementation.md), [bounded read contracts](Documentation~/agent-read-contracts.md), and the [Unity 6.3 CI harness](Tools~/Unity63Ci/README.md).
+The package (`com.maicon.scene-analyzer`) runs inside the Unity Editor. An optional Python **broker** keeps the MCP endpoint alive while Unity compiles, reloads its domain or restarts, so agents never lose their connection or their work.
 
-## What you get
+> Leia em português: [Documentation~/README.pt-BR.md](Documentation~/README.pt-BR.md)
 
-Two Unity windows work together:
+## Highlights
+
+- **Hundreds of Editor tools** for scenes, prefabs, assets and importers, Package Manager, builds, tests, UI, input, rendering, 2D, terrain, animation, audio, profiling and Play Mode, plus package-gated modules (URP/HDRP, Cinemachine, Timeline, ProBuilder, Addressables, ...). `get_tool_inventory` lists the exact surface of your project.
+- **Safe by default**: loopback-only, bearer token, capability switches, optional two-step confirmation for high-risk tools, Undo-aware mutations, and nothing is saved unless a save tool is called.
+- **Reload-proof broker**: a per-user supervisor keeps the broker running across Domain Reloads and Editor restarts, restarts it when it stops answering, and cleans up orphaned Unity processes.
+- **No lost long calls**: a call that is still running after 45 s answers `status: running` with a `requestId`; `broker_wait_request` returns the real result later.
+- **Editor lifecycle from outside**: close (only with clean scenes), reopen and restart the Editor, and see the native dialogs that block it.
+
+## Requirements
+
+| | |
+| --- | --- |
+| Unity | 6000.1 through 6000.6. Developed and tested on **6000.6.7f1**; Windows is the primary platform (see [Supported contract](#supported-contract)) |
+| Dependency | `com.unity.nuget.newtonsoft-json` 3.x (resolved automatically by UPM) |
+| Broker mode (recommended) | Python 3.10 or newer. Unity creates a private virtual environment for it. |
+| Embedded mode | Nothing else. Simpler, but the endpoint drops during Domain Reloads. |
+
+## Install
+
+In Unity, open **Window → Package Manager → + → Add package from git URL** and enter:
+
+```text
+https://github.com/Dellacurtais/unity-coder.git
+```
+
+Append `#vX.Y.Z` to pin a release tag, for example `https://github.com/Dellacurtais/unity-coder.git#v0.19.1`. To work on the package itself, clone the repository into your project's `Packages/` folder instead (an *embedded* package).
+
+## Quick start (broker mode)
+
+1. Open **Window → Unity MCP Transport** and select **Mode = Broker**.
+2. Click **Install**. Unity finds Python (`py -3`, `python3` or `python`, or the executable you pick), copies the broker to `%LOCALAPPDATA%\UnityMcp\Broker\installations\<version>`, and installs its pinned dependencies in a private virtual environment. The package folder is never modified.
+3. Click **Start**. From now on Unity starts the broker by itself whenever the Editor loads and none is running.
+4. Under **AI clients**, click **Install** beside **Claude Code** or **ChatGPT/Codex**. This writes the endpoint into the client's user configuration and stores the token in the per-user environment variable `UNITY_MCP_BROKER_TOKEN`. Restart the client.
+5. Ask the agent to call `get_server_health`, then `self_test`.
+
+`GET http://127.0.0.1:8765/health` (no token needed) reports the broker version, whether it is persistent, its supervisor, the bridge state of the active project and the event-loop lag.
+
+## Connecting MCP clients
+
+The endpoint is `http://127.0.0.1:8765/mcp/` (Streamable HTTP, JSON responses) and every request needs `Authorization: Bearer <token>`. The token lives in the per-user environment variable `UNITY_MCP_BROKER_TOKEN`; Unity, the broker and the clients all read it from there.
+
+**Claude Code** (`~/.claude.json`, written by the **Install** button):
+
+```json
+{
+  "mcpServers": {
+    "unity-mcp": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/mcp/",
+      "headers": { "Authorization": "Bearer ${UNITY_MCP_BROKER_TOKEN}" },
+      "headersHelper": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"C:/Users/<you>/AppData/Local/UnityMcp/Broker/bin/token-header.ps1\""
+    }
+  }
+}
+```
+
+The `headersHelper` prints the current token on every connection and after a 401, so regenerating the token never requires restarting Claude Code. Sessions that were already open pick it up after `/mcp` → Reconnect.
+
+**Codex / ChatGPT desktop** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.unity]
+url = "http://127.0.0.1:8765/mcp/"
+bearer_token_env_var = "UNITY_MCP_BROKER_TOKEN"
+```
+
+Any other MCP client works the same way: Streamable HTTP POST to the endpoint with the bearer token. Clients that send a newer `MCP-Protocol-Version` are offered `2025-06-18`.
+
+## How the broker stays up
+
+```text
+MCP clients ──HTTP──▶ broker (main.py) ◀──WebSocket── Unity bridge (in each Editor)
+                         ▲
+                 supervisor.py (one per Windows user)
+```
+
+- **Supervisor.** `supervisor.py` holds a named mutex (one per user), runs the broker as a child in persistent mode, checks `/health` every 5 s and restarts the broker when it exits or fails four checks in a row, with backoff. The broker lives in a kill-on-close job object, so nothing it started outlives the supervisor. It moves itself to a newer installation when `current.json` changes, and **Stop** asks it to quit through `runtime/supervisor.stop`. The supervisor does not depend on any Editor: closing or reopening Unity does not take the endpoint down.
+- **Watchdog.** Inside the broker, a thread outside the event loop dumps all stacks to `logs/broker.watchdog.log` when the loop stalls for 15 s and exits after 90 s, so the supervisor replaces a hung broker.
+- **Domain Reload and Editor restarts.** Reads and idempotent tools wait for Unity to reconnect (up to 300 s) instead of failing; writes wait while nothing has been sent yet. A project whose Editor has been closed for a while fails fast with `UNITY_OFFLINE` and a hint.
+- **Sessions and tokens.** If the broker restarts, an existing `Mcp-Session-Id` is adopted instead of answered with 404, because some clients never re-initialize. Unity adopts the per-user token on every load; the broker accepts it even if it was started with an older value.
+- **Background Unity processes** (Asset Import Workers, batch-mode Editors) do not open MCP connections. Set `UNITY_MCP_ALLOW_BATCH=1` when you really want MCP in batch mode.
+- **Logs and state** are under `%LOCALAPPDATA%\UnityMcp\Broker`: `logs/broker.log`, `logs/supervisor.log`, `logs/broker.stderr.log`, `logs/orphans.log`, `runtime/supervisor.json` and `data/broker.sqlite3` (the request and job ledger).
+
+Manual mode remains supported: install `Broker~/requirements.txt` in any environment, set `UNITY_MCP_BROKER_TOKEN`, then run `python Broker~/supervisor.py` (or `python Broker~/main.py` for a broker without supervision) and click **Connect** in Broker mode. See [Broker~/README.md](Broker~/README.md).
+
+## Long-running calls and jobs
+
+MCP clients give up on calls that stay silent (Claude Code after 5 minutes, Codex after 60 s by default), so the broker never holds an answer longer than 45 s:
+
+1. A call still running after 45 s answers `status: running` with `requestId` (and `unityJobId` when Unity started a job). It keeps running.
+2. Call `broker_wait_request {"requestId": "..."}`. It waits up to 55 s and returns the original call's own result, or `status: running` again. Never repeat the original call.
+3. Lost the id? `broker_list_requests` and `broker_list_jobs` list recent work, and `get_test_job` without `jobId` returns the latest test run.
+
+Builds, tests, reimports, Package Manager operations and Addressables builds are Unity jobs: the broker follows them for up to 6 hours. Run long menus (for example a custom build menu) with `execute_menu_item {"menuPath": "...", "deferred": true}`, which returns a job instead of freezing the Editor before it can answer.
+
+While a job owns the Editor (tests, builds, reimports, refresh/compile), other writes answer `RESOURCE_BUSY` with the job id at once instead of queueing for the whole job.
+
+A job can be `Queued`, `Running`, `CancelRequested`, `Completed`, `Failed`, or `Cancelled`. Some Unity APIs are synchronous once started; their preview/result explicitly states when cancellation is not possible.
+
+Receipts are written atomically to the project's `Library/UnityMcp/jobs.json`. Interrupted jobs restore as failed with `OUTCOME_UNKNOWN`, requiring inspection of their effects; they are not silently replayed. A completed operation retains its known result even when cancellation arrives late. This journal is recovery evidence, not resumable execution of Unity's native APIs.
+
+## Editor lifecycle
+
+| Tool | What it does |
+| --- | --- |
+| `broker_editor_status` | Works without the Editor: for each known project, whether its Editor process runs, the bridge state (ready, reloading, blocked), open native dialogs with their buttons, and free commit memory. |
+| `broker_close_editor` | Quits through the Editor's own `editor_quit` (File > Exit). Refuses with dirty or untitled scenes (unless `saveDirtyScenes: true`), a dirty prefab, Play Mode, a build, compilation or a running job. Never kills the process. |
+| `broker_open_editor` | Starts the Editor for a project that connected before, with the same `Unity.exe`, only when nothing has it open and enough memory is free. |
+| `broker_restart_editor` | Close followed by open, as one job. |
+| `broker_press_dialog_button` | Presses one exactly named button of a native dialog that blocks a known Editor. Ask a human which button first. |
+
+All of them preview only, unless called with `confirm: true`. Close, open and restart return a job; follow it with `broker_wait_job`.
+
+## Process cleanup
+
+The supervisor runs `Broker~/orphans.py` every 10 minutes, and `broker_cleanup_orphans` runs it on demand (`apply: false` only lists). It decides by process tree and start time, never by name alone:
+
+- It closes a Unity helper (AssetImportWorker, UnityShaderCompiler, bee, ILPP, anything under an Editor's `Editor\Data`) or a stale broker only when no live Editor or supervisor is above it.
+- It never closes an Editor, Unity Hub or anything under it, or the licensing client, and it leaves anything younger than two minutes alone.
+- It removes old broker installations that nothing references or runs from.
+
+Set `UNITY_MCP_BROKER_ORPHAN_CLEANUP=report` to only log decisions, or `off` to disable it. Run it by hand with `python Broker~/orphans.py` (add `--apply` to act).
+
+## Configuration
+
+Unity passes the main settings to the broker; the variables below override them for a manually started broker or supervisor.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `UNITY_MCP_BROKER_TOKEN` | — | Bearer token. Also the per-user variable clients read. |
+| `UNITY_MCP_BROKER_HOST` / `_PORT` | `127.0.0.1` / `8765` | Loopback address of the endpoint. |
+| `UNITY_MCP_BROKER_SYNC_WAIT` | `45` | Seconds before a call answers `status: running`. |
+| `UNITY_MCP_BROKER_MAX_WAIT_CALL` | `55` | Longest single `broker_wait_request` / `broker_wait_job`. |
+| `UNITY_MCP_BROKER_JOB_WAIT` | `21600` | How long a Unity job is followed for a pending call. |
+| `UNITY_MCP_BROKER_TIMEOUT` | `900` | Per-dispatch timeout for a Unity tool to answer. |
+| `UNITY_MCP_BROKER_RECONNECT_GRACE` | `300` | How long calls wait for Unity to reconnect. |
+| `UNITY_MCP_BROKER_STALL_DUMP` / `_STALL_EXIT` | `15` / `90` | Watchdog thresholds in seconds (`0` disables). |
+| `UNITY_MCP_BROKER_ADOPT_SESSIONS` | `1` | Adopt unknown session ids after a restart. |
+| `UNITY_MCP_BROKER_ORPHAN_CLEANUP` | `apply` | `apply`, `report` or `off`. |
+| `UNITY_MCP_BROKER_HISTORY_DAYS` | `7` | Retention of read payloads in the ledger. |
+| `UNITY_MCP_BROKER_WRITE_HISTORY_DAYS` | `14` | Retention of write payloads (receipts are kept). |
+| `UNITY_MCP_BROKER_SESSION_IDLE_SECONDS` / `_MAX_SESSIONS` | `7200` / `1024` | Session expiry and capacity. |
+| `UNITY_MCP_BROKER_FOCUS_ASSIST` | `1` | Briefly focus Unity when a tool needs Editor updates. |
+| `UNITY_MCP_ALLOW_BATCH` (Unity) | unset | `1` lets batch-mode Editors open the bridge. |
+| `UNITY_MCP_PYTHON` (Unity) | unset | Python used to install the broker. |
+
+## Editor windows
+
+The package adds these Editor windows:
 
 - **Window → Unity MCP Transport** selects Embedded or Broker mode, controls the active transport, shows bridge identity/state, and exposes safety switches.
 - **Window → Coder Chat (Unity MCP)** talks to the configured coder runtime over HTTP/SSE. The coder can call the authenticated Unity MCP endpoint to inspect and author the project.
 - **Window → Asset Modeler (Unity MCP)** opens task-focused cleanup, size normalization and save-copy flows. Advanced modeling and semantic body splitting remain available. See [the cleanup/size workflow](Documentation~/asset-modeler-preparation.md).
 - **Window → Asset Modeler → Rig & Animation Studio** separates rig diagnostics, skin weights, skeleton/bind, clips/poses, retarget, IK/bake, and auto-rig into seven focused pages with Scene View tooling.
-- **Window → AI 3D Studio (Unity MCP)** creates Tripo or Meshy jobs through the local gateway, reviews downloaded FBX candidates in quarantine, and provides a non-mutating Scene View preview before explicit acceptance.
 
 The MCP surface covers scene and asset inspection, safe authoring, project settings, multi-scene and Prefab workflows, importers, Package Manager, builds, tests, UI, input, rendering, 2D, terrain, animation, audio, profiling, Play Mode, runtime gameplay commands, mesh analytics, and optional Unity ecosystem packages.
 
@@ -22,9 +169,10 @@ The MCP surface covers scene and asset inspection, safe authoring, project setti
 
 | Area | Supported contract |
 | --- | --- |
-| Unity | 6000.1, 6000.2, and 6000.3 |
-| MCP | `2025-06-18` preferred; `2025-03-26` and `2024-11-05` accepted |
-| Transport | Embedded Streamable HTTP POST, or persistent FastAPI broker with Streamable HTTP plus an outbound Unity WebSocket bridge |
+| Unity | 6000.1 through 6000.6. Developed and tested on 6000.6.7f1; 6000.3.5f2 has a CI fixture; earlier branches compile through version symbols and are not revalidated on every release |
+| Identity on 6000.6 | `EntityId` and `SceneHandle` internally; the integer `instanceId`/`sceneHandle` fields stay for compatibility as opaque session handles (see the [6000.6 migration note](Documentation~/unity-6000.6-migration.md)) |
+| MCP | `2025-06-18` preferred; `2025-03-26` and `2024-11-05` accepted; newer `MCP-Protocol-Version` headers are offered `2025-06-18` |
+| Transport | Embedded Streamable HTTP POST, or a supervised FastAPI broker (Streamable HTTP for clients, outbound WebSocket bridge from each Editor) |
 | Authentication | Bearer token required |
 | Compatibility | Existing tool names and legacy `instanceId` inputs remain supported additively |
 | Identity | Stable `ToolTargetRef` using GlobalObjectId, asset GUID/local file ID, scene identity, hierarchy path, component type, and ordinal |
@@ -121,14 +269,6 @@ Open **Window → Asset Modeler → Rig & Animation Studio** and select a charac
 
 The implementation matrix, gates, limitations, and validation record are maintained in `Documentation~/rig-animation-studio-implementation-spec.md`.
 
-## Multi-provider AI 3D integration
-
-`TripoGateway~/` is the provider-neutral gateway for AI 3D Studio. It runs as a separate loopback FastAPI process, keeps `TRIPO_API_KEY` and `MESHY_API_KEY` outside Unity assets, authenticates local callers, checks explicit disclosure and credit budgets, persists provider-scoped idempotent jobs across restarts, retries rate limits, and immediately stores successful outputs in a size-limited SHA-256 artifact vault.
-
-The Unity Studio connects only to a loopback gateway and stores only its local token. On Windows, each provider key is sent once to the authenticated gateway, persisted in a separate Windows Credential Manager entry, and immediately removed from the Unity field; keys never enter `Assets`, `EditorPrefs`, logs or MCP arguments. Results remain outside `Assets/` until the user validates the authenticated artifact-vault root, provider/job/plan/hash chain and FBX content, then explicitly copies the candidate into quarantine. Acceptance additionally requires unchanged imported bytes, provider-specific host validation, local mesh validation and a reviewed Scene View preview hash. Scene instantiation is a separate Undo-aware action and scene saving remains explicit.
-
-The typed `ai3d_*` MCP surface plans locally without billing and requires the reviewed plan hash, exact budget, disclosure consent, external-service policy and single-use confirmation before starting work. `provider: auto` selects Meshy for generation/retopology/rig and Tripo for semantic segment/complete. Setup is in `TripoGateway~/README.md`; the original Tripo contract remains in `Documentation~/tripo-ai-integration-spec.md`, and the Meshy extension is specified in `Documentation~/meshy-ai-integration-spec.md`.
-
 ## Safety model
 
 - The listener binds only to `127.0.0.1`.
@@ -144,31 +284,9 @@ The typed `ai3d_*` MCP surface plans locally without billing and requires the re
 - Stable targets are preferred; stale explicit identities fail without rebinding to a replacement at the same path. `instanceId` remains a session-local compatibility fallback. Authorization and target identity are checked again after waiting for mutation access.
 - No normal mutation implicitly calls `SaveAssets` or saves a scene. Use `save_scene` / `save_all_scenes` explicitly.
 
-## Jobs and long-running work
+## Embedded mode
 
-Builds, tests, reimports, Package Manager operations, captures, and Addressables content builds expose job records with status, progress, timestamps, cancellation support when the underlying Unity API permits it, result, and structured error.
-
-A job can be `Queued`, `Running`, `CancelRequested`, `Completed`, `Failed`, or `Cancelled`. Some Unity APIs are synchronous once started; their preview/result explicitly states when cancellation is not possible.
-
-Receipts are written atomically to the project's `Library/UnityMcp/jobs.json`. Interrupted jobs restore as failed with `OUTCOME_UNKNOWN`, requiring inspection of their effects; they are not silently replayed. A completed operation retains its known result even when cancellation arrives late. This journal is recovery evidence, not resumable execution of Unity's native APIs.
-
-## Install
-
-### UPM via Git URL
-
-In Unity, open **Window → Package Manager → + → Add package from git URL** and enter:
-
-```text
-https://github.com/<your-org>/<your-repo>.git?path=extensions/unity-scene-analyzer
-```
-
-The required dependency `com.unity.nuget.newtonsoft-json` is declared in `package.json` and is resolved by UPM.
-
-### Local package
-
-Copy this directory under the Unity project's `Packages/` directory. If it is copied under `Assets/`, UPM does not process its `package.json`; install `com.unity.nuget.newtonsoft-json` manually.
-
-### First run — Embedded (default/fallback)
+Embedded mode runs the MCP server inside the Editor process. It needs no Python, but the endpoint is unavailable while Unity compiles or reloads its domain.
 
 1. Open **Window → Unity MCP Transport**.
 2. Keep **Mode = Embedded**, then generate or paste a bearer token.
@@ -177,30 +295,11 @@ Copy this directory under the Unity project's `Packages/` directory. If it is co
 5. Call `get_server_health`, then `self_test`.
 6. Use `get_tool_inventory` to discover the exact tool surface for the installed packages.
 
-### Persistent broker mode
-
-Broker mode keeps `http://127.0.0.1:8765/mcp/` available while Unity compiles scripts or reloads its AppDomain. The broker always runs as a separate operating-system process; Unity can install and supervise it explicitly, or an operator can continue to run it independently.
-
-Managed setup from **Window → Unity MCP Transport**:
-
-1. Install Python **3.10 or newer**. Unity discovers `py -3`, `python3`, or `python`; an explicit executable can also be selected.
-2. Stop the embedded transport and select **Mode = Broker**.
-3. Click **Install**. Unity copies the broker to a versioned user-owned directory under local application data, creates a private virtual environment, and installs `Broker~/requirements.txt`. The package itself is never modified.
-4. Click **Start**. Unity launches the separate broker with the configured bearer token and persistent SQLite/log paths, then connects the outbound WebSocket bridge. The process survives compilation and Domain Reload. It stops when the Unity process that launched it exits, including after an abnormal termination; **Stop** remains available for an explicit shutdown.
-5. Point the MCP client at `http://127.0.0.1:8765/mcp/` with the token shown in the window. Use **Repair** to rebuild the private environment and **Logs** to reveal installation/runtime logs.
-6. Under **AI clients**, click **Install** or **Update** beside **ChatGPT** or **Claude Code** to register the current endpoint and token automatically in that client's global user configuration. Restart the client after the operation.
-
-Manual setup remains supported: install `Broker~/requirements.txt` in an external environment, set `UNITY_MCP_BROKER_TOKEN`, run `python Broker~/main.py`, then click **Connect** in Broker mode. A manually launched broker has no Unity owner and keeps the operator-controlled lifetime.
-
-The broker persists requests, registries, projects, lifecycle events, and Unity jobs in SQLite. Tools advertise whether they require main-thread execution, editor updates, Scene/Game View activation, or can reload the domain. Build, test, import, package, and Addressables starters are mirrored into the durable job ledger and waited automatically; set request `_meta.autoWaitJob` to `false` when an immediate job handle is preferred. `get_tool_job`, `wait_tool_job`, and `cancel_tool_job` operate on every Unity job kind, while `broker_get_job`, `broker_wait_job`, and `broker_cancel_job` remain available outside the Editor.
+**Local copy.** Copy this directory under the Unity project's `Packages/` directory. If it is copied under `Assets/`, UPM does not process its `package.json`; install `com.unity.nuget.newtonsoft-json` manually.
 
 With **Autonomous editor activation** enabled, Unity temporarily opens and focuses the required internal Scene/Game view and keeps editor updates flowing. If an attention-dependent request still does not reach Unity's main thread within two seconds, the managed Windows broker makes a best-effort activation of the Unity process and restores the previous foreground window only when Unity still owns it. Set `UNITY_MCP_BROKER_FOCUS_ASSIST=0` for a manually launched broker to disable the operating-system fallback.
 
-Read-only and explicitly idempotent calls may resume after reconnect; accepted non-idempotent writes are never blindly repeated and return `OUTCOME_UNKNOWN` when their result cannot be proven.
-
 To roll back, click **Stop** for a managed broker (or stop a manually launched process), disconnect Broker mode, select **Embedded**, and start the embedded server. Embedded remains the default and does not require Python.
-
-For the 0.16.0 upgrade, rollback, Domain Reload, multi-project, and release-evidence checklist, see [`Documentation~/broker-release-0.16.0.md`](Documentation~/broker-release-0.16.0.md). The repository CI runs broker process tests and static C# validation without launching Unity.
 
 ### Multiple open Unity projects
 
@@ -218,6 +317,12 @@ For runtime gameplay handlers, see [`Runtime/Bridge/README.md`](Runtime/Bridge/R
 
 | Symptom | Check | Resolution |
 | --- | --- | --- |
+| 401 after reopening the Editor | `GET /health`, the per-user `UNITY_MCP_BROKER_TOKEN` | Update the package: Unity now adopts the per-user token. Reinstall the Claude Code entry from **AI clients** to get the `headersHelper`, then `/mcp` → Reconnect. |
+| A call answered `status: running` | The `requestId` in the answer | Call `broker_wait_request` with it; do not repeat the call. |
+| Write answered `RESOURCE_BUSY` | The `jobId` in the answer | A test, build, reimport or refresh job owns the Editor. Wait with `wait_tool_job`, then retry. |
+| Editor frozen, calls answer `UNITY_OFFLINE` with `dialogs` | `broker_editor_status` | A native dialog (for example *Script Updating Consent*) blocks the main thread. Answer it in Unity, or ask a human and use `broker_press_dialog_button`. |
+| Broker stopped answering | `logs/supervisor.log`, `logs/broker.watchdog.log` | The supervisor restarts it within about 25 s; the watchdog log holds the stacks of the stall. |
+| Leftover `UnityShaderCompiler` / `AssetImportWorker` processes | `broker_cleanup_orphans` (lists) | Run it with `apply: true`, or `python Broker~/orphans.py --apply`. |
 | Tool family is missing | `get_server_health.packageCompatibility` | Install a supported package version and wait for the domain reload/delayed bootstrap. |
 | Package is installed but module is `available_not_loaded` | `self_test` and Unity Console | Wait for compilation/domain reload; resolve any assembly errors. |
 | `JObject` accessibility/compiler errors | Newtonsoft package | Install `com.unity.nuget.newtonsoft-json` 3.x through UPM. |
@@ -232,21 +337,56 @@ For runtime gameplay handlers, see [`Runtime/Bridge/README.md`](Runtime/Bridge/R
 | Build/test/import job appears stuck | Health `jobs`, `activeEditorActivityLeases`, and broker request state | The broker waits automatically; inspect `broker_get_job`, or use `wait_tool_job`/`cancel_tool_job` after opting out with `_meta.autoWaitJob=false`. |
 | Sidecar unavailable | `mesh_sidecar_health` | Start the configured localhost sidecar and verify its Python dependencies. |
 
-## Release verification
+## Development
 
-Before publishing:
+Repository layout:
 
-1. Import the package in Unity 6000.1, 6000.2, and 6000.3.
-2. Run `self_test` and verify zero errors.
+| Path | Contents |
+| --- | --- |
+| `Editor/`, `Runtime/` | The Unity package (C# 9, one assembly per optional module, gated by `versionDefines`). |
+| `Tests/` | EditMode tests (`Maicon.SceneAnalyzer.Editor.Tests` and per-module test assemblies). |
+| `Broker~/` | Python broker, supervisor, watchdog and orphan cleanup, with its pytest suite. Unity ignores folders ending in `~`. |
+| `Sidecar~/` | Optional FastAPI mesh-segmentation sidecar. |
+| `Tools~/` | Release validator, C# syntax check and the Unity 6.3 CI harness. |
+| `Documentation~/` | Design notes, specs and contracts. |
+
+Checks that run without Unity (the same as CI):
+
+```bash
+python -m pip install -r Broker~/requirements-dev.txt
+python -m pytest Broker~/tests -q
+python Tools~/validate_release.py
+dotnet run --project Tools~/CSharpSyntaxCheck/CSharpSyntaxCheck.csproj --configuration Release -- .
+```
+
+Unity tests: open a project that references the package, then run the EditMode tests from **Window → General → Test Runner**. Tests of the Editor-wide mutation gate report *Ignored* when they run through `run_tests` over MCP (the test job owns the gate); run them from the Test Runner window or in batch mode. The Unity 6.3 validation fixture is described in [Tools~/Unity63Ci/README.md](Tools~/Unity63Ci/README.md).
+
+### Release verification
+
+Before publishing a version:
+
+1. Bump `package.json`, `Broker~/broker_version.py`, `SceneAnalyzerVersion.Fallback` and `RELEASE_VERSION` in `Tools~/validate_release.py`, and add the `CHANGELOG.md` entry.
+2. Import the package in Unity 6000.6 and 6000.3 (and 6000.1/6000.2 when version-gated code changed); run `self_test` and verify zero errors.
 3. Run EditMode tests; run PlayMode/bridge tests when the project includes runtime fixtures.
-4. Exercise Built-in, URP, and HDRP projects.
-5. Test each optional package both absent and present at a supported version.
-6. Verify high-risk calls execute directly by default; then enable **Confirm high-risk tools** and verify `CONFIRMATION_REQUIRED` tokens are exact-argument-bound and single-use.
-7. Verify a mutation in an additive non-active scene and a Prefab instance records the correct dirty scene/override without saving.
-8. Run `python -m pytest Broker~/tests` and sidecar pytest when shipping either external service.
-9. Verify the broker endpoint remains available through a real script compile/Domain Reload and the durable refresh job reaches a terminal state.
-10. Capture `get_server_health`, `broker_get_status`, and `get_tool_inventory` output as release evidence.
+4. Exercise Built-in, URP and HDRP projects, and each optional package both absent and present.
+5. Verify high-risk calls execute directly by default; then enable **Confirm high-risk tools** and verify `CONFIRMATION_REQUIRED` tokens are exact-argument-bound and single-use.
+6. Verify a mutation in an additive non-active scene and in a Prefab instance records the right dirty scene/override without saving.
+7. Run the broker and sidecar pytest suites for the services you ship.
+8. Verify the endpoint survives a real script compile/Domain Reload and an Editor restart, and that a durable refresh job reaches a terminal state.
+9. Capture `get_server_health`, `broker_get_status` and `get_tool_inventory` output as release evidence.
+
+## Documentation
+
+- [Agent environment](Documentation~/agent-environment-implementation.md) and [bounded read contracts](Documentation~/agent-read-contracts.md)
+- [Unity 6000.6 migration](Documentation~/unity-6000.6-migration.md) (`EntityId`, `SceneHandle`, opaque MCP handles)
+- [Broker internals](Broker~/README.md) and the [0.16.0 broker release checklist](Documentation~/broker-release-0.16.0.md)
+- [Runtime command bridge](Runtime/Bridge/README.md) and [mesh sidecar](Sidecar~/README.md)
+- [Changelog](CHANGELOG.md)
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. Start with [CONTRIBUTING.md](.github/CONTRIBUTING.md); everyone taking part agrees to the [Code of Conduct](.github/CODE_OF_CONDUCT.md). Please report security problems privately as described in [SECURITY.md](.github/SECURITY.md), not in public issues.
 
 ## License
 
-TBD.
+[MIT](LICENSE.md). Third-party Python dependencies of the broker and the sidecar keep their own licenses.

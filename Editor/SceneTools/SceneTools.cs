@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -144,7 +145,7 @@ namespace Maicon.SceneAnalyzer.Editor.SceneTools
             {
                 var scene = SceneManager.GetSceneAt(index);
                 if (!scene.IsValid()) continue;
-                if (handle.HasValue && scene.handle != handle.Value) continue;
+                if (handle.HasValue && scene.GetMcpSceneHandle() != handle.Value) continue;
                 if (!string.IsNullOrEmpty(path) && !string.Equals(scene.path, path, StringComparison.OrdinalIgnoreCase)) continue;
                 if (!string.IsNullOrEmpty(name) && !string.Equals(scene.name, name, StringComparison.Ordinal)) continue;
                 matches.Add(scene);
@@ -164,7 +165,7 @@ namespace Maicon.SceneAnalyzer.Editor.SceneTools
                 ["name"] = scene.name,
                 ["path"] = scene.path,
                 ["guid"] = string.IsNullOrEmpty(scene.path) ? null : UnityEditor.AssetDatabase.AssetPathToGUID(scene.path),
-                ["handle"] = (int)scene.handle,
+                ["handle"] = scene.GetMcpSceneHandle(),
                 ["buildIndex"] = scene.buildIndex,
                 ["isLoaded"] = scene.isLoaded,
                 ["isDirty"] = scene.isLoaded && scene.isDirty,
@@ -223,7 +224,7 @@ namespace Maicon.SceneAnalyzer.Editor.SceneTools
             try
             {
                 if (removeDestination && !string.IsNullOrEmpty(destinationPath)
-                    && !string.IsNullOrEmpty(UnityEditor.AssetDatabase.AssetPathToGUID(destinationPath)))
+                    && !string.IsNullOrEmpty(UnityEditor.AssetDatabase.AssetPathToGUID(destinationPath, UnityEditor.AssetPathToGUIDOptions.OnlyExistingAssets)))
                     UnityEditor.AssetDatabase.DeleteAsset(destinationPath);
 
                 if (createdFolders == null) return;
@@ -286,7 +287,7 @@ namespace Maicon.SceneAnalyzer.Editor.SceneTools
             }
             return ToolResult.Ok($"{loadedScenes.Count} loaded and {unloadedScenes.Count} unloaded scene(s) open", new JObject
             {
-                ["activeSceneHandle"] = (int)SceneManager.GetActiveScene().handle,
+                ["activeSceneHandle"] = SceneManager.GetActiveScene().GetMcpSceneHandle(),
                 ["sceneCount"] = scenes.Count,
                 ["loadedCount"] = loadedScenes.Count,
                 ["unloadedCount"] = unloadedScenes.Count,
@@ -542,7 +543,7 @@ namespace Maicon.SceneAnalyzer.Editor.SceneTools
                 bool samePath = string.Equals(scene.path, destination, StringComparison.OrdinalIgnoreCase);
                 if (saveAsCopy && samePath)
                     return ToolResult.Error("BAD_ARGS", "saveAsCopy requires a destination different from the source scene");
-                var destinationGuid = UnityEditor.AssetDatabase.AssetPathToGUID(destination);
+                var destinationGuid = UnityEditor.AssetDatabase.AssetPathToGUID(destination, UnityEditor.AssetPathToGUIDOptions.OnlyExistingAssets);
                 if (!samePath && !string.IsNullOrEmpty(destinationGuid))
                     return ToolResult.Error("DESTINATION_EXISTS", "destinationPath already contains an asset; choose a new path");
                 removeDestinationOnFailure = !samePath && string.IsNullOrEmpty(destinationGuid);

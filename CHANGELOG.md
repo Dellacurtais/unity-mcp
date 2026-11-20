@@ -7,82 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Unity 6000.6 support: object identity, serialized references and scene handles use `EntityId` and `SceneHandle` without truncating native identifiers. Integer MCP fields stay as session-local opaque handles, expired handles are rejected after a Domain Reload, and GlobalObjectId-based durable targets keep working. See `Documentation~/unity-6000.6-migration.md`.
+- All modules and tests use the shared identity adapter; object searches drop the obsolete sorting overloads on 6000.6 and EventSystem lookup uses `FindAnyObjectByType`.
+
 ### Fixed
 
-- Ignore effect renderers and missing/destroyed MeshFilters in the Asset Modeler picker; use Unity-aware null checks in related modeling mesh lookups and close context/scroll layout scopes reliably.
+- Saving a scene copy to a previously deleted asset path checks only existing assets, not Unity's cached GUIDs of deleted assets.
+- The local `.validation/` workspace is no longer tracked, and the C# syntax-check project used by CI is.
+
+### Removed
+
+- AI 3D Studio and its Tripo/Meshy integration: the `Editor/AI3D` assembly and its `ai3d_*` MCP tools, the `TripoGateway~` gateway, their tests, specifications and CI workflow. Unity 3D content generation is out of scope for this package.
+
+### Community
+
+- Community files: MIT license, contributing guide, code of conduct, security policy, issue and pull request templates, and a Portuguese README.
+
+## [0.19.1] - 2026-11-19
+
+Resilience release: long calls no longer time out, Domain Reloads and Editor restarts no longer drop clients or their authorization, the broker restarts itself when it stops answering, and orphaned processes are cleaned up.
+
+### Added
+
+- **Persistent broker supervisor** (`Broker~/supervisor.py`). One per user (named mutex). It survives Editor restarts, restarts the broker when it exits or when `/health` fails four times in a row, and holds the broker in a kill-on-close job object so nothing it started outlives it. Unity starts it automatically on load in Broker mode (installing the package's broker version first when needed); **Stop** asks it to quit through `runtime/supervisor.stop`.
+- **Event-loop watchdog** (`Broker~/watchdog.py`): dumps every thread's stack to `logs/broker.watchdog.log` after a 15 s stall and exits after 90 s so the supervisor starts a fresh broker.
+- **Pending answers instead of client timeouts.** A tool call still running after 45 s (`UNITY_MCP_BROKER_SYNC_WAIT`) answers `status: running` with a `requestId` (and `unityJobId` when Unity started a job) and keeps running. `broker_wait_request` waits up to 55 s per call and returns the call's own result. Unity jobs (tests, builds) are followed for up to 6 hours.
+- New broker tools: `broker_wait_request`, `broker_list_requests`, `broker_list_jobs`, `broker_cancel_request`, `broker_editor_status`, `broker_close_editor`, `broker_open_editor`, `broker_restart_editor`, `broker_press_dialog_button` and `broker_cleanup_orphans`.
+- `editor_quit` Unity tool: quits through **File > Exit** only when scenes are clean (or saved first with `saveDirtyScenes`), outside Play Mode and with no build, compilation or MCP job running. Without `confirm: true` it only previews.
+- **Orphan cleanup** (`Broker~/orphans.py`): closes Unity helpers (AssetImportWorker, UnityShaderCompiler, bee, ILPP, ...) and stale brokers whose Editor or supervisor is gone, deciding by process tree and start time. It never closes an Editor or Unity Hub, and removes old broker installations that nothing uses.
+- `execute_menu_item` accepts `deferred: true` to run long menus (player builds, bakes) as a job after the call has answered.
+- `get_test_job` without `jobId` returns the most recent test job.
+- Native dialogs that block an Editor (for example *Script Updating Consent*) are reported with their title and buttons by `broker_editor_status` and in `UNITY_OFFLINE` errors.
+- Claude Code configuration written by **AI clients → Install/Update** now includes a `headersHelper` that reads the current token on every connection and after a 401.
+
+### Fixed
+
+- Authorization after reopening the Editor: Unity adopts the per-user `UNITY_MCP_BROKER_TOKEN` (the value MCP clients use) instead of its own EditorPrefs copy, and regenerating a token updates both. The broker also accepts the current value of that variable.
+- Session lost after a broker restart: an unknown `Mcp-Session-Id` is adopted (Claude Code does not re-initialize after a 404); sessions closed with `DELETE` or evicted at capacity still answer 404.
+- Domain Reload: reads and idempotent calls wait for Unity to reconnect (up to 300 s) instead of answering `UNITY_OFFLINE`; `refresh_assets` and `request_script_compilation` are idempotent, so they no longer end as `OUTCOME_UNKNOWN`.
+- Bridge starvation while a job owns the Editor: writes take the mutation gate before a concurrency slot, and a write arriving while a job (tests, build, reimport, refresh) owns the Editor answers `RESOURCE_BUSY` with the job id at once.
+- Asset Import Workers and batch-mode Editors no longer open the MCP bridge (`UNITY_MCP_ALLOW_BATCH=1` opts in); the broker closes a `/bridge` socket that sends no `hello` within 30 s.
+- Job auto-wait uses a fresh id per poll ("Duplicate MCP request id"); a duplicate id answers `REQUEST_IN_PROGRESS` instead of logging an exception.
+- Refresh/compile releases the mutation gate when compilation finishes without a Domain Reload.
+- Restored job dates no longer reset under non-English Editor cultures.
+- The broker redirects stdout/stderr to `logs/broker.stderr.log` (a full pipe could block the whole process) and routes `asyncio`/`websockets` warnings to its log.
+- History maintenance scans through a read-only connection outside the store lock; mutation payloads expire after 14 days (receipts stay) and only the last 3 registry snapshots per project are kept; `/health` no longer waits on the database.
+- `MCP-Protocol-Version` headers from newer clients (`2025-11-25`, `2026-07-28`) are accepted and `initialize` offers `2025-06-18`.
 - Keep the broker accepting clients when they leave without `DELETE`: idle MCP sessions expire after two hours (`UNITY_MCP_BROKER_SESSION_IDLE_SECONDS`), and at the session limit (`UNITY_MCP_BROKER_MAX_SESSIONS`) `initialize` evicts the least recently used idle session instead of answering 503. Log every session's lifecycle with the client's identity, start broker log lines with a UTC timestamp and write them once, and compact the SQLite ledger with incremental auto-vacuum, rebuilding an older ledger once at startup.
+- Ignore effect renderers and missing/destroyed MeshFilters in the Asset Modeler picker; use Unity-aware null checks in related modeling mesh lookups and close context/scroll layout scopes reliably.
 
-## [0.19.1] - 2026-11-19
+### Tests
 
-Resistência a quedas, chamadas longas e processos perdidos. Relatório completo em
-`G:\HortDrift\Documentacao\MCP\RELATORIO-MCP-0.19.1.md`.
-
-### Adicionado
-
-- Broker persistente por usuário (`supervisor.py`): sobrevive ao fechamento e à reabertura do Editor, reinicia o broker quando ele sai ou quando `/health` falha 4 vezes seguidas, e coloca tudo numa job object que fecha junto com ele. O Editor inicia o supervisor sozinho ao carregar (instalando a versão do pacote se faltar) e o botão Stop pede a parada por `runtime/supervisor.stop`.
-- Vigia do laço de eventos (`watchdog.py`): despeja as pilhas de todas as threads em `logs/broker.watchdog.log` quando o laço trava por 15 s e encerra o broker aos 90 s, para o supervisor subir outro.
-- Chamadas longas não estouram mais o tempo do cliente: depois de 45 s (`UNITY_MCP_BROKER_SYNC_WAIT`) a chamada responde `status: running` com `requestId` (e `unityJobId`, se houver) e continua rodando; `broker_wait_request` espera até 55 s por vez e devolve o resultado da própria chamada. Jobs da Unity (testes, builds) são acompanhados por até 6 h.
-- Ferramentas novas do broker: `broker_wait_request`, `broker_list_requests`, `broker_list_jobs`, `broker_cancel_request`, `broker_editor_status`, `broker_close_editor`, `broker_open_editor`, `broker_restart_editor`, `broker_press_dialog_button` e `broker_cleanup_orphans`.
-- Ferramenta `editor_quit` no Editor: sai pelo File/Exit só com as cenas limpas (ou salvando-as com `saveDirtyScenes`), fora do Play, sem build, compilação ou job; sem `confirm: true` só mostra a prévia.
-- Limpeza de órfãos (`orphans.py`): fecha ajudantes da Unity e brokers cujo Editor ou supervisor morreu, decidindo pela árvore de processos e pela hora de criação; nunca fecha um Editor nem o Unity Hub. Remove instalações antigas do broker que nada usa.
-- `execute_menu_item` com `deferred: true` roda o menu como job depois de responder (builds, bakes).
-- `get_test_job` sem `jobId` devolve o job de teste mais recente.
-- Detecção de diálogos nativos que travam o Editor (por exemplo "Script Updating Consent"), com título e botões, em `broker_editor_status` e nos erros `UNITY_OFFLINE`.
-
-### Corrigido
-
-- Autorização depois de reabrir o Editor: o Editor adota a variável de usuário `UNITY_MCP_BROKER_TOKEN` (a que os clientes usam) em vez de o token do EditorPrefs; gerar token novo atualiza os dois; o broker aceita também o valor atual da variável; a configuração do Claude Code ganha um `headersHelper` que lê o token na hora.
-- Sessão perdida depois de reiniciar o broker: um `Mcp-Session-Id` desconhecido é adotado (o Claude Code não reinicializa sozinho depois de 404); sessões fechadas por `DELETE` ou despejadas continuam em 404.
-- Recarga de domínio: chamadas de leitura e idempotentes esperam a reconexão (até 300 s) em vez de responder `UNITY_OFFLINE`; `refresh_assets` e `request_script_compilation` passam a idempotentes, então não viram mais `OUTCOME_UNKNOWN`.
-- Ponte presa com a trava de escrita ocupada: escritas pegam a trava antes da vaga de concorrência, e uma escrita enquanto um job (testes, build, reimport, refresh) segura o Editor responde `RESOURCE_BUSY` com o `jobId` na hora.
-- AssetImportWorkers e Editors em modo lote não abrem mais a ponte MCP; o broker fecha um `/bridge` sem `hello` em 30 s.
-- A espera automática de jobs usa um id novo a cada consulta ("Duplicate MCP request id"); um id duplicado responde `REQUEST_IN_PROGRESS` em vez de exceção no console.
-- O refresh/compile solta a trava quando a compilação termina sem recarga de domínio.
-- Datas do diário de jobs não se perdem mais em Editor com cultura pt-BR.
-- O broker redireciona stdout/stderr para `logs/broker.stderr.log` (um pipe cheio podia travar o processo inteiro) e manda os logs de `asyncio`/`websockets` para o arquivo.
-- Manutenção do histórico varre o banco por uma conexão de leitura, fora da trava; respostas de escrita expiram após 14 dias (o recibo fica) e só as 3 últimas cópias do registro por projeto ficam guardadas.
-- O `MCP-Protocol-Version` de clientes mais novos (2025-11-25, 2026-07-28) é aceito e o `initialize` oferece 2025-06-18.
-
-### Testes
-
-- 8 testes do pacote que falhavam quando o `run_tests` vinha pelo MCP (a trava global de escrita ficava com o job de teste): o processador e o coordenador aceitam uma trava própria nos testes, os testes da trava real viram Ignored quando ela está ocupada, e o teste do manifesto acompanha o prompt atual.
-- Python: 86 testes (10 novos em `tests/test_resilience.py`).
-
-## [0.19.1] - 2026-11-19
-
-Resistência a quedas, chamadas longas e processos perdidos. Relatório completo em
-`G:\HortDrift\Documentacao\MCP\RELATORIO-MCP-0.19.1.md`.
-
-### Adicionado
-
-- Broker persistente por usuário (`supervisor.py`): sobrevive ao fechamento e à reabertura do Editor, reinicia o broker quando ele sai ou quando `/health` falha 4 vezes seguidas, e coloca tudo numa job object que fecha junto com ele. O Editor inicia o supervisor sozinho ao carregar (instalando a versão do pacote se faltar) e o botão Stop pede a parada por `runtime/supervisor.stop`.
-- Vigia do laço de eventos (`watchdog.py`): despeja as pilhas de todas as threads em `logs/broker.watchdog.log` quando o laço trava por 15 s e encerra o broker aos 90 s, para o supervisor subir outro.
-- Chamadas longas não estouram mais o tempo do cliente: depois de 45 s (`UNITY_MCP_BROKER_SYNC_WAIT`) a chamada responde `status: running` com `requestId` (e `unityJobId`, se houver) e continua rodando; `broker_wait_request` espera até 55 s por vez e devolve o resultado da própria chamada. Jobs da Unity (testes, builds) são acompanhados por até 6 h.
-- Ferramentas novas do broker: `broker_wait_request`, `broker_list_requests`, `broker_list_jobs`, `broker_cancel_request`, `broker_editor_status`, `broker_close_editor`, `broker_open_editor`, `broker_restart_editor`, `broker_press_dialog_button` e `broker_cleanup_orphans`.
-- Ferramenta `editor_quit` no Editor: sai pelo File/Exit só com as cenas limpas (ou salvando-as com `saveDirtyScenes`), fora do Play, sem build, compilação ou job; sem `confirm: true` só mostra a prévia.
-- Limpeza de órfãos (`orphans.py`): fecha ajudantes da Unity e brokers cujo Editor ou supervisor morreu, decidindo pela árvore de processos e pela hora de criação; nunca fecha um Editor nem o Unity Hub. Remove instalações antigas do broker que nada usa.
-- `execute_menu_item` com `deferred: true` roda o menu como job depois de responder (builds, bakes).
-- `get_test_job` sem `jobId` devolve o job de teste mais recente.
-- Detecção de diálogos nativos que travam o Editor (por exemplo "Script Updating Consent"), com título e botões, em `broker_editor_status` e nos erros `UNITY_OFFLINE`.
-
-### Corrigido
-
-- Autorização depois de reabrir o Editor: o Editor adota a variável de usuário `UNITY_MCP_BROKER_TOKEN` (a que os clientes usam) em vez de o token do EditorPrefs; gerar token novo atualiza os dois; o broker aceita também o valor atual da variável; a configuração do Claude Code ganha um `headersHelper` que lê o token na hora.
-- Sessão perdida depois de reiniciar o broker: um `Mcp-Session-Id` desconhecido é adotado (o Claude Code não reinicializa sozinho depois de 404); sessões fechadas por `DELETE` ou despejadas continuam em 404.
-- Recarga de domínio: chamadas de leitura e idempotentes esperam a reconexão (até 300 s) em vez de responder `UNITY_OFFLINE`; `refresh_assets` e `request_script_compilation` passam a idempotentes, então não viram mais `OUTCOME_UNKNOWN`.
-- Ponte presa com a trava de escrita ocupada: escritas pegam a trava antes da vaga de concorrência, e uma escrita enquanto um job (testes, build, reimport, refresh) segura o Editor responde `RESOURCE_BUSY` com o `jobId` na hora.
-- AssetImportWorkers e Editors em modo lote não abrem mais a ponte MCP; o broker fecha um `/bridge` sem `hello` em 30 s.
-- A espera automática de jobs usa um id novo a cada consulta ("Duplicate MCP request id"); um id duplicado responde `REQUEST_IN_PROGRESS` em vez de exceção no console.
-- O refresh/compile solta a trava quando a compilação termina sem recarga de domínio.
-- Datas do diário de jobs não se perdem mais em Editor com cultura pt-BR.
-- O broker redireciona stdout/stderr para `logs/broker.stderr.log` (um pipe cheio podia travar o processo inteiro) e manda os logs de `asyncio`/`websockets` para o arquivo.
-- Manutenção do histórico varre o banco por uma conexão de leitura, fora da trava; respostas de escrita expiram após 14 dias (o recibo fica) e só as 3 últimas cópias do registro por projeto ficam guardadas.
-- O `MCP-Protocol-Version` de clientes mais novos (2025-11-25, 2026-07-28) é aceito e o `initialize` oferece 2025-06-18.
-
-### Testes
-
-- 8 testes do pacote que falhavam quando o `run_tests` vinha pelo MCP (a trava global de escrita ficava com o job de teste): o processador e o coordenador aceitam uma trava própria nos testes, os testes da trava real viram Ignored quando ela está ocupada, e o teste do manifesto acompanha o prompt atual.
-- Python: 86 testes (10 novos em `tests/test_resilience.py`).
+- Package tests that failed when `run_tests` was started over MCP (the test job owns the Editor-wide mutation gate): the request processor and coordinator accept a private gate in tests, tests of the real gate report *Ignored* while it is held, and the agent-manifest test follows the current prompt.
+- Broker: 86 Python tests (10 new in `tests/test_resilience.py`).
+- CI: the release validator targets 0.19.1 and the C# syntax-check project is tracked.
 
 ## [0.19.0] - 2026-08-16
 
@@ -1116,13 +1096,13 @@ New `com.maicon.scene-analyzer.Editor.Timeline` asmdef gated by `defineConstrain
 
 ### Fixed
 
-- The auto-injected preamble said "Invoke them by name via the skill-runner tool" — but the D:\MCP coder doesn't have a tool literally called `skill-runner`. The actual native skill API is three tools defined in `src/core/coder/skills/skill-tool-builder.ts`: **`get_skills_list`** (discovery), **`get_skill_content`** (inspect a skill body), and **`invoke_skill`** (run it with `{skill_id, input?}` → returns the interpolated body). Updated the preamble to name all three correctly, document their args, and guide the agent on the right invocation pattern (`invoke_skill` with the matching `skill_id` and the user's intent as `input`).
+- The auto-injected preamble said "Invoke them by name via the skill-runner tool" — but the CodeStudio coder doesn't have a tool literally called `skill-runner`. The actual native skill API is three tools defined in `src/core/coder/skills/skill-tool-builder.ts`: **`get_skills_list`** (discovery), **`get_skill_content`** (inspect a skill body), and **`invoke_skill`** (run it with `{skill_id, input?}` → returns the interpolated body). Updated the preamble to name all three correctly, document their args, and guide the agent on the right invocation pattern (`invoke_skill` with the matching `skill_id` and the user's intent as `input`).
 
 ## [0.5.1] - 2026-05-09
 
 ### Fixed
 
-- D:\MCP coder's identical-response guard ("refused — IDENTICAL content … seen 1 time in last 15 turns") was rejecting normal Unity workflow patterns. The guard is calibrated for file lookups, but in Unity authoring the agent legitimately re-reads the same object after every mutation: `set_property → read_component → set_property → read_component`. Until the next mutation, the read returns identical bytes — and got blocked.
+- CodeStudio coder's identical-response guard ("refused — IDENTICAL content … seen 1 time in last 15 turns") was rejecting normal Unity workflow patterns. The guard is calibrated for file lookups, but in Unity authoring the agent legitimately re-reads the same object after every mutation: `set_property → read_component → set_property → read_component`. Until the next mutation, the read returns identical bytes — and got blocked.
 - Every tool response now carries a per-call uniqueness marker `[unity-call #N @ HH:mm:ss.fff]` appended to the last text content block. Marker is monotonic + timestamped so two queries against the same unchanged state still produce different bytes. Centralized in `HttpMcpServer.CallToolAsync` — all 47 tools get it for free.
 
 ## [0.5.0] - 2026-05-09
@@ -1240,7 +1220,7 @@ New `com.maicon.scene-analyzer.Editor.Timeline` asmdef gated by `defineConstrain
 ### Added
 
 - **Live providers/models list** from `GET /api/coder/providers`. The Coder Chat panel's Provider and Model dropdowns now reflect what's actually configured + has API keys + use-for-coder enabled in the dashboard, instead of the previous hardcoded `anthropic/openai/google/ollama` list. Provider entries show flags `[no key]` and `(default)`. Selecting a provider repopulates the Model dropdown (with context-window size as a hint). Auto-fetched on first window open + a manual **Refresh** button.
-- **🧠 Think mode** toggle in the message composer (right next to Send). When on, every outgoing message body carries `thinking: true`, which the D:\MCP coder maps to the active provider's extended-thinking primitive: Anthropic `thinking.budget_tokens`, OpenAI `reasoning_effort: high`, Gemini `thinkingConfig`. Per-message flag — flip it on/off as needed; persisted via EditorPrefs across editor restarts. Status note in the transcript shows when a message went out with think mode on.
+- **🧠 Think mode** toggle in the message composer (right next to Send). When on, every outgoing message body carries `thinking: true`, which the CodeStudio coder maps to the active provider's extended-thinking primitive: Anthropic `thinking.budget_tokens`, OpenAI `reasoning_effort: high`, Gemini `thinkingConfig`. Per-message flag — flip it on/off as needed; persisted via EditorPrefs across editor restarts. Status note in the transcript shows when a message went out with think mode on.
 - `Bootstrap.CoderProviders` cache + `OnCoderProvidersChanged` event so the window refreshes when the cache updates.
 - New DTO file `Editor/Chat/CoderProviderInfo.cs` (`CoderProviderInfo` + `CoderModelInfo`).
 
@@ -1258,14 +1238,14 @@ New `com.maicon.scene-analyzer.Editor.Timeline` asmdef gated by `defineConstrain
 
 ### Added
 
-- Per-step progress notes in the transcript: `[1/3] ensuring D:\MCP project…`, `[2/3] creating session…`, `[3/3] POST /api/coder/sessions/N/messages…`. When something goes wrong you can see exactly which hop failed.
+- Per-step progress notes in the transcript: `[1/3] ensuring CodeStudio project…`, `[2/3] creating session…`, `[3/3] POST /api/coder/sessions/N/messages…`. When something goes wrong you can see exactly which hop failed.
 - **Test connection** button next to the URL field — does a `GET /api/projects` and reports the HTTP status + the project count it can see. Quick way to verify the runtime is up and the URL/port/token are correct without needing to send a real message.
 
 ## [0.3.7] - 2026-05-09
 
 ### Added
 
-- **Auto-injected Unity context preamble on the first message of every new session.** When the chat client auto-creates a session (because Settings.CoderSessionId == 0), it prepends a short Markdown block to the user's first message describing: the Unity workdir, the full set of `ext_unity_editor__*` MCP tools available, and the two installed skills (`unity-scene-audit`, `unity-scene-author`) with their trigger conditions. The agent can then act immediately without first probing tools/list or guessing skill names — relevant for D:\MCP's name-based skill invocation tool.
+- **Auto-injected Unity context preamble on the first message of every new session.** When the chat client auto-creates a session (because Settings.CoderSessionId == 0), it prepends a short Markdown block to the user's first message describing: the Unity workdir, the full set of `ext_unity_editor__*` MCP tools available, and the two installed skills (`unity-scene-audit`, `unity-scene-author`) with their trigger conditions. The agent can then act immediately without first probing tools/list or guessing skill names — relevant for CodeStudio's name-based skill invocation tool.
 - `Settings.CoderAutoInjectContext` (default true) — kill switch.
 - `Settings.CoderCustomPreamble` — optional verbatim override of the default preamble.
 - Coder Chat panel: new "Context preamble" foldout with the toggle, the override textarea, a Preview-default button (dumps the resolved default into the transcript as a system note), and a Clear-override button.
@@ -1280,7 +1260,7 @@ New `com.maicon.scene-analyzer.Editor.Timeline` asmdef gated by `defineConstrain
 
 ### Added
 
-- **Auto-detect / auto-create D:\MCP project** for the Unity workdir. The chat client now calls `GET /api/projects`, matches `root_path` against `Bootstrap.UnityProjectRoot` (= `Path.GetDirectoryName(Application.dataPath)`), and reuses the existing project's id when found. If no match, it `POST /api/projects` with `{ root_path, name, description }` and stores the new id in `Settings.CoderProjectId`. Path comparison is case-insensitive and normalises Windows backslashes vs forward slashes.
+- **Auto-detect / auto-create CodeStudio project** for the Unity workdir. The chat client now calls `GET /api/projects`, matches `root_path` against `Bootstrap.UnityProjectRoot` (= `Path.GetDirectoryName(Application.dataPath)`), and reuses the existing project's id when found. If no match, it `POST /api/projects` with `{ root_path, name, description }` and stores the new id in `Settings.CoderProjectId`. Path comparison is case-insensitive and normalises Windows backslashes vs forward slashes.
 - `Bootstrap.UnityProjectRoot` static property (captured at editor load) — safe to read from background tasks.
 - "Auto-detect" button in the Coder Chat panel next to the Project field — runs the discover/create flow without sending a message. Clears the field with the "Clear" button if the dev wants to re-trigger detection on next Send.
 
@@ -1294,7 +1274,7 @@ New `com.maicon.scene-analyzer.Editor.Timeline` asmdef gated by `defineConstrain
 
 ### Fixed
 
-- Coder Chat session creation. Earlier mapping of the D:\MCP coder API was wrong: `POST /api/coder/sessions/:id/messages` does **not** create sessions implicitly — the server returns `Session 0 not found`. Now the chat client calls `POST /api/coder/sessions` first (with `project_id`, `title`, `provider`, optional `model`/`agent`), captures the returned `id`, then sends the message.
+- Coder Chat session creation. Earlier mapping of the CodeStudio coder API was wrong: `POST /api/coder/sessions/:id/messages` does **not** create sessions implicitly — the server returns `Session 0 not found`. Now the chat client calls `POST /api/coder/sessions` first (with `project_id`, `title`, `provider`, optional `model`/`agent`), captures the returned `id`, then sends the message.
 - The "New" button now hits the create-session endpoint for real instead of zeroing local state. Auto-creation also kicks in when the user clicks Send with `sessionId == 0`.
 - Session text field re-syncs after a successful create/auto-create so the dev sees the assigned id without clicking Refresh.
 
@@ -1332,7 +1312,7 @@ New `com.maicon.scene-analyzer.Editor.Timeline` asmdef gated by `defineConstrain
 
 ### Added
 
-- **Embedded chat panel** (`Window → Coder Chat (Scene Analyzer)`) — talks to the D:\MCP coder runtime via SSE so the dev never has to leave Unity.
+- **Embedded chat panel** (`Window → Coder Chat (Scene Analyzer)`) — talks to the CodeStudio coder runtime via SSE so the dev never has to leave Unity.
   - HTTP/SSE client (`Editor/Chat/CoderApiClient.cs`) handling text / thinking / tool_call_start / tool_call_result / plan / question / tasks_posted / session / error / done / message_complete events with `Last-Event-ID` replay.
   - In-memory `ChatSession` + UI panel with role bubbles, inline tool-call traces, cancel button, profile + agent picker.
 - `screenshot_scene_view` MCP tool — returns a PNG of the active SceneView as an MCP `image` content block.

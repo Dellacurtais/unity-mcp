@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Maicon.SceneAnalyzer.Editor.Mcp;
@@ -177,7 +178,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             agent.speed = 3.5f;
             var invalid = NavMeshAuthor.SetAgent(new JObject
             {
-                ["instanceId"] = go.GetInstanceID(),
+                ["instanceId"] = go.GetMcpInstanceId(),
                 ["speed"] = 7f,
                 ["areaMask"] = "__MissingNavMeshArea__",
             });
@@ -193,7 +194,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var persistentAgent = prefabAsset.GetComponent<NavMeshAgent>();
             var persistent = NavMeshAuthor.SetAgent(new JObject
             {
-                ["instanceId"] = prefabAsset.GetInstanceID(),
+                ["instanceId"] = prefabAsset.GetMcpInstanceId(),
                 ["speed"] = 8f,
             });
             Assert.That(persistent.Ok, Is.False);
@@ -217,7 +218,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var group = Undo.GetCurrentGroup();
             var result = new SetNavMeshAgentTool().Execute(new JObject
             {
-                ["instanceId"] = instance.GetInstanceID(),
+                ["instanceId"] = instance.GetMcpInstanceId(),
                 ["speed"] = 7f,
                 ["acceleration"] = 12f,
                 ["radius"] = 0.75f,
@@ -248,7 +249,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var endpoint = new GameObject("LinkEnd");
             var missingEndpoint = NavMeshAuthor.AddOffMeshLink(new JObject
             {
-                ["instanceId"] = host.GetInstanceID(),
+                ["instanceId"] = host.GetMcpInstanceId(),
                 ["endInstanceId"] = int.MaxValue,
             });
             Assert.That(missingEndpoint.Ok, Is.False);
@@ -256,8 +257,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var invalidArea = NavMeshAuthor.AddOffMeshLink(new JObject
             {
-                ["instanceId"] = host.GetInstanceID(),
-                ["endInstanceId"] = endpoint.GetInstanceID(),
+                ["instanceId"] = host.GetMcpInstanceId(),
+                ["endInstanceId"] = endpoint.GetMcpInstanceId(),
                 ["area"] = "__MissingNavMeshArea__",
             });
             Assert.That(invalidArea.Ok, Is.False);
@@ -266,7 +267,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var obstacleHost = new GameObject("ObstacleHost");
             var invalidObstacle = NavMeshAuthor.AddObstacle(new JObject
             {
-                ["instanceId"] = obstacleHost.GetInstanceID(),
+                ["instanceId"] = obstacleHost.GetMcpInstanceId(),
                 ["shape"] = "NotAShape",
                 ["radius"] = -1f,
             });
@@ -277,7 +278,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var group = Undo.GetCurrentGroup();
             var result = new AddNavMeshObstacleTool().Execute(new JObject
             {
-                ["instanceId"] = obstacleHost.GetInstanceID(),
+                ["instanceId"] = obstacleHost.GetMcpInstanceId(),
                 ["shape"] = "Capsule",
                 ["center"] = Vec(1f, 2f, 3f),
                 ["radius"] = 1.25f,

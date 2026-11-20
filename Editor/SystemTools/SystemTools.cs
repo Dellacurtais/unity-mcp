@@ -552,19 +552,19 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         public ToolResult Execute(JObject args)
         {
             var activeScene = SceneManager.GetActiveScene();
-            var lights = UnityEngine.Object.FindObjectsByType<Light>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            var lights = UnityObjectIds.FindAll<Light>(FindObjectsInactive.Include)
                 .Where(light => light.gameObject.scene.IsValid() && light.gameObject.scene.isLoaded)
-                .OrderBy(light => (int)light.gameObject.scene.handle)
+                .OrderBy(light => light.gameObject.scene.GetMcpSceneHandle())
                 .ThenBy(light => light.name, StringComparer.Ordinal)
                 .ToArray();
-            var reflectionProbes = UnityEngine.Object.FindObjectsByType<ReflectionProbe>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            var reflectionProbes = UnityObjectIds.FindAll<ReflectionProbe>(FindObjectsInactive.Include)
                 .Where(probe => probe.gameObject.scene.IsValid() && probe.gameObject.scene.isLoaded)
-                .OrderBy(probe => (int)probe.gameObject.scene.handle)
+                .OrderBy(probe => probe.gameObject.scene.GetMcpSceneHandle())
                 .ThenBy(probe => probe.name, StringComparer.Ordinal)
                 .ToArray();
-            var lightProbeGroups = UnityEngine.Object.FindObjectsByType<LightProbeGroup>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            var lightProbeGroups = UnityObjectIds.FindAll<LightProbeGroup>(FindObjectsInactive.Include)
                 .Where(group => group.gameObject.scene.IsValid() && group.gameObject.scene.isLoaded)
-                .OrderBy(group => (int)group.gameObject.scene.handle)
+                .OrderBy(group => group.gameObject.scene.GetMcpSceneHandle())
                 .ThenBy(group => group.name, StringComparer.Ordinal)
                 .ToArray();
 
@@ -574,7 +574,7 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
                 {
                     ["name"] = activeScene.name,
                     ["path"] = activeScene.path,
-                    ["handle"] = (int)activeScene.handle,
+                    ["handle"] = activeScene.GetMcpSceneHandle(),
                     ["dirty"] = activeScene.isDirty,
                 },
                 ["ambient"] = new JObject
@@ -662,10 +662,10 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         public bool IsWrite => false;
         public ToolResult Execute(JObject args)
         {
-            var groups = UnityEngine.Object.FindObjectsByType<LODGroup>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+            var groups = UnityObjectIds.FindAll<LODGroup>(FindObjectsInactive.Include)
                 .OrderBy(group => group.gameObject.scene.path, StringComparer.Ordinal)
                 .ThenBy(group => ToolTargetRef.BuildHierarchyPath(group.transform), StringComparer.Ordinal)
-                .ThenBy(group => group.GetInstanceID())
+                .ThenBy(group => group.GetMcpInstanceId())
                 .ToArray();
             var result = new JArray(groups.Select(group => new JObject
             {
@@ -715,8 +715,8 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
                 return ToolResult.Error("BAD_ARGS", "levels must contain 1..16 LOD level objects");
             var gameObject = SystemToolSupport.GameObject(args, out var error);
             if (gameObject == null) return error;
-            var loadedRenderers = UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsInactive.Include, FindObjectsSortMode.None)
-                .GroupBy(renderer => renderer.GetInstanceID())
+            var loadedRenderers = UnityObjectIds.FindAll<Renderer>(FindObjectsInactive.Include)
+                .GroupBy(renderer => renderer.GetMcpInstanceId())
                 .ToDictionary(group => group.Key, group => group.First());
             var seenRendererIds = new HashSet<int>();
             var levels = new List<LOD>();
@@ -1011,7 +1011,7 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             {
                 var name = string.Compare(left != null ? left.gameObject.name : string.Empty, right != null ? right.gameObject.name : string.Empty, StringComparison.Ordinal);
                 if (name != 0) return name;
-                return (left != null ? left.GetInstanceID() : 0).CompareTo(right != null ? right.GetInstanceID() : 0);
+                return (left != null ? left.GetMcpInstanceId() : 0).CompareTo(right != null ? right.GetMcpInstanceId() : 0);
             });
             foreach (var collider in colliders) hits.Add(SystemToolSupport.ObjectJson(collider));
         }
@@ -1020,8 +1020,8 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         {
             var distance = left.distance.CompareTo(right.distance);
             if (distance != 0) return distance;
-            return (left.collider != null ? left.collider.GetInstanceID() : 0)
-                .CompareTo(right.collider != null ? right.collider.GetInstanceID() : 0);
+            return (left.collider != null ? left.collider.GetMcpInstanceId() : 0)
+                .CompareTo(right.collider != null ? right.collider.GetMcpInstanceId() : 0);
         }
     }
 
@@ -1073,8 +1073,8 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             ["positionIterations"] = Physics2D.positionIterations,
             ["queriesHitTriggers"] = Physics2D.queriesHitTriggers,
             ["queriesStartInColliders"] = Physics2D.queriesStartInColliders,
-            ["rigidbodyCount"] = UnityEngine.Object.FindObjectsByType<Rigidbody2D>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length,
-            ["colliderCount"] = UnityEngine.Object.FindObjectsByType<Collider2D>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length,
+            ["rigidbodyCount"] = UnityObjectIds.FindAll<Rigidbody2D>(FindObjectsInactive.Include).Length,
+            ["colliderCount"] = UnityObjectIds.FindAll<Collider2D>(FindObjectsInactive.Include).Length,
         });
     }
 
@@ -1250,7 +1250,7 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             GameObject parent = null;
             if (args["parentInstanceId"] != null)
             {
-                parent = EditorUtility.EntityIdToObject((EntityId)(int)args["parentInstanceId"]) as GameObject;
+                parent = UnityObjectIds.Resolve((int)args["parentInstanceId"]) as GameObject;
                 if (parent == null) return ToolResult.Error("PARENT_NOT_FOUND", "parentInstanceId must reference a GameObject");
             }
 
@@ -1550,7 +1550,7 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
         }, "documents");
         public ToolResult Execute(JObject args)
         {
-            var documents = UnityEngine.Object.FindObjectsByType<UIDocument>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var documents = UnityObjectIds.FindAll<UIDocument>(FindObjectsInactive.Include);
             return ToolResult.Ok($"{documents.Length} UIDocument(s)", new JObject
             {
                 ["documents"] = new JArray(documents.Select(document => new JObject
@@ -1649,7 +1649,7 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
             GameObject parent = null;
             if (args["parentInstanceId"] != null)
             {
-                parent = EditorUtility.EntityIdToObject((EntityId)(int)args["parentInstanceId"]) as GameObject;
+                parent = UnityObjectIds.Resolve((int)args["parentInstanceId"]) as GameObject;
                 if (parent == null) return ToolResult.Error("PARENT_NOT_FOUND", "parentInstanceId must reference a GameObject");
             }
             var visualTree = args["uxmlPath"] != null
@@ -2095,10 +2095,10 @@ namespace Maicon.SceneAnalyzer.Editor.SystemTools
                 ["isPlaying"] = Application.isPlaying,
                 ["isEditor"] = Application.isEditor,
                 ["targetFrameRate"] = Application.targetFrameRate, ["vSyncCount"] = QualitySettings.vSyncCount,
-                ["gameObjects"] = UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length,
-                ["renderers"] = UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length,
-                ["rigidbodies3D"] = UnityEngine.Object.FindObjectsByType<Rigidbody>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length,
-                ["rigidbodies2D"] = UnityEngine.Object.FindObjectsByType<Rigidbody2D>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length,
+                ["gameObjects"] = UnityObjectIds.FindAll<GameObject>(FindObjectsInactive.Include).Length,
+                ["renderers"] = UnityObjectIds.FindAll<Renderer>(FindObjectsInactive.Include).Length,
+                ["rigidbodies3D"] = UnityObjectIds.FindAll<Rigidbody>(FindObjectsInactive.Include).Length,
+                ["rigidbodies2D"] = UnityObjectIds.FindAll<Rigidbody2D>(FindObjectsInactive.Include).Length,
             });
         }
     }

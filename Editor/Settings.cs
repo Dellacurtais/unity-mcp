@@ -41,7 +41,7 @@ namespace Maicon.SceneAnalyzer.Editor
         private const string KBrokerAutoConnect = "Maicon.SceneAnalyzer.BrokerAutoConnect";
         private const string KBrokerPythonPath = "Maicon.SceneAnalyzer.BrokerPythonPath";
 
-        // Coder client (Model B — chat panel inside Unity that talks to D:\MCP).
+        // Coder client (Model B — chat panel inside Unity that talks to CodeStudio).
         private const string KCoderUrl = "Maicon.SceneAnalyzer.Coder.Url";
         private const string KCoderToken = "Maicon.SceneAnalyzer.Coder.Token";
         // Session ids became opaque filesystem UUIDs in CodeStudio. Keep them
@@ -291,7 +291,7 @@ namespace Maicon.SceneAnalyzer.Editor
         }
 
         /// Cached project name from the last resolve, purely for UI. Lets the
-        /// chat panel show "id #5 — MyGame @ F:\..." instead of just "id 5".
+        /// chat panel show "id #5 — MyGame @ C:\Projects\MyGame" instead of just "id 5".
         public static string CoderProjectName
         {
             get => EditorPrefs.GetString(KCoderProjectName, "");
@@ -335,7 +335,7 @@ namespace Maicon.SceneAnalyzer.Editor
         }
 
         /// "Think mode" toggle. When true, every outgoing message body carries
-        /// `thinking: true`, which the D:\MCP coder maps to provider-specific
+        /// `thinking: true`, which the CodeStudio coder maps to provider-specific
         /// extended-thinking flags (Anthropic budget_tokens, OpenAI
         /// reasoning_effort, Gemini thinkingConfig).
         public static bool CoderThinking

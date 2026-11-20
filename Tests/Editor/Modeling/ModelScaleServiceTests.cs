@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -391,15 +392,15 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Tests
         {
             var root = StaticModel();
             var result = Apply(root, Settings());
-            int id = result.Root.GetInstanceID();
+            int id = result.Root.GetMcpInstanceId();
             var prefabPath = result.CreatedAssetPaths.Last();
             Undo.PerformUndo();
-            Assert.That(EditorUtility.InstanceIDToObject(id), Is.Null);
+            Assert.That(UnityObjectIds.Resolve(id), Is.Null);
             var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
             Assert.That(prefab.GetComponentInChildren<MeshFilter>().sharedMesh, Is.Not.Null);
             foreach (var path in result.CreatedAssetPaths) Assert.That(AssetDatabase.LoadMainAssetAtPath(path), Is.Not.Null);
             Undo.PerformRedo();
-            var restored = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var restored = UnityObjectIds.Resolve(id) as GameObject;
             Assert.That(restored, Is.Not.Null);
             if (restored != null) _objects.Add(restored);
             Assert.That(restored.GetComponentInChildren<MeshFilter>().sharedMesh, Is.SameAs(prefab.GetComponentInChildren<MeshFilter>().sharedMesh));

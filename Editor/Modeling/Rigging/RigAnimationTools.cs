@@ -471,7 +471,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
                 if (Enum.TryParse((string)arguments?["placementPreset"], true, out RigIkPlacementPreset preset)) RigIkService.ApplyPlacementPreset(binding, preset);
                 if ((bool?)arguments?["useAnimationRigging"] == true && AnimationRiggingAdapter.IsAvailable)
                     AnimationRiggingAdapter.TryCreateConstraint(binding, out constraint, out adapterMessage);
-                return ToolResult.Ok("IK binding created.", new JObject { ["bindingInstanceId"] = binding.gameObject.GetInstanceID(), ["targetInstanceId"] = binding.Target.gameObject.GetInstanceID(), ["animationRiggingAvailable"] = AnimationRiggingAdapter.IsAvailable, ["animationRiggingConstraintInstanceId"] = constraint != null ? constraint.gameObject.GetInstanceID() : 0, ["animationRiggingMessage"] = adapterMessage });
+                return ToolResult.Ok("IK binding created.", new JObject { ["bindingInstanceId"] = binding.gameObject.GetMcpInstanceId(), ["targetInstanceId"] = binding.Target.gameObject.GetMcpInstanceId(), ["animationRiggingAvailable"] = AnimationRiggingAdapter.IsAvailable, ["animationRiggingConstraintInstanceId"] = constraint != null ? constraint.gameObject.GetMcpInstanceId() : 0, ["animationRiggingMessage"] = adapterMessage });
             }
             catch (Exception exception) { return ToolResult.Error("IK_CREATE_FAILED", exception.Message); }
         }

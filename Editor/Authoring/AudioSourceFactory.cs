@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 
@@ -42,11 +43,11 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 source.playOnAwake = (bool?)args["playOnAwake"] ?? source.playOnAwake;
                 mutation.Complete();
 
-                var result = OpResult.Success(go.GetInstanceID(),
+                var result = OpResult.Success(go.GetMcpInstanceId(),
                     $"created audio source '{name}'" + (clip != null ? $" with clip '{clip.name}'" : string.Empty));
                 result.Data = new JObject
                 {
-                    ["instanceId"] = go.GetInstanceID(),
+                    ["instanceId"] = go.GetMcpInstanceId(),
                     ["source"] = AudioAuthor.SourceState(source),
                     ["clip"] = AudioAuthor.ClipReference(clip),
                 };

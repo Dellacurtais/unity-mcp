@@ -71,7 +71,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Object.DestroyImmediate(original);
             var replacement = new GameObject("Original");
             SaveScene();
-            TestContext.WriteLine($"original={target.ToJson()} replacement={ToolTargetRef.Capture(replacement).ToJson()} nativeOld={EditorUtility.InstanceIDToObject(target.InstanceId)}");
+            TestContext.WriteLine($"original={target.ToJson()} replacement={ToolTargetRef.Capture(replacement).ToJson()} nativeOld={UnityObjectIds.Resolve(target.InstanceId)}");
 
             Assert.That(ToolTargetResolver.Resolve(target, out var error), Is.Null);
             StringAssert.StartsWith("TARGET_IDENTITY_STALE", error);
@@ -100,7 +100,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             target.GlobalObjectId = null; // Exercise the GUID-only identity contract too.
             AssetDatabase.DeleteAsset(Root + "/Original.asset");
             var replacement = CreateAsset("Original.asset");
-            TestContext.WriteLine($"assetOriginal={target.ToJson()} replacement={ToolTargetRef.Capture(replacement).ToJson()} nativeOld={EditorUtility.InstanceIDToObject(target.InstanceId)}");
+            TestContext.WriteLine($"assetOriginal={target.ToJson()} replacement={ToolTargetRef.Capture(replacement).ToJson()} nativeOld={UnityObjectIds.Resolve(target.InstanceId)}");
 
             Assert.That(ToolTargetResolver.Resolve(target, out var error), Is.Null);
             StringAssert.StartsWith("TARGET_IDENTITY_STALE", error);
@@ -154,7 +154,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 ["model"] = new JObject { ["editableRoot"] = expectedRoot.DeepClone() },
                 ["references"] = new JArray(expectedComponent.DeepClone()),
-                ["legacy"] = new JObject { ["instanceId"] = original.GetInstanceID(), ["name"] = original.name },
+                ["legacy"] = new JObject { ["instanceId"] = original.GetMcpInstanceId(), ["name"] = original.name },
             });
             var directProducer = new TargetResultTool("target_result_direct", expectedRoot);
             var consumer = new TargetConsumerTool();
@@ -289,7 +289,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                     new JObject { ["kind"] = kind, ["args"] = firstArgs },
                     new JObject { ["kind"] = "set_property", ["args"] = new JObject
                     {
-                        ["instanceId"] = missingComponent.GetInstanceID(), ["componentType"] = "AudioSource",
+                        ["instanceId"] = missingComponent.GetMcpInstanceId(), ["componentType"] = "AudioSource",
                         ["propertyPath"] = "m_Volume", ["value"] = 0.5,
                     } },
                 },

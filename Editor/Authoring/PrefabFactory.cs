@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -59,7 +60,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 instance.transform.localRotation = rotation;
                 instance.transform.localScale = scale;
                 mutation.Complete();
-                return OpResult.Success(instance.GetInstanceID(), $"instantiated prefab '{prefab.name}'");
+                return OpResult.Success(instance.GetMcpInstanceId(), $"instantiated prefab '{prefab.name}'");
             }
         }
     }

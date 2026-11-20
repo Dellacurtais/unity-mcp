@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -60,7 +61,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 clone.transform.localRotation = rotation;
                 clone.transform.localScale = scale;
                 mutation.Complete();
-                return OpResult.Success(clone.GetInstanceID(), $"duplicated '{source.name}' → '{clone.name}'");
+                return OpResult.Success(clone.GetMcpInstanceId(), $"duplicated '{source.name}' → '{clone.name}'");
             }
         }
 

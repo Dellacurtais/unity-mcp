@@ -2,12 +2,13 @@
   "name": "com.maicon.scene-analyzer",
   "version": "0.19.1",
   "displayName": "Unity MCP Transport",
-  "description": "Production-grade Unity 6.1-6.3 MCP server for scene and asset authoring, project/build/test workflows, runtime gameplay validation, package-gated ecosystem integrations, structured health reporting, and registry-generated tool inventory. Includes stable Unity targets, Undo-safe mutations, explicit save operations, capability gates, and optional two-step confirmation for high-risk tools.",
+  "description": "Production-grade Unity 6.1-6.6 MCP server for scene and asset authoring, project/build/test workflows, runtime gameplay validation, package-gated ecosystem integrations, structured health reporting, and registry-generated tool inventory. Includes stable Unity targets, Undo-safe mutations, explicit save operations, capability gates, and optional two-step confirmation for high-risk tools.",
   "unity": "6000.1",
   "author": {
     "name": "Maicon Gonçalez",
     "email": "maiconspo@gmail.com"
   },
+  "license": "MIT",
   "keywords": [
     "mcp",
     "ai",
@@ -16,6 +17,9 @@
     "authoring"
   ],
   "category": "Editor",
+  "documentationUrl": "https://github.com/Dellacurtais/unity-coder#readme",
+  "changelogUrl": "https://github.com/Dellacurtais/unity-coder/blob/master/CHANGELOG.md",
+  "licensesUrl": "https://github.com/Dellacurtais/unity-coder/blob/master/LICENSE.md",
   "dependencies": {
     "com.unity.modules.animation": "1.0.0",
     "com.unity.modules.imageconversion": "1.0.0",

@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.IO;
 using System.Linq;
@@ -29,7 +30,7 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
             return new OpResult
             {
                 Ok = true,
-                InstanceID = asset.GetInstanceID(),
+                InstanceID = asset.GetMcpInstanceId(),
                 Summary = $"created TimelineAsset at {path}",
                 CreatedAssetPath = path,
             };
@@ -48,7 +49,7 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
             Undo.RecordObject(asset, "Add Timeline Track");
             var track = asset.CreateTrack(trackType, null, trackName);
             EditorUtility.SetDirty(asset);
-            return OpResult.Success(asset.GetInstanceID(), $"added {trackType.Name} '{trackName}'");
+            return OpResult.Success(asset.GetMcpInstanceId(), $"added {trackType.Name} '{trackName}'");
         }
 
         public static OpResult AddClip(JObject args)
@@ -91,14 +92,14 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
             }
 
             EditorUtility.SetDirty(asset);
-            return OpResult.Success(asset.GetInstanceID(),
+            return OpResult.Success(asset.GetMcpInstanceId(),
                 $"added clip on '{trackName}' start={clip.start:F2} dur={clip.duration:F2}");
         }
 
         public static OpResult AssignToDirector(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
 
             var director = go.GetComponent<PlayableDirector>();
@@ -115,7 +116,7 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
         public static OpResult Play(JObject args)
         {
             var id = (int?)args["instanceId"] ?? 0;
-            var go = EditorUtility.InstanceIDToObject(id) as GameObject;
+            var go = UnityObjectIds.Resolve(id) as GameObject;
             if (go == null) return OpResult.Fail($"GameObject not found: instanceId={id}");
             var director = go.GetComponent<PlayableDirector>();
             if (director == null) return OpResult.Fail("no PlayableDirector on GameObject");
@@ -146,7 +147,7 @@ namespace Maicon.SceneAnalyzer.Editor.Timeline
             if (idObj != null && idObj.Type == JTokenType.Integer)
             {
                 var id = (int)idObj;
-                var ta = EditorUtility.InstanceIDToObject(id) as TimelineAsset;
+                var ta = UnityObjectIds.Resolve(id) as TimelineAsset;
                 if (ta == null) { err = $"timeline not found: instanceId={id}"; return null; }
                 return ta;
             }

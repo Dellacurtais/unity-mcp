@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -32,7 +33,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             var typeName = (string)args["componentType"];
             var max = (int?)args["maxArrayItems"] ?? ReadHelpers.DefaultMaxArrayItems;
 
-            var target = EditorUtility.InstanceIDToObject(id);
+            var target = UnityObjectIds.Resolve(id);
             var requestedComponent = target as Component;
             var go = target as GameObject ?? requestedComponent?.gameObject;
             if (go == null) return ToolResult.Error("NOT_FOUND", $"GameObject or Component not found: instanceId={id}");
@@ -63,8 +64,8 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Tools.Read
             {
                 ["instanceId"] = id,
                 ["requestedInstanceId"] = id,
-                ["gameObjectInstanceId"] = go.GetInstanceID(),
-                ["componentInstanceId"] = requestedComponent != null ? requestedComponent.GetInstanceID() : (JToken)null,
+                ["gameObjectInstanceId"] = go.GetMcpInstanceId(),
+                ["componentInstanceId"] = requestedComponent != null ? requestedComponent.GetMcpInstanceId() : (JToken)null,
                 ["gameObjectName"] = go.name,
                 ["components"] = arr,
             };

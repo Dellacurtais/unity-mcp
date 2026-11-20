@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Bridge;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Newtonsoft.Json.Linq;
@@ -34,19 +35,19 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
             if (EditorApplication.isPlayingOrWillChangePlaymode)
                 return ToolResult.Error("EDIT_MODE_REQUIRED", "install the bridge in Edit Mode so it exists before runtime Awake/Start handlers register");
             bool ddol = (bool?)args["markDontDestroyOnLoad"] ?? true;
-            var existingBridges = Object.FindObjectsByType<McpCommandBridge>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var existingBridges = UnityObjectIds.FindAll<McpCommandBridge>(FindObjectsInactive.Include);
             if (existingBridges.Length > 1)
                 return ToolResult.Error("BRIDGE_DUPLICATES", $"found {existingBridges.Length} McpCommandBridge components; keep exactly one");
             if (existingBridges.Length == 1)
             {
                 var existing = existingBridges[0];
                 return ToolResult.Ok(
-                    $"bridge already installed on '{existing.name}' (instanceId {existing.gameObject.GetInstanceID()})",
+                    $"bridge already installed on '{existing.name}' (instanceId {existing.gameObject.GetMcpInstanceId()})",
                     new JObject
                     {
                         ["installed"] = true,
                         ["alreadyExisted"] = true,
-                        ["sceneObjectInstanceId"] = existing.gameObject.GetInstanceID(),
+                        ["sceneObjectInstanceId"] = existing.gameObject.GetMcpInstanceId(),
                         ["dontDestroyOnLoad"] = existing.dontDestroyOnLoad,
                     });
             }
@@ -64,12 +65,12 @@ namespace Maicon.SceneAnalyzer.Editor.Bridge.Tools
                     mutation.Complete();
                 }
                 return ToolResult.Ok(
-                    $"bridge installed on '{go.name}' (instanceId {go.GetInstanceID()})",
+                    $"bridge installed on '{go.name}' (instanceId {go.GetMcpInstanceId()})",
                     new JObject
                     {
                         ["installed"] = true,
                         ["alreadyExisted"] = false,
-                        ["sceneObjectInstanceId"] = go.GetInstanceID(),
+                        ["sceneObjectInstanceId"] = go.GetMcpInstanceId(),
                         ["dontDestroyOnLoad"] = ddol,
                     });
             }

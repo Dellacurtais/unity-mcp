@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Mcp;
@@ -16,12 +17,12 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 {
     public sealed class AnimationMecanimToolTests
     {
-        private const string Root = "Assets/__SceneAnalyzerAnimationAudit";
-        private const string ControllerPath = Root + "/Audit.controller";
-        private const string ClipPath = Root + "/Audit.anim";
-        private const string MaskPath = Root + "/Audit.mask";
-        private const string AvatarPath = Root + "/AuditAvatar.asset";
-        private const string PrefabPath = Root + "/Animated.prefab";
+        private static string Root;
+        private static string ControllerPath => Root + "/Audit.controller";
+        private static string ClipPath => Root + "/Audit.anim";
+        private static string MaskPath => Root + "/Audit.mask";
+        private static string AvatarPath => Root + "/AuditAvatar.asset";
+        private static string PrefabPath => Root + "/Animated.prefab";
 
         private AnimatorController _controller;
         private AnimationClip _clip;
@@ -32,8 +33,11 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
         {
             Undo.ClearAll();
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            AssetDatabase.DeleteAsset(Root);
-            AssetDatabase.CreateFolder("Assets", "__SceneAnalyzerAnimationAudit");
+            // Do not reuse paths whose importer/native objects can still be
+            // pending deletion from an earlier test in this Editor session.
+            var folderName = "__SceneAnalyzerAnimationAudit_" + Guid.NewGuid().ToString("N");
+            Root = "Assets/" + folderName;
+            AssetDatabase.CreateFolder("Assets", folderName);
 
             _controller = AnimatorController.CreateAnimatorControllerAtPath(ControllerPath);
             Assert.That(_controller, Is.Not.Null);
@@ -295,6 +299,10 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 new AnimationEvent { time = 0.5f, functionName = "Footstep" },
             });
+            // The asset-read tools reload from disk; persist the fixture before
+            // discovery can trigger pending imports of its newly created assets.
+            EditorUtility.SetDirty(_clip);
+            AssetDatabase.SaveAssets();
 
             var listed = new ListAnimatorControllersTool().Execute(new JObject
             {
@@ -780,7 +788,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             Undo.ClearAll();
             var assigned = new AssignAnimatorControllerTool().Execute(new JObject
             {
-                ["instanceId"] = instance.GetInstanceID(),
+                ["instanceId"] = instance.GetMcpInstanceId(),
                 ["controllerGuidOrPath"] = ControllerPath,
             });
             Assert.That(assigned.IsError, Is.False, assigned.Text);
@@ -804,7 +812,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var set = new SetAnimatorParameterTool().Execute(new JObject
             {
-                ["instanceId"] = gameObject.GetInstanceID(),
+                ["instanceId"] = gameObject.GetMcpInstanceId(),
                 ["name"] = "Speed",
                 ["type"] = "auto",
                 ["value"] = 1f,
@@ -814,7 +822,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var play = new PlayAnimatorStateTool().Execute(new JObject
             {
-                ["instanceId"] = gameObject.GetInstanceID(),
+                ["instanceId"] = gameObject.GetMcpInstanceId(),
                 ["state"] = "Base Layer.Idle",
                 ["layer"] = 0,
                 ["normalizedTime"] = 0f,
@@ -824,7 +832,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
             var read = new ReadAnimatorStateTool().Execute(new JObject
             {
-                ["instanceId"] = gameObject.GetInstanceID(),
+                ["instanceId"] = gameObject.GetMcpInstanceId(),
             });
             Assert.That(read.IsError, Is.True);
             Assert.That((string)read.Json["code"], Is.EqualTo("PLAY_MODE_REQUIRED"));

@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -165,9 +166,11 @@ namespace Maicon.SceneAnalyzer.Editor.Play
             // Explicit param wins.
             if (instanceId.HasValue && instanceId.Value != 0)
             {
+                var requested = UnityObjectIds.Resolve(instanceId.Value) as Camera;
+                if (requested == null) return null;
                 foreach (var c in Camera.allCameras)
                 {
-                    if (c != null && c.GetInstanceID() == instanceId.Value) return c;
+                    if (c == requested) return c;
                 }
                 return null;
             }

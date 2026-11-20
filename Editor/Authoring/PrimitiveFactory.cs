@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -31,7 +32,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 gameObject.transform.localRotation = rotation;
                 gameObject.transform.localScale = scale;
                 mutation.Complete();
-                return OpResult.Success(gameObject.GetInstanceID(), $"created {kind} '{gameObject.name}'");
+                return OpResult.Success(gameObject.GetMcpInstanceId(), $"created {kind} '{gameObject.name}'");
             }
         }
 

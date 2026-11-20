@@ -285,10 +285,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             {
                 AddReferenceResultCandidate(new ReferenceSearchResult
                 {
-                    Key = "scene-go:" + gameObject.GetInstanceID(),
+                    Key = "scene-go:" + gameObject.GetMcpInstanceId(),
                     Label = gameObject.name,
                     Detail = $"GameObject · {gameObject.scene.name} · {hierarchyPath}",
-                    InstanceId = gameObject.GetInstanceID(),
+                    InstanceId = gameObject.GetMcpInstanceId(),
                 });
             }
 
@@ -298,10 +298,10 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 if (component == null || !Contains(component.GetType().FullName, _sceneSearchQuery)) continue;
                 AddReferenceResultCandidate(new ReferenceSearchResult
                 {
-                    Key = "scene-component:" + component.GetInstanceID(),
+                    Key = "scene-component:" + component.GetMcpInstanceId(),
                     Label = component.GetType().Name,
                     Detail = $"Component · {hierarchyPath}",
-                    InstanceId = component.GetInstanceID(),
+                    InstanceId = component.GetMcpInstanceId(),
                 });
                 if (_referenceResults.Count >= MaxReferenceResults) break;
             }
@@ -340,7 +340,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
             try
             {
                 Object target = null;
-                if (result.InstanceId != 0) target = EditorUtility.InstanceIDToObject(result.InstanceId);
+                if (result.InstanceId != 0) target = UnityObjectIds.Resolve(result.InstanceId);
                 if (target == null && result.SearchItem != null) target = result.SearchItem.ToObject();
                 reference = target != null
                     ? ChatReference.Capture(target)

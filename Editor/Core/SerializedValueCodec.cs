@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Linq;
 using Newtonsoft.Json.Linq;
@@ -107,7 +108,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                 case SerializedPropertyType.Enum:
                     return new JObject { ["name"] = p.enumValueIndex >= 0 && p.enumValueIndex < p.enumDisplayNames.Length ? p.enumDisplayNames[p.enumValueIndex] : null, ["index"] = p.enumValueIndex, ["options"] = new JArray(p.enumDisplayNames) };
                 case SerializedPropertyType.ObjectReference:
-                    if (p.objectReferenceValue == null) return new JObject { ["null"] = true, ["broken"] = p.objectReferenceInstanceIDValue != 0 };
+                    if (p.objectReferenceValue == null) return new JObject { ["null"] = true, ["broken"] = UnityObjectIds.HasObjectReference(p) };
                     return new JObject { ["target"] = ToolTargetRef.Capture(p.objectReferenceValue)?.ToJson(), ["name"] = p.objectReferenceValue.name, ["type"] = p.objectReferenceValue.GetType().FullName };
                 case SerializedPropertyType.Rect: return new JObject { ["x"] = p.rectValue.x, ["y"] = p.rectValue.y, ["width"] = p.rectValue.width, ["height"] = p.rectValue.height };
                 case SerializedPropertyType.RectInt: return new JObject { ["x"] = p.rectIntValue.x, ["y"] = p.rectIntValue.y, ["width"] = p.rectIntValue.width, ["height"] = p.rectIntValue.height };

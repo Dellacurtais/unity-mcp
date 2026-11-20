@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -395,7 +396,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
 
         private static MeshTopologyCache GetTopology(Mesh mesh)
         {
-            int id = mesh.GetInstanceID();
+            int id = mesh.GetMcpInstanceId();
             int[] triangles = mesh.triangles;
             if (TopologyCaches.TryGetValue(id, out var cache) && cache.VertexCount == mesh.vertexCount && cache.IndexCount == triangles.Length) return cache;
             var sets = new HashSet<int>[mesh.vertexCount];

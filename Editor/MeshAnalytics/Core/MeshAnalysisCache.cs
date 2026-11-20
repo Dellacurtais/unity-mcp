@@ -36,7 +36,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
             {
                 MeshGuid = meshKey,
                 AnalysisKey = analysisKey,
-                OwnerInstanceId = owner != null ? owner.GetInstanceID() : 0,
+                OwnerInstanceId = owner != null ? owner.GetMcpInstanceId() : 0,
                 OwnerTarget = ToolTargetRef.Capture(owner),
                 OwnerLocalToWorld = localToWorld,
             };
@@ -142,7 +142,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         {
             if (result == null || owner == null) return;
             result.AnalysisKey = analysisKey;
-            result.OwnerInstanceId = owner.GetInstanceID();
+            result.OwnerInstanceId = owner.GetMcpInstanceId();
             result.OwnerTarget = ToolTargetRef.Capture(owner);
             foreach (var region in Regions(result)) region.OwnerInstanceId = result.OwnerInstanceId;
         }
@@ -187,7 +187,7 @@ namespace Maicon.SceneAnalyzer.Editor.MeshAnalytics.Core
         /// disambiguates re-runs of the same detector with different settings
         /// — without it, the second run's regionIds collide with the first's
         /// in the lookup index. MeshKey is the asset GUID when available;
-        /// otherwise the runtime mesh.GetInstanceID() (still stable within a
+        /// otherwise the runtime mesh.GetMcpInstanceId() (still stable within a
         /// session). The kind segment lets the LLM tell submesh/edge/plane
         /// regions apart at a glance.
         public static string MakeRegionId(string meshKey, string paramsHash, RegionKind kind, int index)

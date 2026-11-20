@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -87,7 +88,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             var isPersistentAsset = EditorUtility.IsPersistent(target);
             var result = new ToolTargetRef
             {
-                InstanceId = target.GetInstanceID(),
+                InstanceId = target.GetMcpInstanceId(),
                 CaptureDomainId = CurrentCaptureDomainId,
                 Kind = isPersistentAsset ? "asset" : target is GameObject ? "gameObject" : target is Component ? "component" : "object",
             };
@@ -121,7 +122,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             {
                 var scene = gameObject.scene;
                 var prefabStage = PrefabStageUtility.GetPrefabStage(gameObject);
-                result.SceneHandle = scene.handle;
+                result.SceneHandle = scene.GetMcpSceneHandle();
                 result.IsPrefabStage = prefabStage != null;
                 result.ScenePath = prefabStage != null ? prefabStage.assetPath : scene.path;
                 result.SceneGuid = string.IsNullOrEmpty(result.ScenePath) ? null : AssetDatabase.AssetPathToGUID(result.ScenePath);

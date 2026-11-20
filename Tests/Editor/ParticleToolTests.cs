@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using Maicon.SceneAnalyzer.Editor.Authoring;
 using Maicon.SceneAnalyzer.Editor.Mcp.Tools.Write;
 using Newtonsoft.Json.Linq;
@@ -28,7 +29,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 AssertOk(ParticleEditor.SetModule(new JObject
                 {
-                    ["instanceId"] = gameObject.GetInstanceID(),
+                    ["instanceId"] = gameObject.GetMcpInstanceId(),
                     ["module"] = "velocityOverLifetime",
                     ["fields"] = new JObject
                     {
@@ -56,7 +57,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
                 AssertOk(ParticleEditor.SetModule(new JObject
                 {
-                    ["instanceId"] = gameObject.GetInstanceID(),
+                    ["instanceId"] = gameObject.GetMcpInstanceId(),
                     ["module"] = "rotationOverLifetime",
                     ["fields"] = new JObject
                     {
@@ -76,7 +77,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
                 AssertOk(ParticleEditor.SetModule(new JObject
                 {
-                    ["instanceId"] = gameObject.GetInstanceID(),
+                    ["instanceId"] = gameObject.GetMcpInstanceId(),
                     ["module"] = "sizeOverLifetime",
                     ["fields"] = new JObject
                     {
@@ -96,7 +97,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
 
                 AssertOk(ParticleEditor.SetModule(new JObject
                 {
-                    ["instanceId"] = gameObject.GetInstanceID(),
+                    ["instanceId"] = gameObject.GetMcpInstanceId(),
                     ["module"] = "emission",
                     ["fields"] = new JObject
                     {
@@ -153,7 +154,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 var undoGroup = Undo.GetCurrentGroup();
                 AssertOk(ParticleEditor.SetModule(new JObject
                 {
-                    ["instanceId"] = gameObject.GetInstanceID(),
+                    ["instanceId"] = gameObject.GetMcpInstanceId(),
                     ["module"] = "renderer",
                     ["fields"] = new JObject
                     {
@@ -204,7 +205,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 var result = ParticleEditor.PlayPreview(new JObject
                 {
-                    ["instanceId"] = gameObject.GetInstanceID(),
+                    ["instanceId"] = gameObject.GetMcpInstanceId(),
                     ["action"] = "simulate",
                     ["time"] = 0,
                 });

@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -56,7 +57,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 var path = AssetDatabase.GetAssetPath(asset);
                 if (string.IsNullOrEmpty(path)) throw new InvalidOperationException("Deferred save requires an asset path.");
                 if (!_before.ContainsKey(path)) _before[path] = File.Exists(path) ? File.ReadAllBytes(path) : null;
-                _assets[asset.GetInstanceID()] = asset;
+                _assets[asset.GetMcpInstanceId()] = asset;
             }
             public void Commit()
             {
@@ -308,7 +309,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     if (IsIdProperty(prop.Name) && prop.Value is JValue jv && jv.Type == JTokenType.Integer)
                     {
                         var id = (int)jv;
-                        if (id > 0 && EditorUtility.InstanceIDToObject(id) == null)
+                        if (id > 0 && UnityObjectIds.Resolve(id) == null)
                             return $"REF_BROKEN: {prop.Name}={id} does not resolve to a live object";
                     }
                     var nested = ValidateRefsAndIds(prop.Value, labels);

@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using Maicon.SceneAnalyzer.Editor.Modeling.Assets;
@@ -149,7 +150,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneTools
                     throw new InvalidOperationException("SKINNED_MERGE_REQUIRES_SHARED_SKELETON: use Smart Body Split/recombine for rigged meshes.");
                 var rootFilters = roots[rootIndex].GetComponentsInChildren<MeshFilter>(true);
                 for (int filterIndex = 0; filterIndex < rootFilters.Length; filterIndex++)
-                    if (rootFilters[filterIndex] != null && filterIds.Add(rootFilters[filterIndex].GetInstanceID()))
+                    if (rootFilters[filterIndex] != null && filterIds.Add(rootFilters[filterIndex].GetMcpInstanceId()))
                         filters.Add(rootFilters[filterIndex]);
             }
             filters.RemoveAll(filter => filter == null || filter.sharedMesh == null || filter.GetComponent<MeshRenderer>() == null);
@@ -179,7 +180,7 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.SceneTools
                     };
                     if (compactMaterials)
                     {
-                        int materialKey = material != null ? material.GetInstanceID() : int.MinValue;
+                        int materialKey = material != null ? material.GetMcpInstanceId() : int.MinValue;
                         if (!compactGroups.TryGetValue(materialKey, out var group))
                         {
                             group = new List<CombineInstance>();

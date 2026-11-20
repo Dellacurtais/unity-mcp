@@ -130,7 +130,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 EnsureFolder(Path.GetDirectoryName(path)?.Replace('\\', '/'), createdFolders);
                 AssetDatabase.CreateAsset(scriptableObject, path);
                 if (!AssetDatabase.AssetPathExists(path)) throw new InvalidOperationException($"CreateAsset did not create '{path}'");
-                var result = OpResult.Success(scriptableObject.GetInstanceID(),
+                var result = OpResult.Success(scriptableObject.GetMcpInstanceId(),
                     $"created {type.Name} at {path}" + (applied > 0 ? $" (set {applied} initial field(s))" : string.Empty));
                 result.Data = new JObject { ["asset"] = AssetData(path), ["savedAssets"] = true };
                 result.CreatedAssetPath = path;
@@ -190,7 +190,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
             return new OpResult
             {
                 Ok = true,
-                InstanceID = scriptableObject.GetInstanceID(),
+                InstanceID = scriptableObject.GetMcpInstanceId(),
                 Summary = $"read {fields.Count} of {total} field(s) from {scriptableObject.name}",
                 Data = data,
             };
@@ -224,7 +224,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     var result = new OpResult
                     {
                         Ok = true,
-                        InstanceID = asset.GetInstanceID(),
+                        InstanceID = asset.GetMcpInstanceId(),
                         Summary = $"set {asset.GetType().Name}.{propertyPath}",
                         Data = new JObject
                         {
@@ -266,7 +266,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                 if (!AssetDatabase.CopyAsset(sourcePath, targetPath)) throw new InvalidOperationException($"CopyAsset returned false: {sourcePath} -> {targetPath}");
                 var clone = AssetDatabase.LoadAssetAtPath<ScriptableObject>(targetPath);
                 if (clone == null) throw new InvalidOperationException($"copy succeeded but clone is not a ScriptableObject at {targetPath}");
-                var result = OpResult.Success(clone.GetInstanceID(), $"duplicated {source.GetType().Name} '{source.name}' -> {targetPath}");
+                var result = OpResult.Success(clone.GetMcpInstanceId(), $"duplicated {source.GetType().Name} '{source.name}' -> {targetPath}");
                 result.Data = new JObject { ["asset"] = AssetData(targetPath), ["savedAssets"] = true };
                 result.CreatedAssetPath = targetPath;
                 return result;
@@ -371,7 +371,7 @@ namespace Maicon.SceneAnalyzer.Editor.Authoring
                     var result = new OpResult
                     {
                         Ok = true,
-                        InstanceID = serialized.targetObject.GetInstanceID(),
+                        InstanceID = serialized.targetObject.GetMcpInstanceId(),
                         Summary = summary + $" (new size {property.arraySize})",
                         Data = new JObject
                         {

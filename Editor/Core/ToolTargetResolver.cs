@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
@@ -29,7 +30,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             UnityEngine.Object capturedInstance = null;
             if (sameCaptureDomain)
             {
-                capturedInstance = target.InstanceId != 0 ? EditorUtility.InstanceIDToObject(target.InstanceId) : null;
+                capturedInstance = target.InstanceId != 0 ? UnityObjectIds.Resolve(target.InstanceId) : null;
                 if (capturedInstance == null)
                 {
                     error = "TARGET_IDENTITY_STALE: the captured instance was destroyed or unloaded; refresh the target";
@@ -79,7 +80,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                 // Global IDs in a Prefab Stage can resolve the source asset. The
                 // captured live instance is acceptable only inside the same stage
                 // and with the same durable identity; never fall back by name.
-                var candidate = EditorUtility.InstanceIDToObject(target.InstanceId);
+                var candidate = UnityObjectIds.Resolve(target.InstanceId);
                 var owner = candidate as GameObject ?? (candidate as Component)?.gameObject;
                 if (owner != null && owner.scene == prefabStage.scene
                     && (!hasGlobalIdentity || GlobalObjectId.GetGlobalObjectIdSlow(candidate).ToString() == target.GlobalObjectId))
@@ -101,7 +102,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
             {
                 if (target.InstanceId != 0)
                 {
-                    resolved = EditorUtility.InstanceIDToObject(target.InstanceId);
+                    resolved = UnityObjectIds.Resolve(target.InstanceId);
                     if (resolved == null)
                     {
                         error = "TARGET_IDENTITY_STALE: the captured live instance no longer exists; refresh the target";
@@ -136,7 +137,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                 if ((!string.IsNullOrEmpty(target.SceneGuid) && AssetDatabase.AssetPathToGUID(scene.path) != target.SceneGuid)
                     || (string.IsNullOrEmpty(target.SceneGuid) && !string.IsNullOrEmpty(target.ScenePath) && scene.path != target.ScenePath)
                     || (!hasGlobalIdentity && string.IsNullOrEmpty(target.SceneGuid) && string.IsNullOrEmpty(target.ScenePath)
-                        && target.SceneHandle != 0 && scene.handle != target.SceneHandle))
+                        && target.SceneHandle != 0 && scene.GetMcpSceneHandle() != target.SceneHandle))
                 {
                     error = "TARGET_SCENE_MISMATCH: the captured target is no longer in its expected scene";
                     return null;
@@ -234,7 +235,7 @@ namespace Maicon.SceneAnalyzer.Editor.Core
                     if (!string.IsNullOrEmpty(target.ScenePath) && !string.Equals(scene.path, target.ScenePath, StringComparison.Ordinal)) continue;
                     if (!string.IsNullOrEmpty(target.SceneGuid) && !string.Equals(AssetDatabase.AssetPathToGUID(scene.path), target.SceneGuid, StringComparison.Ordinal)) continue;
                     if (string.IsNullOrEmpty(target.ScenePath) && string.IsNullOrEmpty(target.SceneGuid)
-                        && target.SceneHandle != 0 && scene.handle != target.SceneHandle) continue;
+                        && target.SceneHandle != 0 && scene.GetMcpSceneHandle() != target.SceneHandle) continue;
                     CollectPathMatches(scene, target.HierarchyPath, matches);
                 }
             }

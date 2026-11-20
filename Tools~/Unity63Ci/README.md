@@ -43,7 +43,7 @@ when PowerShell can read those files.
 
 Each profile runs import/compile with version, Console-error and registry gates,
 package EditMode tests filtered by the shared `Maicon.SceneAnalyzer` namespace
-(Core, Modeling, AI3D, NavMesh, ShaderGraph and PostFx), and separate Editor coroutine smoke tests that actually
+(Core, Modeling, NavMesh, ShaderGraph and PostFx), and separate Editor coroutine smoke tests that actually
 enter Play Mode with all four combinations of domain and scene reload enabled
 and disabled, verify the configured reload flags and that the Editor domain
 respectively changes or remains the same, advance frames, read

@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Linq;
 using Maicon.SceneAnalyzer.Editor.Authoring;
@@ -50,8 +51,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var legacyGameObject = GameObject.Find("Legacy Area Alias");
             Assert.That(legacyGameObject.GetComponent<Light>().type, Is.EqualTo(LightType.Rectangle));
 
-            var countBefore = UnityEngine.Object.FindObjectsByType<Light>(
-                FindObjectsInactive.Include, FindObjectsSortMode.None).Length;
+            var countBefore = UnityObjectIds.FindAll<Light>(
+                FindObjectsInactive.Include).Length;
             var invalidParent = LightFactory.Create(new JObject
             {
                 ["type"] = "Point",
@@ -59,8 +60,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 ["parent"] = int.MaxValue,
             });
             Assert.That(invalidParent.Ok, Is.False);
-            Assert.That(UnityEngine.Object.FindObjectsByType<Light>(
-                FindObjectsInactive.Include, FindObjectsSortMode.None).Length, Is.EqualTo(countBefore));
+            Assert.That(UnityObjectIds.FindAll<Light>(
+                FindObjectsInactive.Include).Length, Is.EqualTo(countBefore));
 
             var invalidEnum = LightFactory.Create(new JObject
             {
@@ -69,8 +70,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 ["shadows"] = "Ultra",
             });
             Assert.That(invalidEnum.Ok, Is.False);
-            Assert.That(UnityEngine.Object.FindObjectsByType<Light>(
-                FindObjectsInactive.Include, FindObjectsSortMode.None).Length, Is.EqualTo(countBefore));
+            Assert.That(UnityObjectIds.FindAll<Light>(
+                FindObjectsInactive.Include).Length, Is.EqualTo(countBefore));
 
             var areaObjectSchema = (JObject)new CreateLightTool().InputSchema["properties"]["areaSize"]["oneOf"][1];
             CollectionAssert.AreEquivalent(new[] { "x", "y" }, ((JArray)areaObjectSchema["required"]).Values<string>());
@@ -81,8 +82,8 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
                 ["areaSize"] = new JObject { ["x"] = 4f },
             });
             Assert.That(incompleteAreaSize.Ok, Is.False);
-            Assert.That(UnityEngine.Object.FindObjectsByType<Light>(
-                FindObjectsInactive.Include, FindObjectsSortMode.None).Length, Is.EqualTo(countBefore));
+            Assert.That(UnityObjectIds.FindAll<Light>(
+                FindObjectsInactive.Include).Length, Is.EqualTo(countBefore));
         }
 
         [Test]
@@ -117,7 +118,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             var data = result.Data as JObject;
             Assert.That(data, Is.Not.Null);
             Assert.That((string)data["type"], Is.EqualTo("Spot"));
-            Assert.That((int)data["lightInstanceId"], Is.EqualTo(light.GetInstanceID()));
+            Assert.That((int)data["lightInstanceId"], Is.EqualTo(light.GetMcpInstanceId()));
             Assert.That((float)data["spotAngle"], Is.EqualTo(55f));
 
             var parent = new GameObject("Audited Light Parent");
@@ -125,7 +126,7 @@ namespace Maicon.SceneAnalyzer.Editor.Tests
             {
                 ["type"] = "Rectangle",
                 ["areaSize"] = new JArray(4f, 2f),
-                ["parent"] = parent.GetInstanceID(),
+                ["parent"] = parent.GetMcpInstanceId(),
             });
             AssertOk(rectangle);
             var rectangleGameObject = GameObject.Find("Rectangle Light");

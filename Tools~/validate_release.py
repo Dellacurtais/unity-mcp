@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "com.maicon.scene-analyzer"
-RELEASE_VERSION = "0.19.0"
+RELEASE_VERSION = "0.19.1"
 PINNED_REQUIREMENT = re.compile(r"^[A-Za-z0-9_.-]+==[^=<>!~]+$")
 
 
@@ -78,8 +78,6 @@ def main() -> int:
     for relative in (
         "Broker~/requirements.txt",
         "Broker~/requirements-dev.txt",
-        "TripoGateway~/requirements.txt",
-        "TripoGateway~/requirements-dev.txt",
     ):
         for line in read(relative).splitlines():
             value = line.strip()
@@ -98,7 +96,6 @@ def main() -> int:
         "Runtime",
         "Tests",
         "Broker~",
-        "TripoGateway~",
         "Documentation~",
     )
     stale_identity: list[str] = []

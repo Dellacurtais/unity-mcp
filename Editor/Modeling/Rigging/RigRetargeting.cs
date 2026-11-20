@@ -1,3 +1,4 @@
+using Maicon.SceneAnalyzer.Editor.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -75,11 +76,11 @@ namespace Maicon.SceneAnalyzer.Editor.Modeling.Rigging
                 var sourceBone = source.Bones[i]; Transform best = null; float bestScore = 0f;
                 for (int j = 0; j < destination.Bones.Length; j++)
                 {
-                    var candidate = destination.Bones[j]; if (candidate == null || used.Contains(candidate.GetInstanceID())) continue;
+                    var candidate = destination.Bones[j]; if (candidate == null || used.Contains(candidate.GetMcpInstanceId())) continue;
                     float score = Score(sourceBone, candidate, source.Root.transform, destination.Root.transform);
                     if (score > bestScore) { best = candidate; bestScore = score; }
                 }
-                if (bestScore < 0.35f) best = null; else used.Add(best.GetInstanceID());
+                if (bestScore < 0.35f) best = null; else used.Add(best.GetMcpInstanceId());
                 profile.Bones.Add(Map(source.Root.transform, destination.Root.transform, sourceBone, best, bestScore, string.Empty));
             }
         }
