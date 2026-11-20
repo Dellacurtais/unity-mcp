@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Editor no longer stutters while the broker is stopped. **Window → Unity MCP Transport** repaints twice a second and probed `/health` on the main thread each time; against a stopped broker every probe blocked for up to a second. Repaints now read the last probe and refresh it in the background, and **Start**/**Stop** wait for the supervisor off the main thread, reporting in Recent Activity.
+- Closing the Editor no longer stops the supervised broker. A stale legacy state file that named the closing Editor as owner made it ask the supervisor to quit, so the endpoint stayed down until Unity was reopened. On quit, Unity now stops only a legacy broker it launched itself.
 - Saving a scene copy to a previously deleted asset path checks only existing assets, not Unity's cached GUIDs of deleted assets.
 - The local `.validation/` workspace is no longer tracked, and the C# syntax-check project used by CI is.
 

@@ -74,6 +74,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
         private static EndpointProbe _cachedEndpointProbe;
         private static string _cachedEndpointKey;
         private static DateTimeOffset _cachedEndpointUtc;
+        private static Task _endpointRefresh;
         private const int ProbeTimeoutMilliseconds = 5000;
         private const int EndpointProbeTimeoutMilliseconds = 500;
         private const string ProcessMutexName = "UnityMcp.ManagedBroker.Process.v1";
@@ -90,9 +91,16 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
         internal static string InstallStatusPath => Path.Combine(RootPath, "runtime", "install-status.json");
         internal static string ProcessStatePath => Path.Combine(RootPath, "runtime", "broker-process.json");
 
-        public static ManagedBrokerSnapshot Inspect()
+        /// Snapshot for repaint paths: it never touches the network on the calling thread.
+        /// The health probe of the endpoint is read from the last result and refreshed in the
+        /// background, because a probe of a stopped broker blocks for up to a second (Windows
+        /// takes that long to refuse a loopback connection) and the window repaints twice a second.
+        public static ManagedBrokerSnapshot Inspect() => Inspect(false);
+
+        /// `freshEndpoint` probes the endpoint synchronously; only user actions pass it.
+        public static ManagedBrokerSnapshot Inspect(bool freshEndpoint)
         {
-            var endpoint = ProbeConfiguredEndpoint(false);
+            var endpoint = freshEndpoint ? ProbeConfiguredEndpoint(true) : CachedConfiguredEndpoint();
             return InspectPersistedState(RootPath, SceneAnalyzerVersion.Current, state =>
             {
                 var running = TryGetOwnedProcess(state, out var process, out var error);
@@ -211,7 +219,7 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                     throw new InvalidOperationException("A managed broker installation is already being launched.");
                 WithProcessLock(() =>
                 {
-                    var snapshot = Inspect();
+                    var snapshot = Inspect(true);
                     if (snapshot.IsInstallInProgress)
                         throw new InvalidOperationException("A managed broker installation is already running.");
                     if (snapshot.IsProcessActive)
@@ -542,6 +550,9 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
 
         public static void Stop() => WithProcessLock(StopCore);
 
+        /// Called when the Editor quits. Stops only a legacy (unsupervised) broker that this
+        /// Editor launched itself. The supervised broker is per-user and outlives the Editor,
+        /// so it is never stopped here, even when a stale legacy state file names this Editor.
         public static void StopOwnedByCurrentUnity()
         {
             int processId;
@@ -554,7 +565,20 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
             WithProcessLock(() =>
             {
                 var state = ReadObject(ProcessStatePath);
-                if (IsOwnedByProcess(state, processId, processStartUtc)) StopCore();
+                if (!IsOwnedByProcess(state, processId, processStartUtc)) return;
+                if (TryGetOwnedProcess(state, out var process, out _))
+                {
+                    using (process)
+                    {
+                        try
+                        {
+                            process.Kill();
+                            process.WaitForExit(5000);
+                        }
+                        catch (InvalidOperationException) { }
+                    }
+                }
+                TryDelete(ProcessStatePath);
             });
         }
 
@@ -668,13 +692,34 @@ namespace Maicon.SceneAnalyzer.Editor.Mcp.Broker
                     return _cachedEndpointProbe;
             }
             var result = ProbeBrokerEndpoint(host, port);
+            StoreEndpointProbe(key, result);
+            return result;
+        }
+
+        private static EndpointProbe CachedConfiguredEndpoint()
+        {
+            // Settings are EditorPrefs: read them here, on the caller's (main) thread.
+            if (!TryParseManagedEndpoint(Settings.BrokerUrl, out var host, out var port, out _))
+                return new EndpointProbe();
+            var key = host + ":" + port.ToString(CultureInfo.InvariantCulture);
+            lock (OperationLock)
+            {
+                var known = _cachedEndpointProbe != null && string.Equals(_cachedEndpointKey, key, StringComparison.Ordinal);
+                var stale = !known || DateTimeOffset.UtcNow - _cachedEndpointUtc >= TimeSpan.FromSeconds(1);
+                if (stale && (_endpointRefresh == null || _endpointRefresh.IsCompleted))
+                    _endpointRefresh = Task.Run(() => StoreEndpointProbe(key, ProbeBrokerEndpoint(host, port)));
+                return known ? _cachedEndpointProbe : new EndpointProbe();
+            }
+        }
+
+        private static void StoreEndpointProbe(string key, EndpointProbe result)
+        {
             lock (OperationLock)
             {
                 _cachedEndpointKey = key;
                 _cachedEndpointProbe = result;
                 _cachedEndpointUtc = DateTimeOffset.UtcNow;
             }
-            return result;
         }
 
         internal static EndpointProbe ProbeBrokerEndpoint(string host, int port)

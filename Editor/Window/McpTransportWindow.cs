@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 using Maicon.SceneAnalyzer.Editor.Mcp;
 using Maicon.SceneAnalyzer.Editor.Mcp.Broker;
 using UnityEditor;
@@ -376,20 +377,36 @@ namespace Maicon.SceneAnalyzer.Editor.Window
                 EditorGUILayout.HelpBox(managed.Error, MessageType.Error);
         }
 
+        // Start and Stop wait for the supervisor (seconds), so they run off the main thread
+        // and report through Recent Activity; the bridge reconnects once the broker answers.
         private static void StartManagedBroker()
         {
-            ManagedBrokerProcess.Start();
+            ManagedBrokerProcess.EnsureRunningInBackground(RecordFromBackground);
             if (Bootstrap.BrokerBridge == null) Bootstrap.StartServer();
-            Bootstrap.RecordEntry("managed broker process started");
+            Bootstrap.RecordEntry("managed broker starting");
         }
 
         private static void StopManagedBroker()
         {
             if (Bootstrap.BrokerBridge != null) Bootstrap.StopServer();
             else Settings.BrokerAutoConnect = false;
-            ManagedBrokerProcess.Stop();
-            Bootstrap.RecordEntry("managed broker process stopped");
+            Bootstrap.RecordEntry("managed broker stopping");
+            Task.Run(() =>
+            {
+                try
+                {
+                    ManagedBrokerProcess.Stop();
+                    RecordFromBackground("managed broker process stopped");
+                }
+                catch (Exception exception)
+                {
+                    RecordFromBackground("managed broker not stopped: " + exception.Message);
+                }
+            });
         }
+
+        private static void RecordFromBackground(string message)
+            => _ = MainThreadDispatcher.RunAsync(() => Bootstrap.RecordEntry("[broker] " + message));
 
         private static void OpenManagedBrokerLogs()
         {
@@ -427,7 +444,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         private static void RegenerateToken()
         {
             var restartTransport = IsTransportRunning();
-            var restartManaged = ManagedBrokerProcess.Inspect().IsProcessActive;
+            var restartManaged = ManagedBrokerProcess.Inspect(true).IsProcessActive;
             if (restartManaged)
             {
                 if (Bootstrap.BrokerBridge != null) Bootstrap.StopServer();
@@ -450,7 +467,7 @@ namespace Maicon.SceneAnalyzer.Editor.Window
         }
 
         private static bool IsTransportRunning()
-            => Bootstrap.BrokerBridge != null || ManagedBrokerProcess.Inspect().IsProcessActive;
+            => Bootstrap.BrokerBridge != null || ManagedBrokerProcess.Inspect(true).IsProcessActive;
 
         private static void TryTransportAction(Action action, string title)
         {
